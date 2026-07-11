@@ -13,7 +13,7 @@ struct Settings {
   float lat = 54.4870f;
   float lon = 18.5216f;
 
-  char modbusHost[24] = "192.168.0.60";
+  char modbusHost[24] = {};  // ustawiane w panelu WWW
   uint16_t modbusPort = 502;
   uint16_t pvPeakW = 6000;
 

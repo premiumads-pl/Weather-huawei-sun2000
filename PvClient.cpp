@@ -162,6 +162,11 @@ bool PvClient::fetch(PvModel& out) {
     strncpy(out.errorMsg, "Brak WiFi", sizeof(out.errorMsg) - 1);
     return false;
   }
+  if (!settings().hasInverter()) {
+    out.online = false;
+    strncpy(out.errorMsg, "Ustaw IP falownika w panelu", sizeof(out.errorMsg) - 1);
+    return false;
+  }
 
   gSock.stop();
   if (!gSock.connect(settings().modbusHost, settings().modbusPort, 4000)) {

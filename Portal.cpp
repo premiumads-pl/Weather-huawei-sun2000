@@ -80,7 +80,7 @@ li:hover{border-color:#00dcf0;background:#0d1c30}
 
 <div class=c>
 <h2>Falownik i instalacja</h2>
-<label>Adres IP falownika (Modbus TCP)</label><input id=mb placeholder=192.168.0.60>
+<label>Adres IP falownika (Modbus TCP)</label><input id=mb placeholder="adres z aplikacji FusionSolar">
 <label>Moc szczytowa instalacji [kWp]</label><input id=peak type=number step=0.1 placeholder=6.0>
 <button onclick=saveInv()>Zapisz</button>
 <div class=hint id=imsg></div>

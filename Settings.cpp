@@ -22,7 +22,7 @@ void Settings::load() {
   String s = prefs.getString("ssid", "");
   String p = prefs.getString("pass", "");
   String c = prefs.getString("city", "Gdynia");
-  String m = prefs.getString("mb", "192.168.0.60");
+  String m = prefs.getString("mb", "");
   lat = prefs.getFloat("lat", 54.4870f);
   lon = prefs.getFloat("lon", 18.5216f);
   modbusPort = prefs.getUShort("mbport", 502);
