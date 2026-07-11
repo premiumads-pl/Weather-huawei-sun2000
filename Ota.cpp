@@ -129,36 +129,23 @@ bool Ota::downloadAndFlash() {
   gStatus.progress = 0;
   setMsg("Pobieram nową wersję");
 
-  Stream* stream = http.getStreamPtr();
-  uint8_t buf[2048];
-  int written = 0;
-  uint32_t lastData = millis();
+  // UWAGA: nie odpytujemy available() — na TLS potrafi zwracać 0 mimo danych
+  // w drodze i robi się fałszywy timeout. writeStream() czyta blokująco.
+  Update.onProgress([](size_t done, size_t all) {
+    gStatus.progress = all ? static_cast<int>((done * 100) / all) : 0;
+  });
 
-  while (written < total) {
-    const size_t avail = stream->available();
-    if (avail == 0) {
-      if (millis() - lastData > 15000) {
-        setMsg("Przerwane pobieranie");
-        Update.abort();
-        http.end();
-        return false;
-      }
-      delay(5);
-      continue;
-    }
-    lastData = millis();
-    const int n = stream->readBytes(buf, avail > sizeof(buf) ? sizeof(buf) : avail);
-    if (n <= 0) {
-      continue;
-    }
-    if (Update.write(buf, n) != static_cast<size_t>(n)) {
-      setMsg("Błąd zapisu OTA");
-      Update.abort();
-      http.end();
-      return false;
-    }
-    written += n;
-    gStatus.progress = (written * 100) / total;
+  Stream& stream = http.getStream();
+  const size_t written = Update.writeStream(stream);
+
+  if (written != static_cast<size_t>(total)) {
+    char b[48];
+    snprintf(b, sizeof(b), "Pobrano %u z %d B", static_cast<unsigned>(written), total);
+    setMsg(b);
+    Serial.printf("OTA: %s (%s)\n", b, Update.errorString());
+    Update.abort();
+    http.end();
+    return false;
   }
 
   http.end();
