@@ -476,9 +476,20 @@ void WeatherUi::drawViewNow(int ox, float t, const WeatherModel& w) {
     snprintf(b, sizeof(b), "UV %.0f", uv);
   }
   plRight(spr_, PLF14, b, ox + W - 10, by, uvc);
-  if (w.precipToday > 0.05f) {
-    snprintf(b, sizeof(b), "opad %.1f mm", w.precipToday);
-    plCenter(spr_, PLF14, b, ox + 228, by, col::RAIN);
+  // Opad: najpierw natężenie BIEŻĄCE (mm/h). Gdy nie pada — suma na 12 h.
+  // (Dawniej była tu suma dobowa, co tuż po północy pokazywało ~0 mimo ulewy.)
+  if (c.precipMm > 0.05f) {
+    snprintf(b, sizeof(b), "deszcz %.1f mm/h", c.precipMm);
+    plCenter(spr_, PLF14, b, ox + 218, by, col::RAIN);
+  } else {
+    float next12 = 0.f;
+    for (int i = 0; i < WX_HOURS; ++i) {
+      if (w.hours[i].valid) next12 += w.hours[i].data.precipMm;
+    }
+    if (next12 > 0.2f) {
+      snprintf(b, sizeof(b), "opad 12h %.1f mm", next12);
+      plCenter(spr_, PLF14, b, ox + 218, by, col::RAIN_DK);
+    }
   }
 }
 
