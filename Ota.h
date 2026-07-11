@@ -40,3 +40,6 @@ OtaStatus& otaStatus();
 // Dzięki temu obiekt Update nigdy nie jest używany z dwóch zadań naraz.
 void requestOtaCheck();
 bool takeOtaRequest();
+
+// UI zgłasza, że oddał 150 kB bufora ekranu — dopiero wtedy ruszamy z TLS.
+void otaUiBufferFreed();

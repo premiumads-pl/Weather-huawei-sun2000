@@ -36,6 +36,11 @@ class WeatherUi {
   void drawOta(int progress, const char* msg);
   void drawNetInfo(const char* ssid, const char* ip, int rssi, int secsLeft, int total);
 
+  // Na czas OTA oddajemy 150 kB bufora — inaczej TLS + pobieranie 1,3 MB
+  // nie mają z czego działać (zostawało ~17 kB heapu).
+  void releaseBuffer();
+  void drawOtaDirect(int progress, const char* msg);
+
   // Główna pętla rysowania. Zwraca true, jeśli coś się animuje (potrzebne szybkie klatki).
   bool render(const WeatherModel& w, const PvModel& pv, const PvHistory& hist,
               const FlightModel& fl, bool wifiOk, uint32_t nowMs);
@@ -51,6 +56,7 @@ class WeatherUi {
   TFT_eSPI tft_;
   TFT_eSprite spr_{&tft_};
   bool ready_ = false;
+  bool freed_ = false;
 
   // rotacja widoków
   uint8_t view_ = 0;

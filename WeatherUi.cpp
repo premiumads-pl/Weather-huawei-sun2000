@@ -1277,3 +1277,64 @@ void WeatherUi::drawNetInfo(const char* ssid, const char* ip, int rssi, int secs
   blTarget_ = cfg::BL_DAY;
   tickBacklight();
 }
+
+// ------------------------------- OTA: rysowanie bez bufora (oszczędza RAM) ---
+
+void WeatherUi::releaseBuffer() {
+  if (freed_ || !ready_) {
+    return;
+  }
+  spr_.deleteSprite();
+  freed_ = true;
+  tft_.fillScreen(col::BG);
+  Serial.printf("UI: zwolniono bufor, wolny heap=%u B\n",
+                static_cast<unsigned>(ESP.getFreeHeap()));
+}
+
+// Rysowane wprost na TFT — sprite'a już nie ma.
+void WeatherUi::drawOtaDirect(int progress, const char* msg) {
+  if (!ready_) return;
+
+  static int lastP = -1;
+  static bool frame = false;
+
+  if (!frame) {
+    frame = true;
+    tft_.fillScreen(col::BG);
+    const int cx = W / 2;
+    tft_.fillRect(cx - 5, 52, 10, 26, col::ACCENT);
+    tft_.fillTriangle(cx, 92, cx - 16, 74, cx + 16, 74, col::ACCENT);
+    tft_.fillRoundRect(cx - 22, 100, 44, 5, 2, col::ACCENT);
+
+    tft_.setTextFont(1);
+    tft_.setTextSize(2);
+    tft_.setTextDatum(TC_DATUM);
+    tft_.setTextColor(col::TEXT, col::BG);
+    tft_.drawString("AKTUALIZACJA", cx, 124);
+
+    tft_.setTextSize(1);
+    tft_.setTextColor(col::TEXT_MUTE, col::BG);
+    tft_.drawString("Nie odlaczaj zasilania", cx, 224);
+
+    tft_.drawRoundRect(40, 176, W - 80, 12, 6, col::PV_TRACK);
+  }
+
+  const int p = progress < 0 ? 0 : (progress > 100 ? 100 : progress);
+  if (p != lastP) {
+    lastP = p;
+    const int bx = 42, bw = W - 84;
+    tft_.fillRoundRect(bx, 178, (bw * p) / 100, 8, 4, col::ACCENT);
+
+    tft_.setTextFont(1);
+    tft_.setTextSize(2);
+    tft_.setTextDatum(TC_DATUM);
+    tft_.setTextColor(col::ACCENT, col::BG);
+    char b[16];
+    snprintf(b, sizeof(b), "%3d%%", p);
+    tft_.drawString(b, W / 2, 196);
+
+    tft_.setTextSize(1);
+    tft_.setTextColor(col::TEXT_DIM, col::BG);
+    tft_.drawString(msg && msg[0] ? msg : "Pobieram...", W / 2, 152);
+  }
+}

@@ -396,11 +396,14 @@ void loop() {
     return;
   }
 
-  // --- aktualizacja w toku ---
+  // --- aktualizacja w toku: oddaj bufor ekranu i rysuj wprost na TFT ---
   const OtaStatus& os = otaStatus();
-  if (os.state == OtaState::DOWNLOADING || os.state == OtaState::DONE) {
-    ui.drawOta(os.progress, os.message);
-    delay(60);
+  if (os.state == OtaState::DOWNLOADING || os.state == OtaState::DONE ||
+      os.state == OtaState::FAILED) {
+    ui.releaseBuffer();
+    otaUiBufferFreed();
+    ui.drawOtaDirect(os.progress, os.message);
+    delay(50);
     return;
   }
 

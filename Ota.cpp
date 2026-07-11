@@ -16,6 +16,7 @@ namespace {
 OtaStatus gStatus;
 volatile bool gRequested = false;
 volatile bool gBusy = false;
+volatile bool gUiFreed = false;
 
 void setMsg(const char* m) {
   strncpy(gStatus.message, m, sizeof(gStatus.message) - 1);
@@ -37,6 +38,10 @@ bool takeOtaRequest() {
   }
   gRequested = false;
   return true;
+}
+
+void otaUiBufferFreed() {
+  gUiFreed = true;
 }
 
 bool Ota::fetchRemoteVersion(int& version) {
@@ -69,6 +74,16 @@ bool Ota::fetchRemoteVersion(int& version) {
 }
 
 bool Ota::downloadAndFlash() {
+  // Poczekaj, aż UI odda bufor ekranu (150 kB) — bez tego heapu starcza tylko
+  // na TLS, a pobieranie 1,3 MB się wykłada.
+  gStatus.state = OtaState::DOWNLOADING;
+  setMsg("Zwalniam pamiec...");
+  for (int i = 0; i < 60 && !gUiFreed; ++i) {
+    delay(50);
+  }
+  Serial.printf("OTA: heap przed pobieraniem = %u B\n",
+                static_cast<unsigned>(ESP.getFreeHeap()));
+
   WiFiClientSecure client;
   client.setInsecure();
   client.setTimeout(20);
@@ -199,7 +214,11 @@ bool Ota::checkAndUpdate() {
 
   if (!downloadAndFlash()) {
     gStatus.state = OtaState::FAILED;
-    Serial.printf("OTA BLAD: %s\n", gStatus.message);
+    Serial.printf("OTA BLAD: %s — restart\n", gStatus.message);
+    // Bufor ekranu jest już zwolniony; najczystszy powrót do normalnej pracy
+    // to restart (spróbujemy ponownie przy kolejnym sprawdzeniu).
+    delay(4000);
+    ESP.restart();
     return false;
   }
 
