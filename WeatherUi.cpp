@@ -85,22 +85,22 @@ void fmtPower(char* buf, size_t n, char* unit, size_t un, int32_t w) {
 #define PLF14 pltxt::font14()
 #define PLF18 pltxt::font18()
 
-void plStr(TFT_eSprite& s, const pltxt::FontSet& f, const char* t, int x, int baseline,
+void plStr(TFT_eSPI& s, const pltxt::FontSet& f, const char* t, int x, int baseline,
            uint16_t c) {
   pltxt::drawString(s, f, t, x, baseline, c, c);  // bg == fg => przezroczysto
 }
 
-void plCenter(TFT_eSprite& s, const pltxt::FontSet& f, const char* t, int cx, int baseline,
+void plCenter(TFT_eSPI& s, const pltxt::FontSet& f, const char* t, int cx, int baseline,
               uint16_t c) {
   plStr(s, f, t, cx - pltxt::stringWidth(f, t) / 2, baseline, c);
 }
 
-void plRight(TFT_eSprite& s, const pltxt::FontSet& f, const char* t, int right, int baseline,
+void plRight(TFT_eSPI& s, const pltxt::FontSet& f, const char* t, int right, int baseline,
              uint16_t c) {
   plStr(s, f, t, right - pltxt::stringWidth(f, t), baseline, c);
 }
 
-void gl(TFT_eSprite& s, const char* t, int x, int y, uint16_t c) {
+void gl(TFT_eSPI& s, const char* t, int x, int y, uint16_t c) {
   s.setTextFont(1);
   s.setTextSize(1);
   s.setTextDatum(TL_DATUM);
@@ -108,7 +108,7 @@ void gl(TFT_eSprite& s, const char* t, int x, int y, uint16_t c) {
   s.drawString(t, x, y);
 }
 
-void glCenter(TFT_eSprite& s, const char* t, int cx, int y, uint16_t c) {
+void glCenter(TFT_eSPI& s, const char* t, int cx, int y, uint16_t c) {
   s.setTextFont(1);
   s.setTextSize(1);
   s.setTextDatum(TC_DATUM);
@@ -116,7 +116,7 @@ void glCenter(TFT_eSprite& s, const char* t, int cx, int y, uint16_t c) {
   s.drawString(t, cx, y);
 }
 
-void glRight(TFT_eSprite& s, const char* t, int right, int y, uint16_t c) {
+void glRight(TFT_eSPI& s, const char* t, int right, int y, uint16_t c) {
   s.setTextFont(1);
   s.setTextSize(1);
   s.setTextDatum(TR_DATUM);
@@ -124,7 +124,7 @@ void glRight(TFT_eSprite& s, const char* t, int right, int y, uint16_t c) {
   s.drawString(t, right, y);
 }
 
-int bigStr(TFT_eSprite& s, const GFXfont* f, const char* t, int x, int baseline, uint16_t c) {
+int bigStr(TFT_eSPI& s, const GFXfont* f, const char* t, int x, int baseline, uint16_t c) {
   s.setFreeFont(f);
   s.setTextDatum(L_BASELINE);
   s.setTextColor(c);
@@ -897,6 +897,10 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
   if (!ready_) {
     return false;
   }
+  // Po OTA bufor bywa zwolniony — bez tego rysowalibyśmy w nicość (czarny ekran).
+  if (freed_ && !restoreBuffer()) {
+    return false;
+  }
   if (viewStart_ == 0) {
     viewStart_ = nowMs;
     enterStart_ = nowMs;
@@ -1160,8 +1164,8 @@ void WeatherUi::drawSetup(const char* apSsid, const char* apPass, const char* ap
   spr_.fillRoundRect(14, 64, 292, 40, 8, col::BG_CARD);
   spr_.fillRoundRect(14, 64, 4, 40, 2, col::ACCENT);
   plStr(spr_, PLF18, apSsid, 26, 82, col::TEXT);
-  gl(spr_, "hasło:", 26, 88, col::TEXT_MUTE);
-  gl(spr_, apPass, 68, 88, col::ACCENT);
+  plStr(spr_, PLF14, "hasło:", 26, 99, col::TEXT_MUTE);
+  plStr(spr_, PLF14, apPass, 68, 99, col::ACCENT);
 
   plStr(spr_, PLF14, "2. Otwórz w przeglądarce:", 14, 128, col::TEXT_DIM);
 
@@ -1291,50 +1295,57 @@ void WeatherUi::releaseBuffer() {
                 static_cast<unsigned>(ESP.getFreeHeap()));
 }
 
-// Rysowane wprost na TFT — sprite'a już nie ma.
+bool WeatherUi::restoreBuffer() {
+  if (!freed_) {
+    return true;
+  }
+  spr_.setColorDepth(16);
+  if (spr_.createSprite(cfg::SCREEN_W, cfg::SCREEN_H) == nullptr) {
+    Serial.println("UI: nie udalo sie odtworzyc bufora!");
+    return false;
+  }
+  spr_.setSwapBytes(false);
+  spr_.fillSprite(col::BG);
+  freed_ = false;
+  Serial.printf("UI: odtworzono bufor, wolny heap=%u B\n",
+                static_cast<unsigned>(ESP.getFreeHeap()));
+  return true;
+}
+
+// Rysowane wprost na TFT — sprite'a już nie ma. Polskie znaki idą z PlFont,
+// bo wbudowany font GLCD nie ma ą/ę/ł/ó.
 void WeatherUi::drawOtaDirect(int progress, const char* msg) {
   if (!ready_) return;
 
   static int lastP = -1;
-  static bool frame = false;
+  static uint32_t frameAt = 0;
+  const uint32_t now = millis();
 
-  if (!frame) {
-    frame = true;
+  if (frameAt == 0 || now - frameAt > 30000) {
+    frameAt = now;
+    lastP = -1;
     tft_.fillScreen(col::BG);
     const int cx = W / 2;
-    tft_.fillRect(cx - 5, 52, 10, 26, col::ACCENT);
-    tft_.fillTriangle(cx, 92, cx - 16, 74, cx + 16, 74, col::ACCENT);
-    tft_.fillRoundRect(cx - 22, 100, 44, 5, 2, col::ACCENT);
+    tft_.fillRect(cx - 5, 46, 10, 26, col::ACCENT);
+    tft_.fillTriangle(cx, 86, cx - 16, 68, cx + 16, 68, col::ACCENT);
+    tft_.fillRoundRect(cx - 22, 94, 44, 5, 2, col::ACCENT);
 
-    tft_.setTextFont(1);
-    tft_.setTextSize(2);
-    tft_.setTextDatum(TC_DATUM);
-    tft_.setTextColor(col::TEXT, col::BG);
-    tft_.drawString("AKTUALIZACJA", cx, 124);
-
-    tft_.setTextSize(1);
-    tft_.setTextColor(col::TEXT_MUTE, col::BG);
-    tft_.drawString("Nie odlaczaj zasilania", cx, 224);
-
-    tft_.drawRoundRect(40, 176, W - 80, 12, 6, col::PV_TRACK);
+    plCenter(tft_, PLF18, "Aktualizacja", cx, 130, col::TEXT);
+    plCenter(tft_, PLF14, "Nie odłączaj zasilania", cx, 228, col::TEXT_MUTE);
+    tft_.drawRoundRect(40, 172, W - 80, 12, 6, col::PV_TRACK);
   }
 
   const int p = progress < 0 ? 0 : (progress > 100 ? 100 : progress);
   if (p != lastP) {
     lastP = p;
-    const int bx = 42, bw = W - 84;
-    tft_.fillRoundRect(bx, 178, (bw * p) / 100, 8, 4, col::ACCENT);
+    tft_.fillRoundRect(42, 174, ((W - 84) * p) / 100, 8, 4, col::ACCENT);
 
-    tft_.setTextFont(1);
-    tft_.setTextSize(2);
-    tft_.setTextDatum(TC_DATUM);
-    tft_.setTextColor(col::ACCENT, col::BG);
-    char b[16];
-    snprintf(b, sizeof(b), "%3d%%", p);
-    tft_.drawString(b, W / 2, 196);
+    tft_.fillRect(60, 190, W - 120, 18, col::BG);
+    char b[10];
+    snprintf(b, sizeof(b), "%d%%", p);
+    plCenter(tft_, PLF18, b, W / 2, 205, col::ACCENT);
 
-    tft_.setTextSize(1);
-    tft_.setTextColor(col::TEXT_DIM, col::BG);
-    tft_.drawString(msg && msg[0] ? msg : "Pobieram...", W / 2, 152);
+    tft_.fillRect(20, 142, W - 40, 16, col::BG);
+    plCenter(tft_, PLF14, msg && msg[0] ? msg : "Pobieram...", W / 2, 155, col::TEXT_DIM);
   }
 }

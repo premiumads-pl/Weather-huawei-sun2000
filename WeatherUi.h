@@ -39,6 +39,7 @@ class WeatherUi {
   // Na czas OTA oddajemy 150 kB bufora — inaczej TLS + pobieranie 1,3 MB
   // nie mają z czego działać (zostawało ~17 kB heapu).
   void releaseBuffer();
+  bool restoreBuffer();  // odtwarza bufor po zakończonym OTA
   void drawOtaDirect(int progress, const char* msg);
 
   // Główna pętla rysowania. Zwraca true, jeśli coś się animuje (potrzebne szybkie klatki).

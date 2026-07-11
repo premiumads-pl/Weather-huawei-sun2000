@@ -50,7 +50,7 @@ inline int glyphIndex(const FontSet& font, int cp) {
   return -1;
 }
 
-inline void drawGlyph(TFT_eSprite& s, const FontSet& font, int x, int baseline, int idx,
+inline void drawGlyph(TFT_eSPI& s, const FontSet& font, int x, int baseline, int idx,
                       uint16_t color, uint16_t bg) {
   if (idx < 0) {
     return;
@@ -78,7 +78,7 @@ inline void drawGlyph(TFT_eSprite& s, const FontSet& font, int x, int baseline, 
 }
 
 // y = linia bazowa (dolna krawedz liter, standard GFX).
-inline int drawString(TFT_eSprite& s, const FontSet& font, const char* text, int x, int y,
+inline int drawString(TFT_eSPI& s, const FontSet& font, const char* text, int x, int y,
                       uint16_t color, uint16_t bg) {
   const int baseline = y;
   int cx = x;
@@ -113,12 +113,12 @@ inline int stringWidth(const FontSet& font, const char* text) {
   return w;
 }
 
-inline int drawString(TFT_eSprite& s, const char* text, int x, int y, uint16_t color,
+inline int drawString(TFT_eSPI& s, const char* text, int x, int y, uint16_t color,
                       uint16_t bg) {
   return drawString(s, font14(), text, x, y, color, bg);
 }
 
-inline int drawStringLg(TFT_eSprite& s, const char* text, int x, int y, uint16_t color,
+inline int drawStringLg(TFT_eSPI& s, const char* text, int x, int y, uint16_t color,
                         uint16_t bg) {
   return drawString(s, font18(), text, x, y, color, bg);
 }
@@ -127,21 +127,21 @@ inline int stringWidth(const char* text) {
   return stringWidth(font14(), text);
 }
 
-inline int drawStringRight(TFT_eSprite& s, const FontSet& font, const char* text, int right, int y,
+inline int drawStringRight(TFT_eSPI& s, const FontSet& font, const char* text, int right, int y,
                            uint16_t color, uint16_t bg) {
   const int w = stringWidth(font, text);
   return drawString(s, font, text, right - w, y, color, bg);
 }
 
 // Etykiety wykresu — font GLCD (rowna linia bazowa, ASCII).
-inline void drawChartLabel(TFT_eSprite& s, const char* text, int x, int y, uint16_t color,
+inline void drawChartLabel(TFT_eSPI& s, const char* text, int x, int y, uint16_t color,
                            uint16_t bg) {
   s.setTextSize(1);
   s.setTextColor(color, bg);
   s.drawString(text, x, y);
 }
 
-inline int chartLabelWidth(TFT_eSprite& s, const char* text) {
+inline int chartLabelWidth(TFT_eSPI& s, const char* text) {
   s.setTextSize(1);
   return s.textWidth(text);
 }
