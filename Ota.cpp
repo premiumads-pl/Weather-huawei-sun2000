@@ -47,18 +47,24 @@ void otaUiBufferFreed() {
 bool Ota::fetchRemoteVersion(int& version) {
   WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(12);
+  client.setTimeout(15);
+  client.setHandshakeTimeout(15);
 
   HTTPClient http;
-  http.setTimeout(12000);
+  http.setTimeout(15000);
   http.setReuse(false);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setUserAgent("pogoda-esp32");
 
   if (!http.begin(client, cfg::OTA_VERSION_URL)) {
+    Serial.println("OTA: http.begin() nie powiodlo sie");
     return false;
   }
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
+    Serial.printf("OTA: sprawdzenie wersji -> HTTP %d (%s), heap=%u B\n", code,
+                  HTTPClient::errorToString(code).c_str(),
+                  static_cast<unsigned>(ESP.getFreeHeap()));
     http.end();
     return false;
   }
@@ -66,11 +72,17 @@ bool Ota::fetchRemoteVersion(int& version) {
   http.end();
 
   JsonDocument doc;
-  if (deserializeJson(doc, body)) {
+  const DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    Serial.printf("OTA: zly JSON wersji (%s)\n", err.c_str());
     return false;
   }
   version = doc["version"] | 0;
-  return version > 0;
+  if (version <= 0) {
+    Serial.println("OTA: brak pola 'version'");
+    return false;
+  }
+  return true;
 }
 
 bool Ota::downloadAndFlash() {
