@@ -6,12 +6,16 @@
 #include <Update.h>
 #include <WiFiClientSecure.h>
 #include <cstring>
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
 
 #include "Config.h"
 #include "Version.h"
 
 namespace {
 OtaStatus gStatus;
+volatile bool gRequested = false;
+volatile bool gBusy = false;
 
 void setMsg(const char* m) {
   strncpy(gStatus.message, m, sizeof(gStatus.message) - 1);
@@ -21,6 +25,18 @@ void setMsg(const char* m) {
 
 OtaStatus& otaStatus() {
   return gStatus;
+}
+
+void requestOtaCheck() {
+  gRequested = true;
+}
+
+bool takeOtaRequest() {
+  if (!gRequested) {
+    return false;
+  }
+  gRequested = false;
+  return true;
 }
 
 bool Ota::fetchRemoteVersion(int& version) {
@@ -81,8 +97,29 @@ bool Ota::downloadAndFlash() {
     http.end();
     return false;
   }
+
+  // Diagnostyka + sprzątanie po ewentualnej przerwanej próbie.
+  const esp_partition_t* run = esp_ota_get_running_partition();
+  const esp_partition_t* nxt = esp_ota_get_next_update_partition(nullptr);
+  Serial.printf("OTA: plik=%d B, wolny heap=%u B\n", total,
+                static_cast<unsigned>(ESP.getFreeHeap()));
+  if (run) Serial.printf("OTA: dziala z '%s' (%u B)\n", run->label,
+                         static_cast<unsigned>(run->size));
+  if (nxt) Serial.printf("OTA: cel '%s' (%u B)\n", nxt->label,
+                         static_cast<unsigned>(nxt->size));
+
+  if (Update.isRunning()) {
+    Serial.println("OTA: poprzednia proba wisiala — czyszcze");
+    Update.abort();
+  }
+
   if (!Update.begin(total)) {
-    setMsg("Za mało miejsca na OTA");
+    char b[48];
+    snprintf(b, sizeof(b), "%s", Update.errorString());
+    setMsg(b);
+    Serial.printf("OTA: Update.begin() blad %d: %s\n", Update.getError(),
+                  Update.errorString());
+    Update.abort();
     http.end();
     return false;
   }
@@ -141,6 +178,16 @@ bool Ota::downloadAndFlash() {
 }
 
 bool Ota::checkAndUpdate() {
+  if (gBusy) {
+    Serial.println("OTA: sprawdzanie juz trwa — pomijam");
+    return false;
+  }
+  gBusy = true;
+
+  struct Guard {
+    ~Guard() { gBusy = false; }
+  } guard;
+
   gStatus.state = OtaState::CHECKING;
   setMsg("Sprawdzam aktualizacje");
 

@@ -335,11 +335,11 @@ void apiUpdate() {
     server.send(200, "application/json", "{\"msg\":\"Brak internetu\"}");
     return;
   }
+  // Nie robimy OTA w zadaniu web — tylko zgłaszamy prośbę zadaniu sieciowemu.
+  requestOtaCheck();
   server.send(200, "application/json",
-              "{\"msg\":\"Sprawdzanie uruchomione — jeśli jest nowsza wersja, "
+              "{\"msg\":\"Sprawdzanie zlecone — jeśli jest nowsza wersja, "
               "urządzenie zaktualizuje się i zrestartuje.\"}");
-  Ota ota;
-  ota.checkAndUpdate();
 }
 
 void apiForget() {

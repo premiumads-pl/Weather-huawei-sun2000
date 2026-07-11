@@ -221,8 +221,10 @@ static void netTask(void*) {
       }
     }
 
-    // ---- OTA ----
-    if (settings().otaEnabled && static_cast<int32_t>(millis() - nextOtaAt) >= 0) {
+    // ---- OTA (jedyne miejsce, gdzie dotykamy obiektu Update) ----
+    const bool otaAsked = takeOtaRequest();
+    if (settings().otaEnabled &&
+        (otaAsked || static_cast<int32_t>(millis() - nextOtaAt) >= 0)) {
       ota.checkAndUpdate();  // przy sukcesie restartuje urządzenie
       nextOtaAt = millis() + cfg::OTA_CHECK_MS;
     }

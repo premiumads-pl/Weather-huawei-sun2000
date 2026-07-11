@@ -35,3 +35,8 @@ class Ota {
 
 // Status widoczny dla UI (aktualizowany z zadania sieciowego).
 OtaStatus& otaStatus();
+
+// Panel WWW tylko ZGŁASZA chęć sprawdzenia — samo OTA robi zadanie sieciowe.
+// Dzięki temu obiekt Update nigdy nie jest używany z dwóch zadań naraz.
+void requestOtaCheck();
+bool takeOtaRequest();
