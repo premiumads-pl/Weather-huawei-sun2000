@@ -1219,3 +1219,61 @@ void WeatherUi::drawOta(int progress, const char* msg) {
   blTarget_ = cfg::BL_DAY;
   tickBacklight();
 }
+
+// ------------------------------------------- EKRAN: POŁĄCZONO / ADRES IP -----
+
+void WeatherUi::drawNetInfo(const char* ssid, const char* ip, int rssi, int secsLeft,
+                            int total) {
+  if (!ready_) return;
+  spr_.fillSprite(col::BG);
+
+  // belka
+  spr_.fillRect(0, 0, W, cfg::HEADER_H, col::HEADER);
+  spr_.drawFastHLine(0, cfg::HEADER_H - 1, W, col::DIVIDER);
+  spr_.fillCircle(12, 14, 4, col::OK);
+  plStr(spr_, PLF14, "POŁĄCZONO Z SIECIĄ", 24, 19, col::OK);
+  char fw[10];
+  snprintf(fw, sizeof(fw), "v%d", FW_VERSION);
+  plRight(spr_, PLF14, fw, W - 10, 19, col::TEXT_MUTE);
+
+  // ikona WiFi — łuki o sile zależnej od RSSI
+  const int wx = 42, wy = 96;
+  const int bars = rssi >= -55 ? 3 : (rssi >= -70 ? 2 : (rssi >= -82 ? 1 : 0));
+  for (int i = 0; i < 3; ++i) {
+    const int r = 14 + i * 10;
+    const uint16_t c = (i < bars) ? col::ACCENT : col::PV_TRACK;
+    spr_.drawSmoothArc(wx, wy, r, r - 4, 225, 315, c, col::BG, true);
+  }
+  spr_.fillCircle(wx, wy, 4, bars > 0 ? col::ACCENT : col::PV_TRACK);
+
+  // sieć
+  gl(spr_, "SIEC", 92, 50, col::TEXT_MUTE);
+  plStr(spr_, PLF18, ssid, 92, 76, col::TEXT);
+  char sig[20];
+  snprintf(sig, sizeof(sig), "%d dBm", rssi);
+  gl(spr_, sig, 92, 84, col::TEXT_DIM);
+
+  // adres IP — duży, żeby dało się przepisać
+  spr_.fillRoundRect(14, 112, W - 28, 62, 10, col::BG_CARD);
+  spr_.fillRoundRect(14, 112, 4, 62, 2, col::ACCENT);
+  gl(spr_, "ADRES IP URZADZENIA", 30, 120, col::TEXT_MUTE);
+  bigStr(spr_, &FreeSansBold18pt7b, ip, 30, 162, col::ACCENT);
+
+  plCenter(spr_, PLF14, "Panel konfiguracji dostępny pod tym adresem", W / 2, 196,
+           col::TEXT_DIM);
+
+  // odliczanie
+  const int bx = 40, bw = W - 80, by = 212;
+  spr_.fillRoundRect(bx, by, bw, 6, 3, col::PV_TRACK);
+  const float f = (total > 0) ? clampf(static_cast<float>(secsLeft) / total, 0.f, 1.f) : 0.f;
+  if (f > 0.f) {
+    spr_.fillRoundRect(bx, by, static_cast<int>(bw * f), 6, 3, col::ACCENT);
+  }
+  char cd[24];
+  snprintf(cd, sizeof(cd), "start za %d s", secsLeft);
+  plCenter(spr_, PLF14, cd, W / 2, 236, col::TEXT_MUTE);
+
+  spr_.pushSprite(0, 0);
+  blTarget_ = cfg::BL_DAY;
+  tickBacklight();
+}

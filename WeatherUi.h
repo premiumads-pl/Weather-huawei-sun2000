@@ -34,6 +34,7 @@ class WeatherUi {
   void drawColorTest();
   void drawSetup(const char* apSsid, const char* apPass, const char* apIp);
   void drawOta(int progress, const char* msg);
+  void drawNetInfo(const char* ssid, const char* ip, int rssi, int secsLeft, int total);
 
   // Główna pętla rysowania. Zwraca true, jeśli coś się animuje (potrzebne szybkie klatki).
   bool render(const WeatherModel& w, const PvModel& pv, const PvHistory& hist,

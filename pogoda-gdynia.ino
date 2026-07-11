@@ -51,7 +51,14 @@ volatile bool gWifiOk = false;
 volatile bool gBooting = true;
 volatile bool gFlightsNeeded = false;
 volatile int gWifiAttempt = 0;
-char gBootMsg[48] = "Start...";
+char gBootMsg[48] = "Łączenie z WiFi...";
+
+// Ekran "połączono" z adresem IP, pokazywany raz po starcie.
+constexpr uint32_t NET_INFO_MS = 10000;
+volatile uint32_t gNetInfoUntil = 0;
+bool gNetInfoDone = false;
+char gIpStr[20] = "0.0.0.0";
+volatile int gRssi = 0;
 
 WeatherModel uiWeather{};
 PvModel uiPv{};
@@ -89,7 +96,15 @@ static bool connectWifi() {
     return false;
   }
 
-  Serial.printf("WiFi OK, IP: %s\n", WiFi.localIP().toString().c_str());
+  strncpy(gIpStr, WiFi.localIP().toString().c_str(), sizeof(gIpStr) - 1);
+  gRssi = WiFi.RSSI();
+  Serial.printf("WiFi OK, IP: %s (%d dBm)\n", gIpStr, gRssi);
+
+  if (!gNetInfoDone) {
+    gNetInfoDone = true;
+    gNetInfoUntil = millis() + NET_INFO_MS;
+  }
+
   setBootMsg("Synchronizacja czasu...");
   configTime(0, 0, "pool.ntp.org", "time.google.com");
   setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
@@ -385,6 +400,17 @@ void loop() {
     ui.drawOta(os.progress, os.message);
     delay(60);
     return;
+  }
+
+  // --- ekran "połączono" z adresem IP (10 s po starcie) ---
+  if (gNetInfoUntil != 0) {
+    if (static_cast<int32_t>(now - gNetInfoUntil) < 0) {
+      const int left = static_cast<int>((gNetInfoUntil - now + 999) / 1000);
+      ui.drawNetInfo(settings().ssid, gIpStr, gRssi, left, NET_INFO_MS / 1000);
+      delay(60);
+      return;
+    }
+    gNetInfoUntil = 0;
   }
 
   if (gBooting) {
