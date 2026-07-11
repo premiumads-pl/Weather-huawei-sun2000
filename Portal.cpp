@@ -10,6 +10,7 @@
 #include <cstring>
 
 #include "Config.h"
+#include "Log.h"
 #include "Ota.h"
 #include "Settings.h"
 #include "Version.h"
@@ -91,9 +92,24 @@ li:hover{border-color:#00dcf0;background:#0d1c30}
 <div class=hint>Urządzenie samo sprawdza GitHub co 15 minut.</div>
 <button class=s onclick=upd()>Sprawdź teraz</button>
 <div class=hint id=umsg></div>
+</div>
+
+<div class=c>
+<h2>Diagnostyka</h2>
+<div class=row>
+<button class=s style=margin:0 onclick=dg()>Stan urządzenia</button>
+<button class=s style=margin:0 onclick=lg()>Logi</button>
+</div>
+<pre id=dbg style="white-space:pre-wrap;font:12px ui-monospace,monospace;color:#9fb6cf;
+ background:#081221;border:1px solid #24405f;border-radius:8px;padding:10px;margin-top:10px;
+ max-height:300px;overflow:auto"></pre>
+<button class=s onclick=rb()>Restartuj urządzenie</button>
 <button class=s onclick=fgt()>Zapomnij sieć Wi-Fi</button>
 </div>
 </div><script>
+async function dg(){$('dbg').textContent=await(await fetch('/api/diag')).text();}
+async function lg(){$('dbg').textContent=await(await fetch('/api/log')).text();}
+async function rb(){if(confirm('Restartować?')){await fetch('/api/reboot',{method:'POST'});}}
 const $=i=>document.getElementById(i);
 async function load(){
  const r=await(await fetch('/api/state')).json();
@@ -342,6 +358,71 @@ void apiUpdate() {
               "urządzenie zaktualizuje się i zrestartuje.\"}");
 }
 
+// --- diagnostyka: urządzenie wisi na ścianie bez USB, Serial jest ślepy ---
+
+void apiLog() {
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "text/plain; charset=utf-8", logDump());
+}
+
+void apiDiag() {
+  const Diag& d = diag();
+  const uint32_t now = millis();
+  auto ago = [&](uint32_t at) -> int {
+    return at == 0 ? -1 : static_cast<int>((now - at) / 1000);
+  };
+
+  JsonDocument j;
+  j["fw"] = FW_VERSION;
+  j["uptime_s"] = now / 1000;
+  j["heap_free"] = ESP.getFreeHeap();
+  j["heap_min"] = d.minHeap == 0xFFFFFFFF ? ESP.getFreeHeap() : d.minHeap;
+  j["heap_min_ever"] = ESP.getMinFreeHeap();
+  j["psram"] = ESP.getPsramSize();
+  j["cpu_temp"] = temperatureRead();
+
+  JsonObject w = j["wifi"].to<JsonObject>();
+  w["ssid"] = WiFi.SSID();
+  w["ip"] = WiFi.localIP().toString();
+  w["rssi"] = WiFi.RSSI();
+  w["connects"] = d.wifiConnects;
+
+  JsonObject we = j["weather"].to<JsonObject>();
+  we["ok_ago_s"] = ago(d.weatherOkAt);
+  we["err"] = d.weatherErr;
+
+  JsonObject pv = j["pv"].to<JsonObject>();
+  pv["ok_ago_s"] = ago(d.pvOkAt);
+  pv["err"] = d.pvErr;
+
+  JsonObject r = j["radar"].to<JsonObject>();
+  r["ok_ago_s"] = ago(d.radarOkAt);
+  r["level"] = d.radarLevel;
+  r["frame_age_s"] = d.radarAgeSec;
+  r["skips_low_ram"] = d.radarSkips;
+  r["err"] = d.radarErr;
+
+  JsonObject f = j["flights"].to<JsonObject>();
+  f["ok_ago_s"] = ago(d.flightOkAt);
+  f["total"] = d.flightsTotal;
+  f["err"] = d.flightErr;
+
+  JsonObject o = j["ota"].to<JsonObject>();
+  o["remote"] = d.otaRemote;
+  o["msg"] = d.otaMsg;
+
+  String out;
+  serializeJsonPretty(j, out);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", out);
+}
+
+void apiReboot() {
+  server.send(200, "application/json", "{\"ok\":true,\"msg\":\"Restartuję\"}");
+  delay(300);
+  ESP.restart();
+}
+
 void apiForget() {
   settings().clearWifi();
   server.send(200, "application/json", "{\"ok\":true}");
@@ -359,6 +440,9 @@ void routes() {
   server.on("/api/inv", HTTP_POST, apiInv);
   server.on("/api/update", HTTP_POST, apiUpdate);
   server.on("/api/forget", HTTP_POST, apiForget);
+  server.on("/api/log", apiLog);
+  server.on("/api/diag", apiDiag);
+  server.on("/api/reboot", HTTP_POST, apiReboot);
   server.onNotFound(sendPage);  // captive portal
   server.begin();
   started = true;

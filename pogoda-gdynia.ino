@@ -26,6 +26,7 @@
 #include "Config.h"
 #include "FlightClient.h"
 #include "FlightData.h"
+#include "Log.h"
 #include "Ota.h"
 #include "Portal.h"
 #include "PvClient.h"
@@ -100,7 +101,9 @@ static bool connectWifi() {
 
   strncpy(gIpStr, WiFi.localIP().toString().c_str(), sizeof(gIpStr) - 1);
   gRssi = WiFi.RSSI();
-  Serial.printf("WiFi OK, IP: %s (%d dBm)\n", gIpStr, gRssi);
+  ++diag().wifiConnects;
+  LOG("WiFi OK, IP: %s (%d dBm), heap %lu\n", gIpStr, gRssi,
+      (unsigned long)ESP.getFreeHeap());
 
   if (!gNetInfoDone) {
     gNetInfoDone = true;
@@ -162,10 +165,13 @@ static void netTask(void*) {
         xSemaphoreGive(gLock);
         nextWeatherAt = millis() + cfg::WEATHER_REFRESH_MS;
         firstWeather = true;
-        Serial.printf("Pogoda OK: %.1f C, kod %d\n", tmp.current.tempC,
-                      tmp.current.weatherCode);
+        diag().weatherOkAt = millis();
+        diag().weatherErr[0] = '\0';
+        LOG("Pogoda OK: %.1f C, kod %d, heap %lu\n", tmp.current.tempC,
+            tmp.current.weatherCode, (unsigned long)ESP.getFreeHeap());
       } else {
-        Serial.printf("Pogoda BLAD: %s\n", tmp.errorMsg);
+        strncpy(diag().weatherErr, tmp.errorMsg, sizeof(diag().weatherErr) - 1);
+        LOG("Pogoda BLAD: %s (heap %lu)\n", tmp.errorMsg, (unsigned long)ESP.getFreeHeap());
         nextWeatherAt = millis() + 30000;
       }
     }
@@ -192,13 +198,16 @@ static void netTask(void*) {
       xSemaphoreGive(gLock);
       nextPvAt = millis() + cfg::PV_REFRESH_MS;
       if (ok) {
-        Serial.printf("PV: AC=%ldW DC=%ldW siec=%ldW dzis=%.2fkWh st=0x%04X\n",
+        diag().pvOkAt = millis();
+        diag().pvErr[0] = '\0';
+        LOG("PV: AC=%ldW DC=%ldW siec=%ldW dzis=%.2fkWh st=0x%04X\n",
                       static_cast<long>(tmp.data.powerAcW),
                       static_cast<long>(tmp.data.powerDcW),
                       static_cast<long>(tmp.data.gridPowerW), tmp.data.energyTodayKwh,
-                      tmp.data.statusCode);
+            tmp.data.statusCode);
       } else {
-        Serial.printf("PV BLAD: %s\n", tmp.errorMsg);
+        strncpy(diag().pvErr, tmp.errorMsg, sizeof(diag().pvErr) - 1);
+        LOG("PV BLAD: %s\n", tmp.errorMsg);
       }
     }
 
@@ -211,9 +220,14 @@ static void netTask(void*) {
         gWeather.radarAgeSec = rs.ageSec;
         gWeather.radarValid = true;
         xSemaphoreGive(gLock);
+        diag().radarOkAt = millis();
+        diag().radarLevel = rs.level;
+        diag().radarAgeSec = rs.ageSec;
+        diag().radarErr[0] = '\0';
         nextRadarAt = millis() + cfg::RADAR_REFRESH_MS;
       } else {
-        Serial.printf("Radar BLAD: %s\n", rs.errorMsg);
+        strncpy(diag().radarErr, rs.errorMsg, sizeof(diag().radarErr) - 1);
+        LOG("Radar BLAD: %s\n", rs.errorMsg);
         nextRadarAt = millis() + 60000;
       }
     }
@@ -237,10 +251,14 @@ static void netTask(void*) {
         gFlights = tmp;
         xSemaphoreGive(gLock);
         nextFlightAt = millis() + cfg::FLIGHT_REFRESH_MS;
-        Serial.printf("Loty: %d w zasiegu, na liscie %d\n", tmp.total, tmp.count);
+        diag().flightOkAt = millis();
+        diag().flightsTotal = tmp.total;
+        diag().flightErr[0] = '\0';
+        LOG("Loty: %d w zasiegu, na liscie %d\n", tmp.total, tmp.count);
       } else {
         nextFlightAt = millis() + 20000;
-        Serial.printf("Loty BLAD: %s\n", tmp.errorMsg);
+        strncpy(diag().flightErr, tmp.errorMsg, sizeof(diag().flightErr) - 1);
+        LOG("Loty BLAD: %s\n", tmp.errorMsg);
       }
     }
 
@@ -367,7 +385,7 @@ static Alert buildAlert(const WeatherModel& w, const PvModel& pv) {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.printf("\nPogoda + PV — firmware v%d\n", FW_VERSION);
+  LOG("=== Pogoda + PV — firmware v%d ===\n", FW_VERSION);
 
   settings().load();
   gLock = xSemaphoreCreateMutex();

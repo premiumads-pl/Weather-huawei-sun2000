@@ -7,7 +7,9 @@
 #include <WiFiClientSecure.h>
 #include <cmath>
 #include <cstring>
+#include <new>
 
+#include "Log.h"
 #include "Settings.h"
 
 namespace {
@@ -17,7 +19,12 @@ constexpr int kTile = 256;
 constexpr int kRadiusPx = 2;      // próbkujemy 5x5 px (~3,5 km) i bierzemy maksimum
 constexpr size_t kMaxPng = 40000;
 
-PNG png;
+// Obiekt PNG waży ~47 kB (PNGdec trzyma 32 kB słownika inflate). Jako zmienna
+// globalna zjadał tyle RAM-u NA STAŁE i pogoda nie miała już z czego sparsować
+// JSON-a. Tworzymy go więc tylko na czas dekodowania i od razu zwalniamy.
+constexpr uint32_t kMinHeapForRadar = 110000;
+
+PNG* png = nullptr;
 uint8_t* gPng = nullptr;
 size_t gPngLen = 0;
 
@@ -51,8 +58,8 @@ int pngDraw(PNGDRAW* draw) {
   }
   static uint16_t line[kTile];
   static uint8_t alpha[kTile];
-  png.getLineAsRGB565(draw, line, PNG_RGB565_BIG_ENDIAN, 0xffffffff);
-  png.getAlphaMask(draw, alpha, 1);
+  png->getLineAsRGB565(draw, line, PNG_RGB565_BIG_ENDIAN, 0xffffffff);
+  png->getAlphaMask(draw, alpha, 1);
 
   for (int dx = -kRadiusPx; dx <= kRadiusPx; ++dx) {
     const int x = gWantX + dx;
@@ -133,6 +140,16 @@ bool RadarClient::fetch(RadarSnapshot& out) {
   out.valid = false;
   out.errorMsg[0] = '\0';
 
+  // Radar jest najbardziej pamięciożerny z całego firmware'u. Jeśli sterty jest
+  // mało, odpuszczamy ten cykl — prognoza i PV są ważniejsze.
+  const uint32_t heap = ESP.getFreeHeap();
+  if (heap < kMinHeapForRadar) {
+    ++diag().radarSkips;
+    snprintf(out.errorMsg, sizeof(out.errorMsg), "Za mało RAM (%lu B)",
+             static_cast<unsigned long>(heap));
+    return false;
+  }
+
   // --- 1. najnowsza klatka ---
   String body;
   if (!httpGet("https://api.rainviewer.com/public/weather-maps.json", nullptr, nullptr,
@@ -188,15 +205,27 @@ bool RadarClient::fetch(RadarSnapshot& out) {
     return false;
   }
 
-  const int rc = png.openRAM(gPng, gPngLen, pngDraw);
+  png = new (std::nothrow) PNG();
+  if (png == nullptr) {
+    free(gPng);
+    gPng = nullptr;
+    strncpy(out.errorMsg, "Radar: brak RAM na dekoder", sizeof(out.errorMsg) - 1);
+    return false;
+  }
+
+  const int rc = png->openRAM(gPng, gPngLen, pngDraw);
   if (rc != PNG_SUCCESS) {
+    delete png;
+    png = nullptr;
     free(gPng);
     gPng = nullptr;
     strncpy(out.errorMsg, "Radar: zły PNG", sizeof(out.errorMsg) - 1);
     return false;
   }
-  png.decode(nullptr, 0);
-  png.close();
+  png->decode(nullptr, 0);
+  png->close();
+  delete png;
+  png = nullptr;
   free(gPng);
   gPng = nullptr;
 
@@ -207,8 +236,8 @@ bool RadarClient::fetch(RadarSnapshot& out) {
                    : 0;
   out.valid = true;
 
-  Serial.printf("Radar: poziom %d (%s), klatka sprzed %lu s, kafelek %d/%d px %d,%d\n",
-                out.level, radarLabel(out.level), static_cast<unsigned long>(out.ageSec), tx,
-                ty, gWantX, gWantY);
+  LOG("Radar: poziom %d (%s), klatka sprzed %lu s, heap %lu->%lu\n", out.level,
+      radarLabel(out.level), static_cast<unsigned long>(out.ageSec),
+      static_cast<unsigned long>(heap), static_cast<unsigned long>(ESP.getFreeHeap()));
   return true;
 }

@@ -1,0 +1,34 @@
+#pragma once
+
+#include <Arduino.h>
+
+// Bufor kołowy logów w RAM. Urządzenie wisi na ścianie bez USB, więc Serial
+// jest ślepy — logi czytamy przez GET /api/log.
+void logPrintf(const char* fmt, ...);
+String logDump();
+
+#define LOG(...) logPrintf(__VA_ARGS__)
+
+// --- migawka stanu dla GET /api/diag ---
+struct Diag {
+  uint32_t weatherOkAt = 0;
+  uint32_t pvOkAt = 0;
+  uint32_t radarOkAt = 0;
+  uint32_t flightOkAt = 0;
+
+  char weatherErr[48] = {};
+  char pvErr[48] = {};
+  char radarErr[48] = {};
+  char flightErr[48] = {};
+  char otaMsg[48] = {};
+
+  uint8_t radarLevel = 0;
+  uint32_t radarAgeSec = 0;
+  int flightsTotal = 0;
+  int otaRemote = 0;
+  uint32_t wifiConnects = 0;
+  uint32_t minHeap = 0xFFFFFFFF;
+  uint32_t radarSkips = 0;   // ile razy radar odpuścił z braku pamięci
+};
+
+Diag& diag();
