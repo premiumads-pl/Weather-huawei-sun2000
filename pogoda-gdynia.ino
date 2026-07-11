@@ -30,6 +30,7 @@
 #include "Portal.h"
 #include "PvClient.h"
 #include "PvData.h"
+#include "RadarClient.h"
 #include "Settings.h"
 #include "Version.h"
 #include "WeatherClient.h"
@@ -40,6 +41,7 @@ WeatherUi ui;
 WeatherClient weatherClient;
 PvClient pvClient;
 FlightClient flightClient;
+RadarClient radarClient;
 Ota ota;
 
 SemaphoreHandle_t gLock = nullptr;
@@ -124,6 +126,7 @@ static void netTask(void*) {
   uint32_t nextFlightAt = 0;
   uint32_t nextOtaAt = 45000;   // pierwsze sprawdzenie po 45 s od startu
   uint32_t nextStoreAt = 0;
+  uint32_t nextRadarAt = 0;
   bool firstWeather = false;
 
   for (;;) {
@@ -151,6 +154,10 @@ static void netTask(void*) {
       WeatherModel tmp{};
       if (weatherClient.fetch(tmp)) {
         xSemaphoreTake(gLock, portMAX_DELAY);
+        // radar ma własny cykl — nie kasuj go świeżą prognozą
+        tmp.radarLevel = gWeather.radarLevel;
+        tmp.radarAgeSec = gWeather.radarAgeSec;
+        tmp.radarValid = gWeather.radarValid;
         gWeather = tmp;
         xSemaphoreGive(gLock);
         nextWeatherAt = millis() + cfg::WEATHER_REFRESH_MS;
@@ -192,6 +199,22 @@ static void netTask(void*) {
                       tmp.data.statusCode);
       } else {
         Serial.printf("PV BLAD: %s\n", tmp.errorMsg);
+      }
+    }
+
+    // ---- radar opadowy (realny pomiar; model bywa ślepy na lokalne ulewy) ----
+    if (static_cast<int32_t>(millis() - nextRadarAt) >= 0) {
+      RadarSnapshot rs{};
+      if (radarClient.fetch(rs)) {
+        xSemaphoreTake(gLock, portMAX_DELAY);
+        gWeather.radarLevel = rs.level;
+        gWeather.radarAgeSec = rs.ageSec;
+        gWeather.radarValid = true;
+        xSemaphoreGive(gLock);
+        nextRadarAt = millis() + cfg::RADAR_REFRESH_MS;
+      } else {
+        Serial.printf("Radar BLAD: %s\n", rs.errorMsg);
+        nextRadarAt = millis() + 60000;
       }
     }
 

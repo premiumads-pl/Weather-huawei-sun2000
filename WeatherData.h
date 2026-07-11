@@ -52,4 +52,9 @@ struct WeatherModel {
   char updatedAt[20] = {};
   bool ready = false;
   char errorMsg[48] = {};
+
+  // Radar opadowy (realny pomiar, nie model) — patrz RadarClient.h
+  uint8_t radarLevel = 0;
+  uint32_t radarAgeSec = 0;
+  bool radarValid = false;
 };

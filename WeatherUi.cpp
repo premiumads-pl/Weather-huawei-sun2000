@@ -9,6 +9,7 @@
 #include "Config.h"
 #include "MapData.h"
 #include "PlText.h"
+#include "RadarClient.h"
 #include "Settings.h"
 #include "Version.h"
 #include "WeatherIcons.h"
@@ -476,9 +477,13 @@ void WeatherUi::drawViewNow(int ox, float t, const WeatherModel& w) {
     snprintf(b, sizeof(b), "UV %.0f", uv);
   }
   plRight(spr_, PLF14, b, ox + W - 10, by, uvc);
-  // Opad: najpierw natężenie BIEŻĄCE (mm/h). Gdy nie pada — suma na 12 h.
-  // (Dawniej była tu suma dobowa, co tuż po północy pokazywało ~0 mimo ulewy.)
-  if (c.precipMm > 0.05f) {
+  // Opad — priorytet ma RADAR (realny pomiar). Model bywa ślepy na lokalne ulewy.
+  if (w.radarValid && w.radarLevel > 0) {
+    const uint16_t rc = w.radarLevel >= 4 ? col::ERR
+                        : (w.radarLevel == 3 ? col::WARN : col::RAIN);
+    snprintf(b, sizeof(b), "RADAR: %s", radarLabel(w.radarLevel));
+    plCenter(spr_, PLF14, b, ox + 218, by, rc);
+  } else if (c.precipMm > 0.05f) {
     snprintf(b, sizeof(b), "deszcz %.1f mm/h", c.precipMm);
     plCenter(spr_, PLF14, b, ox + 218, by, col::RAIN);
   } else {

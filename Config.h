@@ -58,6 +58,7 @@ constexpr uint32_t WEATHER_REFRESH_MS = 15UL * 60UL * 1000UL;
 constexpr uint32_t PV_REFRESH_MS = 30UL * 1000UL;
 constexpr uint32_t PV_STORE_MS = 5UL * 60UL * 1000UL;  // zapis profilu do NVS
 constexpr uint32_t WIFI_RETRY_MS = 8000;
+constexpr uint32_t RADAR_REFRESH_MS = 5UL * 60UL * 1000UL;  // klatki radaru co ~10 min
 constexpr uint32_t FLIGHT_REFRESH_MS = 15000;
 constexpr uint32_t FLIGHT_PREFETCH_MS = 6000;
 constexpr uint32_t VIEW_HOLD_MS = 9000;
