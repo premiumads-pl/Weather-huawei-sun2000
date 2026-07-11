@@ -32,7 +32,7 @@ bool WeatherClient::buildUrl(char* buf, std::size_t len) const {
            "latitude=%.4f&longitude=%.4f&timezone=Europe%%2FWarsaw&forecast_days=7"
            "&timeformat=unixtime"
            "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,"
-           "wind_speed_10m,wind_direction_10m,cloud_cover,pressure_msl,precipitation,is_day"
+           "wind_speed_10m,wind_direction_10m,cloud_cover,pressure_msl,precipitation,is_day,uv_index"
            "&hourly=temperature_2m,weather_code,precipitation,precipitation_probability,"
            "wind_speed_10m"
            "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,"
@@ -77,6 +77,7 @@ bool WeatherClient::parsePayload(const char* json, std::size_t len, WeatherModel
   out.current.weatherCode = cur["weather_code"].as<int>();
   out.current.pressureHpa = cur["pressure_msl"].as<float>();
   out.current.precipMm = cur["precipitation"].as<float>();
+  out.current.uvIndex = cur["uv_index"].as<float>();
   out.current.isDay = cur["is_day"].as<int>() != 0;
   out.current.valid = true;
 

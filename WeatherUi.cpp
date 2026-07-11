@@ -462,9 +462,19 @@ void WeatherUi::drawViewNow(int ox, float t, const WeatherModel& w) {
   snprintf(b, sizeof(b), "%s", w.sunset[0] ? w.sunset : "--:--");
   plStr(spr_, PLF14, b, ox + 130, by, col::TEXT_DIM);
 
-  const float uv = w.uvTodayMax;
-  const uint16_t uvc = uv >= 6.f ? col::ERR : (uv >= 3.f ? col::WARN : col::OK);
-  snprintf(b, sizeof(b), "UV %.0f", uv);
+  // UV BIEŻĄCE (nie dobowe maksimum — po zachodzie ma być 0).
+  // W ciągu dnia w nawiasie dopisujemy dzisiejszy szczyt.
+  const float uv = c.uvIndex;
+  uint16_t uvc = col::TEXT_MUTE;
+  if (uv >= 6.f) uvc = col::ERR;
+  else if (uv >= 3.f) uvc = col::WARN;
+  else if (uv >= 1.f) uvc = col::OK;
+
+  if (uv < 0.5f) {
+    snprintf(b, sizeof(b), "UV 0");
+  } else {
+    snprintf(b, sizeof(b), "UV %.0f", uv);
+  }
   plRight(spr_, PLF14, b, ox + W - 10, by, uvc);
   if (w.precipToday > 0.05f) {
     snprintf(b, sizeof(b), "opad %.1f mm", w.precipToday);
