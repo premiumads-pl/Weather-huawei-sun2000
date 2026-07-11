@@ -1,0 +1,16 @@
+# artefakty kompilacji
+build/
+*.bin
+*.elf
+*.map
+*.hex
+
+# lokalne
+.DS_Store
+previews/
+*.bak
+*.log
+
+# gdyby ktoś kiedyś dodał plik z sekretami — nie wpuszczamy go do repo
+Secrets.h
+secrets.*
