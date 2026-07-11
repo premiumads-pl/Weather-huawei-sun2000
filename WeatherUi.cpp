@@ -306,9 +306,11 @@ void WeatherUi::drawFooter(const PvModel& pv, bool wifiOk) {
   spr_.drawFastHLine(0, y, W, col::DIVIDER);
 
   if (!pv.online) {
-    spr_.fillCircle(14, y + 17, 4, col::ERR);
-    plStr(spr_, PLF14, wifiOk ? "Falownik niedostępny" : "Brak WiFi", 26, y + 22,
-          col::TEXT_MUTE);
+    // errorMsg pusty = jeszcze nie było próby — trwa pierwsze łączenie
+    const bool connecting = (pv.errorMsg[0] == '\0');
+    spr_.fillCircle(14, y + 17, 4, connecting ? col::WARN : col::ERR);
+    const char* msg = connecting ? "Łączę z falownikiem..." : pv.errorMsg;
+    plStr(spr_, PLF14, wifiOk ? msg : "Brak WiFi", 26, y + 22, col::TEXT_MUTE);
     drawSysBox();
     return;
   }

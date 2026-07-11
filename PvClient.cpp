@@ -8,7 +8,7 @@
 
 namespace {
 constexpr uint8_t kUnit = 1;
-constexpr uint32_t kTimeoutMs = 4000;
+constexpr uint32_t kTimeoutMs = 2500;
 
 WiFiClient gSock;
 uint16_t gTid = 0xA100;
@@ -145,13 +145,41 @@ bool PvClient::readU16(uint16_t addr, uint16_t& out) {
 
 bool PvClient::warmUp() {
   uint16_t regs[2]{};
-  for (int i = 0; i < 6; ++i) {
+  for (int i = 0; i < 4; ++i) {
     if (readRegs(32080, 2, regs)) {
       return true;
     }
-    delay(400);
+    delay(250);
   }
   return false;
+}
+
+// Połączenie TCP trzymamy otwarte między odczytami. Huawei po każdym nowym
+// handshake potrzebuje długiej rozgrzewki (nawet ~20 s), więc łączenie się od
+// nowa co 30 s było głównym powodem, dlaczego dane pojawiały się z opóźnieniem.
+bool PvClient::ensureConnected() {
+  if (gSock.connected()) {
+    // wyczyść ewentualne spóźnione ramki z poprzedniego cyklu
+    while (gSock.available()) {
+      gSock.read();
+    }
+    return true;
+  }
+
+  gSock.stop();
+  if (!gSock.connect(settings().modbusHost, settings().modbusPort, 3000)) {
+    return false;
+  }
+  gSock.setNoDelay(true);
+  gSock.setTimeout(kTimeoutMs / 1000);
+  delay(400);
+
+  if (!warmUp()) {
+    gSock.stop();
+    return false;
+  }
+  Serial.println("Modbus: polaczono z falownikiem");
+  return true;
 }
 
 bool PvClient::fetch(PvModel& out) {
@@ -168,20 +196,9 @@ bool PvClient::fetch(PvModel& out) {
     return false;
   }
 
-  gSock.stop();
-  if (!gSock.connect(settings().modbusHost, settings().modbusPort, 4000)) {
+  if (!ensureConnected()) {
     out.online = false;
-    strncpy(out.errorMsg, "Falownik offline", sizeof(out.errorMsg) - 1);
-    return false;
-  }
-  gSock.setNoDelay(true);
-  gSock.setTimeout(kTimeoutMs / 1000);
-  delay(600);  // Huawei potrzebuje chwili po handshake TCP
-
-  if (!warmUp()) {
-    gSock.stop();
-    out.online = false;
-    strncpy(out.errorMsg, "Modbus brak odp.", sizeof(out.errorMsg) - 1);
+    strncpy(out.errorMsg, "Falownik nie odpowiada", sizeof(out.errorMsg) - 1);
     return false;
   }
 
@@ -191,18 +208,25 @@ bool PvClient::fetch(PvModel& out) {
   float f = 0.f;
   uint16_t u16 = 0;
 
-  if (readS32(32064, s32)) snap.powerDcW = s32;
-  if (readS32(32080, s32)) snap.powerAcW = s32;
-  if (readS32(37113, s32)) snap.gridPowerW = s32;
-  if (readU32(32106, u32)) snap.energyTotalKwh = static_cast<float>(u32) / 100.f;
-  if (readU32(32114, u32)) snap.energyTodayKwh = static_cast<float>(u32) / 100.f;
+  int fails = 0;
+  if (readS32(32064, s32)) snap.powerDcW = s32; else ++fails;
+  if (readS32(32080, s32)) snap.powerAcW = s32; else ++fails;
+  if (readS32(37113, s32)) snap.gridPowerW = s32; else ++fails;
+  if (readU32(32106, u32)) snap.energyTotalKwh = static_cast<float>(u32) / 100.f; else ++fails;
+  if (readU32(32114, u32)) snap.energyTodayKwh = static_cast<float>(u32) / 100.f; else ++fails;
   if (readS16(32016, 10, f)) snap.pvVoltageV = f;
   if (readS16(32087, 10, f)) snap.inverterTempC = f;
   if (readU16(32086, u16)) snap.efficiencyPct = static_cast<float>(u16) / 100.f;
   if (readU16(32089, u16)) snap.statusCode = u16;
   if (readU16(37100, u16)) snap.meterOk = (u16 == 1);
 
-  gSock.stop();
+  // Sesja się posypała — zamknij, żeby następny cykl zaczął od czystego handshake.
+  if (fails >= 3) {
+    gSock.stop();
+    out.online = false;
+    strncpy(out.errorMsg, "Modbus bez odpowiedzi", sizeof(out.errorMsg) - 1);
+    return false;
+  }
 
   // Zużycie domu = produkcja AC minus to, co poszło do sieci.
   snap.houseLoadW = snap.powerAcW - snap.gridPowerW;

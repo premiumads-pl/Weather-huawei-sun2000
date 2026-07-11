@@ -9,6 +9,7 @@ class PvClient {
   bool fetch(PvModel& out);
 
  private:
+  bool ensureConnected();
   bool readRegs(uint16_t addr, uint16_t count, uint16_t* out);
   bool readRegsRetry(uint16_t addr, uint16_t count, uint16_t* out, int tries = 3);
   bool readS32(uint16_t addr, int32_t& out);
