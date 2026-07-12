@@ -204,22 +204,25 @@ bool RadarClient::fetch(RadarSnapshot& out) {
   snprintf(url, sizeof(url), "http://%s%s/%d/%d/%d/%d/0/0_0.png", host, path, kTile, kZoom,
            tx, ty);
 
-  // --- 3. pobierz i zdekoduj PNG ---
+  // --- 3. dekoder NAJPIERW ---
+  // PNGdec potrzebuje jednego spójnego bloku ~47 kB. Jeśli najpierw pobierzemy
+  // kafelek, jego bufor rozbija stertę na kawałki i alokacja pada mimo 76 kB
+  // "wolnych". Dlatego bierzemy duży blok, póki sterta jest jeszcze cała.
+  png = new (std::nothrow) PNG();
+  if (png == nullptr) {
+    snprintf(out.errorMsg, sizeof(out.errorMsg), "Dekoder: brak bloku 47kB");
+    return false;
+  }
+
+  // --- 4. pobierz kafelek i zdekoduj ---
   if (!httpGet(url, &gPng, &gPngLen, nullptr)) {
+    delete png;
+    png = nullptr;
     strncpy(out.errorMsg, "Radar: brak kafelka", sizeof(out.errorMsg) - 1);
     return false;
   }
 
-  png = new (std::nothrow) PNG();
-  if (png == nullptr) {
-    free(gPng);
-    gPng = nullptr;
-    strncpy(out.errorMsg, "Radar: brak RAM na dekoder", sizeof(out.errorMsg) - 1);
-    return false;
-  }
-
-  const int rc = png->openRAM(gPng, gPngLen, pngDraw);
-  if (rc != PNG_SUCCESS) {
+  if (png->openRAM(gPng, gPngLen, pngDraw) != PNG_SUCCESS) {
     delete png;
     png = nullptr;
     free(gPng);
