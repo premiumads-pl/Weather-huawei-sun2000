@@ -5,7 +5,32 @@ konfiguracja — musi iść przez sieć.
 
 ---
 
-## 1. Zdalna diagnostyka (PRIORYTET — blokuje resztę)
+## 0. ZROBIONE (v15–v22)
+
+- Zdalna diagnostyka: `GET /api/log`, `GET /api/diag`, `POST /api/reboot` + zakładka w panelu.
+- Naprawiony głód pamięci: bufor ekranu 150 kB → 132 kB (stopka wprost na TFT),
+  radar po HTTP zamiast HTTPS (−40 kB TLS), dekoder PNG dostaje bufor ekranu na ~1,5 s.
+- Bariera RAM w `release.sh` (>76 kB statycznego = odmowa publikacji).
+- Sieć bezpieczeństwa OTA: przy niskiej stercie zwalnia bufor i ponawia sprawdzenie.
+- Ekran 6: statystyki urządzenia.
+- Dioda RGB: zielony = oddaję, niebieski = równowaga, czerwony = pobieram. Autotest przy starcie.
+
+---
+
+## 1. Pamięć — nadal cienko (NASTĘPNY PRIORYTET)
+
+`heap_min_ever` schodzi do **7–15 kB** przy szczycie (TLS + JSON). Działa, ale bez zapasu.
+Największy spójny blok to tylko ~34 kB przy 75 kB wolnych — sterta jest mocno pokruszona.
+
+**Do zrobienia:** renderowanie w dwóch pasach poziomych — bufor 320×103 zamiast 320×206,
+czyli **66 kB zamiast 132 kB**. Zwalnia ~66 kB i likwiduje całą klasę tych problemów.
+Koszt: funkcje rysujące muszą przyjąć przesunięcie w Y (albo podklasa `TFT_eSprite`
+nadpisująca `drawPixel`/`fillRect`/`drawFastHLine`/`drawFastVLine`), a rysowanie
+wykonuje się 2× na klatkę (spadek fps przy przejściach).
+
+---
+
+## 2. Zdalna diagnostyka — ZROBIONE
 
 **Problem:** cały `Serial.printf(...)` w firmwarze trafia teraz w próżnię. Bez USB nie da się
 sprawdzić, dlaczego coś nie działa (falownik, radar, OTA, loty). Każdy kolejny błąd byłby

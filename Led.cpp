@@ -46,15 +46,16 @@ const char* ledTestStep() {
     return nullptr;
   }
   const uint32_t t = millis() - gTestStart;
-  if (t < 1500) {
+  const uint32_t step = cfg::LED_TEST_MS;
+  if (t < step) {
     setRgb(160, 0, 0);
     return "CZERWONY";
   }
-  if (t < 3000) {
+  if (t < step * 2) {
     setRgb(0, 160, 0);
     return "ZIELONY";
   }
-  if (t < 4500) {
+  if (t < step * 3) {
     setRgb(0, 0, 160);
     return "NIEBIESKI";
   }

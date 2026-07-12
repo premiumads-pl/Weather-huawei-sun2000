@@ -21,6 +21,7 @@ constexpr uint32_t OTA_CHECK_MS = 15UL * 60UL * 1000UL;
 constexpr uint8_t LED_DAY = 90;         // jasność w dzień
 constexpr uint8_t LED_NIGHT = 12;       // w nocy — ma nie oślepiać
 constexpr int32_t LED_BALANCE_W = 300;  // +/- 300 W = "równowaga" (niebieski)
+constexpr uint32_t LED_TEST_MS = 500;   // autotest kolorow przy starcie (na kolor)
 
 // ---------- Lotnisko / loty ----------
 constexpr float EPGD_LAT = 54.3823f;
