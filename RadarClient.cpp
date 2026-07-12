@@ -25,6 +25,8 @@ constexpr size_t kMaxPng = 40000;
 constexpr uint32_t kMinHeapForRadar = 64000;
 
 PNG* png = nullptr;
+volatile bool gWantMem = false;
+volatile bool gMemReady = false;
 uint8_t* gPng = nullptr;
 size_t gPngLen = 0;
 
@@ -126,6 +128,14 @@ bool httpGet(const char* url, uint8_t** buf, size_t* len, String* text) {
 
 }  // namespace
 
+bool radarNeedsMemory() {
+  return gWantMem && !gMemReady;
+}
+
+void radarMemoryReady() {
+  gMemReady = true;
+}
+
 const char* radarLabel(uint8_t level) {
   switch (level) {
     case 1: return "mżawka";
@@ -208,14 +218,22 @@ bool RadarClient::fetch(RadarSnapshot& out) {
   // PNGdec potrzebuje jednego spójnego bloku ~47 kB. Jeśli najpierw pobierzemy
   // kafelek, jego bufor rozbija stertę na kawałki i alokacja pada mimo 76 kB
   // "wolnych". Dlatego bierzemy duży blok, póki sterta jest jeszcze cała.
+  // poproś UI o oddanie bufora ekranu
+  gWantMem = true;
+  gMemReady = false;
+  for (int i = 0; i < 60 && !gMemReady; ++i) {
+    delay(50);
+  }
+
   const uint32_t largest = ESP.getMaxAllocHeap();
   png = new (std::nothrow) PNG();
   if (png == nullptr) {
     snprintf(out.errorMsg, sizeof(out.errorMsg), "Blok %lukB < 47kB",
              static_cast<unsigned long>(largest / 1024));
-    LOG("Radar: alokacja dekodera padla. heap=%lu, najwiekszy blok=%lu, PNG=%u B\n",
+    LOG("Radar: alokacja dekodera padla. heap=%lu, blok=%lu, PNG=%u B\n",
         static_cast<unsigned long>(heap), static_cast<unsigned long>(largest),
         static_cast<unsigned>(sizeof(PNG)));
+    gWantMem = false;
     return false;
   }
   LOG("Radar: dekoder OK (blok %lu B, PNG=%u B)\n", static_cast<unsigned long>(largest),
@@ -225,6 +243,7 @@ bool RadarClient::fetch(RadarSnapshot& out) {
   if (!httpGet(url, &gPng, &gPngLen, nullptr)) {
     delete png;
     png = nullptr;
+    gWantMem = false;
     strncpy(out.errorMsg, "Radar: brak kafelka", sizeof(out.errorMsg) - 1);
     return false;
   }
@@ -234,6 +253,7 @@ bool RadarClient::fetch(RadarSnapshot& out) {
     png = nullptr;
     free(gPng);
     gPng = nullptr;
+    gWantMem = false;
     strncpy(out.errorMsg, "Radar: zły PNG", sizeof(out.errorMsg) - 1);
     return false;
   }
@@ -243,6 +263,7 @@ bool RadarClient::fetch(RadarSnapshot& out) {
   png = nullptr;
   free(gPng);
   gPng = nullptr;
+  gWantMem = false;   // UI może odtworzyć bufor
 
   out.level = gBestLevel;
   const time_t now = time(nullptr);

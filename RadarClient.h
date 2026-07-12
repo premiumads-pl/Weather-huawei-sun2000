@@ -23,6 +23,13 @@ struct RadarSnapshot {
 
 const char* radarLabel(uint8_t level);
 
+// Dekoder PNG potrzebuje spójnego bloku ~46 kB, a bufor ekranu tak kruszy stertę,
+// że największy wolny kawałek to ~35 kB. Na czas dekodowania oddajemy więc bufor.
+// Panel TFT trzyma ostatnią klatkę sam z siebie — obraz nie gaśnie, tylko na ~1,5 s
+// zamiera.
+bool radarNeedsMemory();
+void radarMemoryReady();
+
 class RadarClient {
  public:
   bool fetch(RadarSnapshot& out);

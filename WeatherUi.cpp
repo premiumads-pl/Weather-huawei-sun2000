@@ -1335,13 +1335,17 @@ void WeatherUi::drawNetInfo(const char* ssid, const char* ip, int rssi, int secs
 
 // ------------------------------- OTA: rysowanie bez bufora (oszczędza RAM) ---
 
-void WeatherUi::releaseBuffer() {
+void WeatherUi::releaseBuffer(bool clearScreen) {
   if (freed_ || !ready_) {
     return;
   }
   spr_.deleteSprite();
   freed_ = true;
-  tft_.fillScreen(col::BG);
+  // Przy radarze NIE czyścimy ekranu — panel trzyma ostatnią klatkę, więc obraz
+  // tylko zamiera na chwilę zamiast gasnąć.
+  if (clearScreen) {
+    tft_.fillScreen(col::BG);
+  }
   Serial.printf("UI: zwolniono bufor, wolny heap=%u B\n",
                 static_cast<unsigned>(ESP.getFreeHeap()));
 }

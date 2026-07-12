@@ -446,6 +446,14 @@ void loop() {
     return;
   }
 
+  // --- radar prosi o pamięć: oddaj bufor, zostaw ostatnią klatkę na ekranie ---
+  if (radarNeedsMemory()) {
+    ui.releaseBuffer(false);
+    radarMemoryReady();
+    delay(50);
+    return;
+  }
+
   // --- aktualizacja w toku: oddaj bufor ekranu i rysuj wprost na TFT ---
   const OtaStatus& os = otaStatus();
   if (os.state == OtaState::DOWNLOADING || os.state == OtaState::DONE ||
