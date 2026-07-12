@@ -413,6 +413,8 @@ void setup() {
 
   ui.drawBoot(gBootMsg, 0);
 
+  portal::setScreenshotHandler([](WiFiClient& c) { ui.streamScreenshot(c, uiPv, gWifiOk); });
+
   xTaskCreatePinnedToCore(webTask, "web", 12288, nullptr, 2, nullptr, 0);
   xTaskCreatePinnedToCore(netTask, "net", 16384, nullptr, 3, nullptr, 0);
 }

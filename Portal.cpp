@@ -23,6 +23,7 @@ DNSServer dns;
 bool apMode = false;
 bool started = false;
 bool wifiSaved = false;
+void (*gScreenshot)(WiFiClient&) = nullptr;
 char apIpStr[20] = "192.168.4.1";
 
 const char kApSsid[] = "Pogoda-Setup";
@@ -95,6 +96,15 @@ li:hover{border-color:#00dcf0;background:#0d1c30}
 </div>
 
 <div class=c>
+<h2>Podgląd ekranu</h2>
+<img id=shot style="width:100%;border-radius:8px;border:1px solid #24405f;background:#081221"
+ src="" alt="">
+<button class=s onclick=shot()>Odśwież zrzut</button>
+<label style="display:flex;align-items:center;gap:8px;margin-top:10px">
+ <input type=checkbox id=auto style="width:auto" onchange=autoshot()> odświeżaj co 3 s</label>
+</div>
+
+<div class=c>
 <h2>Diagnostyka</h2>
 <div class=row>
 <button class=s style=margin:0 onclick=dg()>Stan urządzenia</button>
@@ -107,6 +117,10 @@ li:hover{border-color:#00dcf0;background:#0d1c30}
 <button class=s onclick=fgt()>Zapomnij sieć Wi-Fi</button>
 </div>
 </div><script>
+let _t=null;
+function shot(){$('shot').src='/api/screen?'+Date.now();}
+function autoshot(){if($('auto').checked){shot();_t=setInterval(shot,3000);}else{clearInterval(_t);}}
+shot();
 async function dg(){$('dbg').textContent=await(await fetch('/api/diag')).text();}
 async function lg(){$('dbg').textContent=await(await fetch('/api/log')).text();}
 async function rb(){if(confirm('Restartować?')){await fetch('/api/reboot',{method:'POST'});}}
@@ -424,6 +438,15 @@ void apiReboot() {
   ESP.restart();
 }
 
+void apiScreen() {
+  if (gScreenshot == nullptr) {
+    server.send(503, "text/plain", "brak zrzutu");
+    return;
+  }
+  WiFiClient c = server.client();
+  gScreenshot(c);
+}
+
 void apiForget() {
   settings().clearWifi();
   server.send(200, "application/json", "{\"ok\":true}");
@@ -444,12 +467,17 @@ void routes() {
   server.on("/api/log", apiLog);
   server.on("/api/diag", apiDiag);
   server.on("/api/reboot", HTTP_POST, apiReboot);
+  server.on("/api/screen", apiScreen);
   server.onNotFound(sendPage);  // captive portal
   server.begin();
   started = true;
 }
 
 }  // namespace
+
+void setScreenshotHandler(void (*fn)(WiFiClient&)) {
+  gScreenshot = fn;
+}
 
 void beginAp() {
   apMode = true;

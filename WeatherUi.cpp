@@ -12,6 +12,7 @@
 #include "Log.h"
 #include "RadarClient.h"
 #include <WiFi.h>
+#include <WiFiClient.h>
 #include "Settings.h"
 #include "Version.h"
 #include "WeatherIcons.h"
@@ -306,10 +307,6 @@ void WeatherUi::drawProgress(uint32_t nowMs) {
 }
 
 void WeatherUi::drawFooter(const PvModel& pv, bool wifiOk) {
-  const int y = 206;
-
-  // Stopka leży POZA buforem (bufor to y=0..205) — rysujemy ją wprost na TFT.
-  // Odświeżamy tylko, gdy dane się zmienią, inaczej migotałaby.
   const int32_t ac = pv.online ? pv.data.powerAcW : 0;
   const int32_t g = pv.online ? pv.data.gridPowerW : 0;
   const int kwh = pv.online ? static_cast<int>(pv.data.energyTodayKwh * 10.f) : 0;
@@ -321,6 +318,7 @@ void WeatherUi::drawFooter(const PvModel& pv, bool wifiOk) {
   }
   const int cpu = static_cast<int>(lroundf(cpuTempC_));
 
+  // Stopka leży POZA buforem — rysujemy ją wprost na TFT, tylko przy zmianie danych.
   if (footerInit_ && ac == lastAc_ && g == lastGrid_ && kwh == lastKwh_ &&
       cpu == lastCpu_ && pv.online == lastOnline_) {
     return;
@@ -332,67 +330,73 @@ void WeatherUi::drawFooter(const PvModel& pv, bool wifiOk) {
   lastCpu_ = cpu;
   lastOnline_ = pv.online;
 
-  tft_.fillRect(0, y, W, cfg::SCREEN_H - y, col::HEADER);
-  tft_.drawFastHLine(0, y, W, col::DIVIDER);
+  drawFooterTo(tft_, pv, wifiOk);
+}
+
+// Ta sama stopka, ale na dowolnym celu — TFT albo tymczasowy sprite (zrzut ekranu).
+void WeatherUi::drawFooterTo(TFT_eSPI& dst, const PvModel& pv, bool wifiOk) {
+  const int y = (&dst == &tft_) ? 206 : 0;   // w sprite'cie stopka zaczyna sie od 0
+
+  dst.fillRect(0, y, W, 34, col::HEADER);
+  dst.drawFastHLine(0, y, W, col::DIVIDER);
 
   if (!pv.online) {
     const bool connecting = (pv.errorMsg[0] == '\0');
-    tft_.fillCircle(14, y + 17, 4, connecting ? col::WARN : col::ERR);
+    dst.fillCircle(14, y + 17, 4, connecting ? col::WARN : col::ERR);
     const char* msg = connecting ? "Łączę z falownikiem..." : pv.errorMsg;
-    plStr(tft_, PLF14, wifiOk ? msg : "Brak WiFi", 26, y + 22, col::TEXT_MUTE);
-    drawSysBox();
+    plStr(dst, PLF14, wifiOk ? msg : "Brak WiFi", 26, y + 22, col::TEXT_MUTE);
+    drawSysBoxTo(dst, y);
     return;
   }
 
   const PvSnapshot& d = pv.data;
+  const int32_t ac = d.powerAcW;
+  const int32_t g = d.gridPowerW;
   const int labelY = y + 4;
   const int baseY = y + 28;
   char v[16], u[8];
 
-  tft_.drawFastVLine(112, y + 6, 22, col::DIVIDER);
-  tft_.drawFastVLine(206, y + 6, 22, col::DIVIDER);
+  dst.drawFastVLine(112, y + 6, 22, col::DIVIDER);
+  dst.drawFastVLine(206, y + 6, 22, col::DIVIDER);
 
-  tft_.fillCircle(13, baseY - 5, 5, ac > 0 ? col::PV_SOLAR : col::TEXT_MUTE);
-  gl(tft_, "PRODUKCJA", 24, labelY, col::TEXT_MUTE);
+  dst.fillCircle(13, baseY - 5, 5, ac > 0 ? col::PV_SOLAR : col::TEXT_MUTE);
+  gl(dst, "PRODUKCJA", 24, labelY, col::TEXT_MUTE);
   fmtPower(v, sizeof(v), u, sizeof(u), ac);
-  int x = 24 + pltxt::drawString(tft_, PLF18, v, 24, baseY, col::PV_SOLAR, col::PV_SOLAR);
-  gl(tft_, u, x + 4, baseY - 12, col::TEXT_DIM);
+  int x = 24 + pltxt::drawString(dst, PLF18, v, 24, baseY, col::PV_SOLAR, col::PV_SOLAR);
+  gl(dst, u, x + 4, baseY - 12, col::TEXT_DIM);
 
-  gl(tft_, "DZIS", 122, labelY, col::TEXT_MUTE);
+  gl(dst, "DZIS", 122, labelY, col::TEXT_MUTE);
   snprintf(v, sizeof(v), "%.1f", d.energyTodayKwh);
-  int x2 = 122 + pltxt::drawString(tft_, PLF18, v, 122, baseY, col::TEXT, col::TEXT);
-  gl(tft_, "kWh", x2 + 4, baseY - 12, col::TEXT_DIM);
+  int x2 = 122 + pltxt::drawString(dst, PLF18, v, 122, baseY, col::TEXT, col::TEXT);
+  gl(dst, "kWh", x2 + 4, baseY - 12, col::TEXT_DIM);
 
   const bool exporting = g >= 0;
   const uint16_t gc = exporting ? col::PV_EXPORT : col::PV_IMPORT;
-  gl(tft_, exporting ? "ODDAJE" : "POBOR", 226, labelY, col::TEXT_MUTE);
+  gl(dst, exporting ? "ODDAJE" : "POBOR", 226, labelY, col::TEXT_MUTE);
 
   const int ax = 214, ay = baseY - 7;
   if (exporting) {
-    tft_.fillTriangle(ax, ay - 7, ax - 5, ay + 1, ax + 5, ay + 1, gc);
-    tft_.fillRect(ax - 2, ay + 1, 4, 7, gc);
+    dst.fillTriangle(ax, ay - 7, ax - 5, ay + 1, ax + 5, ay + 1, gc);
+    dst.fillRect(ax - 2, ay + 1, 4, 7, gc);
   } else {
-    tft_.fillTriangle(ax, ay + 8, ax - 5, ay, ax + 5, ay, gc);
-    tft_.fillRect(ax - 2, ay - 7, 4, 7, gc);
+    dst.fillTriangle(ax, ay + 8, ax - 5, ay, ax + 5, ay, gc);
+    dst.fillRect(ax - 2, ay - 7, 4, 7, gc);
   }
   fmtPower(v, sizeof(v), u, sizeof(u), g < 0 ? -g : g);
-  int x3 = 226 + pltxt::drawString(tft_, PLF18, v, 226, baseY, gc, gc);
-  gl(tft_, u, x3 + 4, baseY - 12, col::TEXT_DIM);
+  int x3 = 226 + pltxt::drawString(dst, PLF18, v, 226, baseY, gc, gc);
+  gl(dst, u, x3 + 4, baseY - 12, col::TEXT_DIM);
 
-  drawSysBox();
+  drawSysBoxTo(dst, y);
 }
 
-// Wersja firmware'u + temperatura rdzenia ESP32-S3 (prawy dolny róg).
-void WeatherUi::drawSysBox() {
-  tft_.drawFastVLine(292, 212, 22, col::DIVIDER);
-
+void WeatherUi::drawSysBoxTo(TFT_eSPI& dst, int y) {
+  dst.drawFastVLine(292, y + 6, 22, col::DIVIDER);
   char b[12];
   snprintf(b, sizeof(b), "v%d", FW_VERSION);
-  plRight(tft_, PLF14, b, W - 4, 221, col::TEXT_MUTE);
-
+  plRight(dst, PLF14, b, W - 4, y + 15, col::TEXT_MUTE);
   const uint16_t tc = cpuTempC_ >= 75.f ? col::WARN : col::TEXT_DIM;
   snprintf(b, sizeof(b), "%.0f°", cpuTempC_);
-  plRight(tft_, PLF14, b, W - 4, 236, tc);
+  plRight(dst, PLF14, b, W - 4, y + 30, tc);
 }
 
 void WeatherUi::drawContentBg() {
@@ -1528,7 +1532,7 @@ void WeatherUi::drawViewStats(int ox, float t) {
   const int cy0 = 126, chh = 42;
   for (int i = 0; i < 3; ++i) {
     const int x = ox + 6 + i * 104;
-    const int grow = static_cast<int>(chh * clampf(e * 1.4f - 0.4f - i * 0.08f, 0.f, 1.f));
+    const int grow = static_cast<int>(chh * clampf(e * 1.8f - 0.3f - i * 0.15f, 0.f, 1.f));
     if (grow < 5) continue;
     spr_.fillRoundRect(x, cy0 + (chh - grow), 100, grow, 6, col::BG_CARD);
     if (grow < chh - 2) continue;
@@ -1554,4 +1558,69 @@ void WeatherUi::drawViewStats(int ox, float t) {
   snprintf(b, sizeof(b), "http://%s", WiFi.localIP().toString().c_str());
   plStr(spr_, PLF14, b, ox + 10, 205, col::ACCENT);
   glRight(spr_, "panel", ox + W - 10, 197, col::TEXT_MUTE);
+}
+
+// ------------------------------------- ZRZUT EKRANU DO PRZEGLĄDARKI ----------
+// BMP 320x240 24-bit, wysyłany wiersz po wierszu — w RAM-ie trzymamy tylko
+// jedną linię (960 B), a nie cały obraz (230 kB).
+
+void WeatherUi::streamScreenshot(WiFiClient& client, const PvModel& pv, bool wifiOk) {
+  if (!ready_ || freed_) {
+    return;
+  }
+
+  constexpr int WD = cfg::SCREEN_W;
+  constexpr int HT = cfg::SCREEN_H;
+  const uint32_t rowSize = WD * 3;            // 320*3 = 960, podzielne przez 4
+  const uint32_t dataSize = rowSize * HT;
+  const uint32_t fileSize = 54 + dataSize;
+
+  uint8_t hdr[54] = {0};
+  hdr[0] = 'B'; hdr[1] = 'M';
+  hdr[2] = fileSize; hdr[3] = fileSize >> 8; hdr[4] = fileSize >> 16; hdr[5] = fileSize >> 24;
+  hdr[10] = 54;
+  hdr[14] = 40;
+  hdr[18] = WD; hdr[19] = WD >> 8;
+  hdr[22] = HT; hdr[23] = HT >> 8;            // dodatnie = obraz od dołu
+  hdr[26] = 1;
+  hdr[28] = 24;
+  hdr[34] = dataSize; hdr[35] = dataSize >> 8;
+  hdr[36] = dataSize >> 16; hdr[37] = dataSize >> 24;
+
+  client.print("HTTP/1.1 200 OK\r\nContent-Type: image/bmp\r\n");
+  client.printf("Content-Length: %lu\r\n", static_cast<unsigned long>(fileSize));
+  client.print("Cache-Control: no-store\r\nConnection: close\r\n\r\n");
+  client.write(hdr, sizeof(hdr));
+
+  // Stopka leży poza buforem — odtwarzamy ją w małym sprite'cie tylko na zrzut.
+  TFT_eSprite foot(&tft_);
+  foot.setColorDepth(16);
+  const bool haveFoot = (foot.createSprite(WD, 34) != nullptr);
+  if (haveFoot) {
+    foot.setSwapBytes(false);
+    drawFooterTo(foot, pv, wifiOk);
+  }
+
+  static uint8_t line[WD * 3];
+  for (int y = HT - 1; y >= 0; --y) {          // BMP idzie od dołu
+    for (int x = 0; x < WD; ++x) {
+      uint16_t c;
+      if (y < SPR_H) {
+        c = spr_.readPixel(x, y);
+      } else if (haveFoot) {
+        c = foot.readPixel(x, y - SPR_H);
+      } else {
+        c = col::HEADER;
+      }
+      line[x * 3 + 0] = static_cast<uint8_t>((c & 0x1F) << 3);          // B
+      line[x * 3 + 1] = static_cast<uint8_t>(((c >> 5) & 0x3F) << 2);   // G
+      line[x * 3 + 2] = static_cast<uint8_t>(((c >> 11) & 0x1F) << 3);  // R
+    }
+    client.write(line, sizeof(line));
+  }
+
+  if (haveFoot) {
+    foot.deleteSprite();
+  }
+  client.flush();
 }

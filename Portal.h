@@ -1,5 +1,7 @@
 #pragma once
 
+#include <WiFiClient.h>
+
 #include <cstdint>
 
 // Panel konfiguracyjny WWW.
@@ -22,5 +24,8 @@ void clearWifiSavedFlag();
 
 // Prowizoryczna konfiguracja z portu szeregowego (do wgrania bez telefonu).
 void serialConsole();
+
+// Zrzut ekranu urzadzenia (BMP) — podpina go szkic glowny.
+void setScreenshotHandler(void (*fn)(WiFiClient&));
 
 }  // namespace portal

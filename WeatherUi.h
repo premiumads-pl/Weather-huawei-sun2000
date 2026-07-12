@@ -1,6 +1,7 @@
 #pragma once
 
 #include <TFT_eSPI.h>
+#include <WiFiClient.h>
 
 #include "FlightData.h"
 #include "PvData.h"
@@ -40,6 +41,10 @@ class WeatherUi {
   // Na czas OTA oddajemy 150 kB bufora — inaczej TLS + pobieranie 1,3 MB
   // nie mają z czego działać (zostawało ~17 kB heapu).
   void releaseBuffer(bool clearScreen = true);
+
+  // Zrzut ekranu do przegladarki: BMP 320x240 24-bit, wysylany wierszami.
+  void streamScreenshot(WiFiClient& client, const PvModel& pv, bool wifiOk);
+  void drawFooterTo(TFT_eSPI& dst, const PvModel& pv, bool wifiOk);
   bool restoreBuffer();  // odtwarza bufor po zakończonym OTA
   void drawOtaDirect(int progress, const char* msg);
 
@@ -103,7 +108,7 @@ class WeatherUi {
   void drawHeader(const WeatherModel& w, bool wifiOk, uint32_t nowMs);
   void drawProgress(uint32_t nowMs);
   void drawFooter(const PvModel& pv, bool wifiOk);
-  void drawSysBox();
+  void drawSysBoxTo(TFT_eSPI& dst, int y);
   void drawContentBg();
   void drawView(uint8_t view, int ox, float t, const WeatherModel& w, const PvModel& pv,
                 const PvHistory& hist, const FlightModel& fl);
