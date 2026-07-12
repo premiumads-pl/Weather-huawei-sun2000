@@ -6,7 +6,11 @@
 
 class PvClient {
  public:
-  bool fetch(PvModel& out);
+  // night = pora, o której falownikowi wolno spać (patrz pvMayBeAsleep()).
+  // Nie zmienia to sposobu odpytywania — tylko to, jak nazwiemy brak odpowiedzi:
+  // "Falownik uśpiony" (stan neutralny) zamiast "Falownik nie odpowiada" (błąd).
+  // Jeśli falownik odpowie mimo nocy, dane lecą normalnie.
+  bool fetch(PvModel& out, bool night = false);
 
  private:
   bool ensureConnected();

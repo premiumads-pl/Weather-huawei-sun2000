@@ -12,6 +12,7 @@
 #include "Config.h"
 #include "Log.h"
 #include "Ota.h"
+#include "OtaGuard.h"
 #include "Settings.h"
 #include "Version.h"
 
@@ -439,6 +440,15 @@ void apiDiag() {
   JsonObject pv = j["pv"].to<JsonObject>();
   pv["ok_ago_s"] = ago(d.pvOkAt);
   pv["err"] = d.pvErr;
+  pv["asleep"] = d.pvAsleep;   // noc: Huawei wyłącza Modbus TCP — to nie awaria
+
+  // Ostatni restart — dotąd nie wiedzieliśmy, czy urządzenie się wywala.
+  JsonObject rs = j["reset"].to<JsonObject>();
+  rs["reason"] = resetReasonText(d.resetReason);
+  rs["reason_code"] = d.resetReason;
+  rs["prev_reason"] = resetReasonText(d.prevResetReason);
+  rs["was_crash"] = resetWasCrash();
+  rs["crashes_total"] = d.panicCount;
 
   JsonObject r = j["radar"].to<JsonObject>();
   r["ok_ago_s"] = ago(d.radarOkAt);
@@ -455,6 +465,11 @@ void apiDiag() {
   JsonObject o = j["ota"].to<JsonObject>();
   o["remote"] = d.otaRemote;
   o["msg"] = d.otaMsg;
+  // Okres próbny po aktualizacji (patrz OtaGuard.h).
+  o["trial"] = d.otaTrial == 1 ? "probna" : (d.otaTrial == 2 ? "potwierdzona" : "stabilna");
+  o["trial_active"] = otaTrialActive();
+  o["confirmed_ago_s"] = ago(d.otaConfirmAt);
+  o["rejected_version"] = d.otaBadVersion;   // 0 = brak zablokowanej wersji
 
   String out;
   serializeJsonPretty(j, out);

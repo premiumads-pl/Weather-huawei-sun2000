@@ -62,6 +62,9 @@ constexpr int NIGHT_TO_H = 6;
 // ---------- Czasy ----------
 constexpr uint32_t WEATHER_REFRESH_MS = 15UL * 60UL * 1000UL;
 constexpr uint32_t PV_REFRESH_MS = 30UL * 1000UL;
+// Noc: falownik śpi (Modbus TCP wyłączony), więc nie ma po co dobijać się co 30 s.
+// Wracamy do 30 s natychmiast, gdy tylko falownik znów odpowie.
+constexpr uint32_t PV_REFRESH_NIGHT_MS = 5UL * 60UL * 1000UL;
 constexpr uint32_t PV_STORE_MS = 5UL * 60UL * 1000UL;  // zapis profilu do NVS
 constexpr uint32_t WIFI_RETRY_MS = 8000;
 constexpr uint32_t RADAR_REFRESH_MS = 5UL * 60UL * 1000UL;  // klatki radaru co ~10 min

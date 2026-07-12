@@ -86,6 +86,7 @@ class WeatherUi {
   int lastKwh_ = -1;
   int lastCpu_ = -1000;
   bool lastOnline_ = false;
+  bool lastAsleep_ = false;   // falownik uśpiony (noc) — inaczej stopka by nie odświeżyła
   bool footerInit_ = false;
 
   // rotacja widoków
@@ -131,6 +132,6 @@ class WeatherUi {
   void drawViewFlights(int ox, float t, const FlightModel& fl);
   void drawViewStats(int ox, float t);
   void drawAlert(float t);
-  void drawNoData(int ox, const char* msg);
+  void drawNoData(int ox, const char* msg, const char* sub = nullptr);
   uint32_t holdFor(uint8_t view) const;
 };

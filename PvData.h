@@ -21,6 +21,9 @@ struct PvModel {
   PvSnapshot data{};
   char errorMsg[48] = {};
   bool online = false;
+  // Noc: falownik nie odpowiada, ale ma do tego prawo (Huawei wyłącza Modbus TCP
+  // po zachodzie). Stan neutralny — szary, nie czerwony. Patrz pvMayBeAsleep().
+  bool asleep = false;
 };
 
 // Profil produkcji z dnia bieżącego: 1 próbka co 10 minut (144 sloty).

@@ -11,6 +11,7 @@
 
 #include "Config.h"
 #include "Log.h"
+#include "OtaGuard.h"
 #include "Version.h"
 
 namespace {
@@ -192,11 +193,25 @@ bool Ota::downloadAndFlash() {
   return true;
 }
 
-bool Ota::checkAndUpdate() {
+bool Ota::checkAndUpdate(bool manual) {
   if (gBusy) {
     Serial.println("OTA: sprawdzanie juz trwa — pomijam");
     return false;
   }
+
+  // KLUCZOWE dla rollbacku: dopóki BIEŻĄCA wersja nie jest potwierdzona, nie wolno
+  // nic wgrywać. Nowy obraz poszedłby na drugą partycję — czyli nadpisałby JEDYNĄ
+  // sprawną wersję, na którą moglibyśmy się cofnąć.
+  //
+  // ESP-IDF pilnuje tego samo w esp_ota_begin() (ESP_ERR_OTA_ROLLBACK_INVALID_STATE),
+  // ale arduinowy Update w ogóle nie używa esp_ota_begin() — zapisuje partycję sam
+  // i woła tylko esp_ota_set_boot_partition(), które takiej blokady nie ma.
+  // Dlatego musimy jej pilnować tutaj.
+  if (otaTrialActive()) {
+    LOG("OTA: trwa okres próbny bieżącej wersji — nie ruszam aktualizacji\n");
+    return false;
+  }
+
   gBusy = true;
 
   struct Guard {
@@ -252,6 +267,19 @@ bool Ota::checkAndUpdate() {
     return false;
   }
 
+  // Ta wersja już raz (a właściwie dwa razy) nie przeżyła okresu próbnego. Bez tej
+  // blokady wpadlibyśmy w pętlę: pobierz cegłę -> rollback -> pobierz tę samą cegłę.
+  // Ręczne sprawdzenie z panelu WWW blokadę omija — to furtka na wypadek, gdyby
+  // wersja została odrzucona niesłusznie (np. przez awarię routera w złym momencie).
+  if (!manual && otaVersionRejected(remote)) {
+    gStatus.state = OtaState::IDLE;
+    setMsg("");
+    LOG("OTA: wersja %d była już odrzucona po rollbacku — pomijam "
+        "(wymuś ręcznie w panelu, jeśli to pomyłka)\n",
+        remote);
+    return false;
+  }
+
   Serial.printf("OTA: nowa wersja %d (mam %d) — aktualizuje\n", remote, FW_VERSION);
 
   if (!downloadAndFlash()) {
@@ -263,6 +291,13 @@ bool Ota::checkAndUpdate() {
     ESP.restart();
     return false;
   }
+
+  // Obraz siedzi już na drugiej partycji, a esp_ota_set_boot_partition() (w środku
+  // Update.end()) ustawił jej stan na ESP_OTA_IMG_NEW. Zapisz w NVS, KTÓRA wersja
+  // zaraz wejdzie w okres próbny — bo jeśli padnie panikiem od razu po starcie,
+  // cofnie ją sam bootloader i nie zdąży o sobie nic powiedzieć. Bez tego znacznika
+  // pobralibyśmy dokładnie tę samą cegłę w kółko.
+  otaGuardArmTrial(remote);
 
   delay(1200);
   ESP.restart();

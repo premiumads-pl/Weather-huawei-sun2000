@@ -30,6 +30,19 @@ struct Diag {
   uint32_t wifiConnects = 0;
   uint32_t minHeap = 0xFFFFFFFF;
   uint32_t radarSkips = 0;   // ile razy radar odpuścił z braku pamięci
+
+  // --- OTA: okres próbny i rollback (patrz OtaGuard.h) ---
+  uint8_t otaTrial = 0;      // 0 = stabilna, 1 = próbna, 2 = potwierdzona
+  uint32_t otaConfirmAt = 0; // millis() potwierdzenia wersji próbnej
+  int otaBadVersion = 0;     // wersja odrzucona po rollbacku (0 = brak)
+
+  // --- restarty: dziś nie wiemy, czy urządzenie się wywala ---
+  uint8_t resetReason = 0;      // esp_reset_reason() z bieżącego startu
+  uint8_t prevResetReason = 0;  // to samo z poprzedniego startu (z NVS)
+  uint16_t panicCount = 0;      // ile razy panic/watchdog/brownout — od zawsze
+
+  // --- falownik ---
+  bool pvAsleep = false;     // noc: Huawei wyłącza Modbus TCP, to nie awaria
 };
 
 Diag& diag();

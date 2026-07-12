@@ -182,8 +182,9 @@ bool PvClient::ensureConnected() {
   return true;
 }
 
-bool PvClient::fetch(PvModel& out) {
+bool PvClient::fetch(PvModel& out, bool night) {
   out.errorMsg[0] = '\0';
+  out.asleep = false;
 
   if (WiFi.status() != WL_CONNECTED) {
     out.online = false;
@@ -196,9 +197,14 @@ bool PvClient::fetch(PvModel& out) {
     return false;
   }
 
+  // UWAGA: nocą też próbujemy się połączyć — falownik potrafi odpowiadać jeszcze
+  // po zachodzie i budzi się z opóźnieniem. Zmienia się TYLKO opis braku odpowiedzi
+  // (neutralny zamiast czerwonego) i częstotliwość odpytywania (o tym decyduje netTask).
   if (!ensureConnected()) {
     out.online = false;
-    strncpy(out.errorMsg, "Falownik nie odpowiada", sizeof(out.errorMsg) - 1);
+    out.asleep = night;
+    strncpy(out.errorMsg, night ? "Falownik uśpiony" : "Falownik nie odpowiada",
+            sizeof(out.errorMsg) - 1);
     return false;
   }
 
@@ -221,10 +227,14 @@ bool PvClient::fetch(PvModel& out) {
   if (readU16(37100, u16)) snap.meterOk = (u16 == 1);
 
   // Sesja się posypała — zamknij, żeby następny cykl zaczął od czystego handshake.
+  // (Tak samo wygląda zasypianie falownika o zmroku: TCP jeszcze stoi, ale rejestry
+  // już milczą. Nocą nie robimy z tego alarmu.)
   if (fails >= 3) {
     gSock.stop();
     out.online = false;
-    strncpy(out.errorMsg, "Modbus bez odpowiedzi", sizeof(out.errorMsg) - 1);
+    out.asleep = night;
+    strncpy(out.errorMsg, night ? "Falownik uśpiony" : "Modbus bez odpowiedzi",
+            sizeof(out.errorMsg) - 1);
     return false;
   }
 

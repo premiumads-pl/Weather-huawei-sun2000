@@ -23,7 +23,11 @@ class Ota {
  public:
   // Sprawdza wersje; jesli nowsza — pobiera i restartuje urzadzenie.
   // Zwraca true, jesli rozpoczeto aktualizacje (urzadzenie sie zrestartuje).
-  bool checkAndUpdate();
+  //
+  // manual = true oznacza "uzytkownik kliknal w panelu". Tylko wtedy wolno
+  // ponownie pobrac wersje, ktora zostala juz odrzucona po rollbacku — to jest
+  // furtka ratunkowa, gdyby blokada zadzialala niepotrzebnie.
+  bool checkAndUpdate(bool manual = false);
 
   int lastRemoteVersion() const { return lastRemote_; }
 

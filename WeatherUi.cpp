@@ -10,6 +10,7 @@
 #include "MapData.h"
 #include "PlText.h"
 #include "Log.h"
+#include "OtaGuard.h"
 #include "RadarClient.h"
 #include <WiFi.h>
 #include <WiFiClient.h>
@@ -319,8 +320,11 @@ void WeatherUi::drawFooter(const PvModel& pv, bool wifiOk) {
   const int cpu = static_cast<int>(lroundf(cpuTempC_));
 
   // Stopka leży POZA buforem — rysujemy ją wprost na TFT, tylko przy zmianie danych.
+  // pv.asleep MUSI być w tym porównaniu: przy zasypianiu falownika o zmroku
+  // wszystkie liczby zostają zerami i bez tego stopka nigdy by się nie odświeżyła
+  // (czerwone "nie odpowiada" wisiałoby całą noc).
   if (footerInit_ && ac == lastAc_ && g == lastGrid_ && kwh == lastKwh_ &&
-      cpu == lastCpu_ && pv.online == lastOnline_) {
+      cpu == lastCpu_ && pv.online == lastOnline_ && pv.asleep == lastAsleep_) {
     return;
   }
   footerInit_ = true;
@@ -329,6 +333,7 @@ void WeatherUi::drawFooter(const PvModel& pv, bool wifiOk) {
   lastKwh_ = kwh;
   lastCpu_ = cpu;
   lastOnline_ = pv.online;
+  lastAsleep_ = pv.asleep;
 
   drawFooterTo(tft_, pv, wifiOk);
 }
@@ -342,7 +347,10 @@ void WeatherUi::drawFooterTo(TFT_eSPI& dst, const PvModel& pv, bool wifiOk) {
 
   if (!pv.online) {
     const bool connecting = (pv.errorMsg[0] == '\0');
-    dst.fillCircle(14, y + 17, 4, connecting ? col::WARN : col::ERR);
+    // Uśpiony falownik to stan neutralny, nie awaria — kropka szara, nie czerwona.
+    const uint16_t dot =
+        pv.asleep ? col::TEXT_MUTE : (connecting ? col::WARN : col::ERR);
+    dst.fillCircle(14, y + 17, 4, dot);
     const char* msg = connecting ? "Łączę z falownikiem..." : pv.errorMsg;
     plStr(dst, PLF14, wifiOk ? msg : "Brak WiFi", 26, y + 22, col::TEXT_MUTE);
     drawSysBoxTo(dst, y);
@@ -737,9 +745,14 @@ void WeatherUi::drawViewDays(int ox, float t, const WeatherModel& w) {
   }
 }
 
-void WeatherUi::drawNoData(int ox, const char* msg) {
+void WeatherUi::drawNoData(int ox, const char* msg, const char* sub) {
   spr_.fillRoundRect(ox + 40, CY + 50, W - 80, 60, 8, col::BG_CARD);
-  plCenter(spr_, PLF14, msg, ox + W / 2, CY + 86, col::TEXT_DIM);
+  if (sub && sub[0]) {
+    plCenter(spr_, PLF14, msg, ox + W / 2, CY + 78, col::TEXT_DIM);
+    glCenter(spr_, sub, ox + W / 2, CY + 84, col::TEXT_MUTE);
+  } else {
+    plCenter(spr_, PLF14, msg, ox + W / 2, CY + 86, col::TEXT_DIM);
+  }
 }
 
 // ------------------------------------------------------------- WIDOK 4: PV ----
@@ -749,7 +762,10 @@ void WeatherUi::drawViewPv(int ox, float t, const PvModel& pv, const PvHistory& 
   plStr(spr_, PLF14, "FOTOWOLTAIKA", ox + 10, 46, col::PV_SOLAR);
 
   if (!pv.online) {
-    drawNoData(ox, pv.errorMsg[0] ? pv.errorMsg : "Falownik nie odpowiada");
+    // Noc: falownik ma prawo milczeć (Huawei wyłącza Modbus TCP po zachodzie).
+    // Piszemy to wprost, zamiast straszyć awarią do rana.
+    drawNoData(ox, pv.errorMsg[0] ? pv.errorMsg : "Falownik nie odpowiada",
+               pv.asleep ? "Modbus TCP wyłączony po zachodzie" : nullptr);
     return;
   }
 
@@ -1458,7 +1474,12 @@ void WeatherUi::drawViewStats(int ox, float t) {
   plStr(spr_, PLF14, "STATYSTYKI URZĄDZENIA", ox + 10, 46, col::ACCENT);
 
   char b[48];
-  if (d.otaRemote > FW_VERSION) {
+  if (otaTrialActive()) {
+    // Okres próbny: wersja jeszcze nie potwierdziła, że działa. Jeśli w ciągu
+    // 3 minut nie udowodni (WiFi + dane + sterta), urządzenie samo się cofnie.
+    snprintf(b, sizeof(b), "v%d · próbna", FW_VERSION);
+    plRight(spr_, PLF14, b, ox + W - 10, 46, col::WARN);
+  } else if (d.otaRemote > FW_VERSION) {
     snprintf(b, sizeof(b), "v%d → v%d", FW_VERSION, d.otaRemote);
     plRight(spr_, PLF14, b, ox + W - 10, 46, col::WARN);
   } else {
@@ -1482,14 +1503,19 @@ void WeatherUi::drawViewStats(int ox, float t) {
     const int y0 = 54 + i * 17;
     if (e < (i + 1) * 0.12f) continue;
 
-    const bool bad = src[i].err[0] != '\0';
-    const bool never = src[i].okAt == 0;
-    const uint16_t dot = bad ? col::ERR : (never ? col::WARN : col::OK);
+    // Falownik uśpiony nocą to NIE awaria — kropka szara, nie czerwona.
+    const bool asleep = (i == 1) && d.pvAsleep;
+    const bool bad = !asleep && src[i].err[0] != '\0';
+    const bool never = !asleep && src[i].okAt == 0;
+    const uint16_t dot =
+        asleep ? col::TEXT_MUTE : (bad ? col::ERR : (never ? col::WARN : col::OK));
 
     spr_.fillCircle(ox + 12, y0 + 6, 4, dot);
     plStr(spr_, PLF14, src[i].name, ox + 24, y0 + 11, col::TEXT);
 
-    if (bad) {
+    if (asleep) {
+      glRight(spr_, "uśpiony (noc)", ox + W - 10, y0 + 3, col::TEXT_MUTE);
+    } else if (bad) {
       glRight(spr_, src[i].err, ox + W - 10, y0 + 3, col::ERR);
     } else if (never) {
       glRight(spr_, "czekam...", ox + W - 10, y0 + 3, col::TEXT_MUTE);
@@ -1512,7 +1538,7 @@ void WeatherUi::drawViewStats(int ox, float t) {
   struct Card {
     const char* label;
     char value[14];
-    char sub[16];
+    char sub[20];
     uint16_t color;
   } cards[3];
 
@@ -1528,7 +1554,9 @@ void WeatherUi::drawViewStats(int ox, float t) {
   snprintf(cards[1].sub, sizeof(cards[1].sub), "min %lu kB",
            static_cast<unsigned long>(minHeap / 1024));
 
-  cards[2] = {"CZAS PRACY", {0}, {0}, col::TEXT};
+  // Powód ostatniego resetu wprost na ekranie — dotąd nie było wiadomo, czy
+  // urządzenie się wywala, czy po prostu ktoś wyjął wtyczkę.
+  cards[2] = {"CZAS PRACY", {0}, {0}, resetWasCrash() ? col::ERR : col::TEXT};
   if (up < 3600) {
     snprintf(cards[2].value, sizeof(cards[2].value), "%lu min",
              static_cast<unsigned long>(up / 60));
@@ -1539,7 +1567,8 @@ void WeatherUi::drawViewStats(int ox, float t) {
     snprintf(cards[2].value, sizeof(cards[2].value), "%lu dni",
              static_cast<unsigned long>(up / 86400));
   }
-  snprintf(cards[2].sub, sizeof(cards[2].sub), "od restartu");
+  snprintf(cards[2].sub, sizeof(cards[2].sub), "po: %s",
+           resetReasonShort(d.resetReason));
 
   const int cy0 = 126, chh = 44;
   for (int i = 0; i < 3; ++i) {

@@ -29,6 +29,7 @@
 #include "Led.h"
 #include "Log.h"
 #include "Ota.h"
+#include "OtaGuard.h"
 #include "Portal.h"
 #include "PvClient.h"
 #include "PvData.h"
@@ -134,6 +135,11 @@ static void netTask(void*) {
   bool firstWeather = false;
 
   for (;;) {
+    // Okres próbny po OTA. MUSI tykać w każdej iteracji — także wtedy, gdy nie ma
+    // WiFi — bo brak sieci to jeden z powodów, dla których wersję trzeba cofnąć.
+    // Dlatego stoi PRZED wszystkimi "continue" poniżej.
+    otaGuardTick();
+
     if (!settings().hasWifi()) {
       gBooting = false;
       vTaskDelay(pdMS_TO_TICKS(500));
@@ -179,8 +185,16 @@ static void netTask(void*) {
 
     // ---- fotowoltaika ----
     if (static_cast<int32_t>(now - nextPvAt) >= 0) {
+      // Czy falownikowi wolno teraz spać? Godziny wschodu/zachodu mamy z prognozy.
+      char sunrise[6], sunset[6];
+      xSemaphoreTake(gLock, portMAX_DELAY);
+      memcpy(sunrise, gWeather.sunrise, sizeof(sunrise));
+      memcpy(sunset, gWeather.sunset, sizeof(sunset));
+      xSemaphoreGive(gLock);
+      const bool maySleep = pvMayBeAsleep(sunrise, sunset, localMinutesNow());
+
       PvModel tmp{};
-      const bool ok = pvClient.fetch(tmp);
+      const bool ok = pvClient.fetch(tmp, maySleep);
       xSemaphoreTake(gLock, portMAX_DELAY);
       gPv = tmp;
       if (ok) {
@@ -197,17 +211,32 @@ static void netTask(void*) {
         }
       }
       xSemaphoreGive(gLock);
-      nextPvAt = millis() + cfg::PV_REFRESH_MS;
+
+      // Śpiący falownik odpytujemy co 5 minut zamiast co 30 s. Gdy tylko odpowie
+      // (a potrafi odpowiadać jeszcze po zachodzie), wracamy do normalnego tempa.
+      nextPvAt = millis() + (tmp.asleep ? cfg::PV_REFRESH_NIGHT_MS : cfg::PV_REFRESH_MS);
+
       if (ok) {
         diag().pvOkAt = millis();
         diag().pvErr[0] = '\0';
+        diag().pvAsleep = false;
         LOG("PV: AC=%ldW DC=%ldW siec=%ldW dzis=%.2fkWh st=0x%04X\n",
                       static_cast<long>(tmp.data.powerAcW),
                       static_cast<long>(tmp.data.powerDcW),
                       static_cast<long>(tmp.data.gridPowerW), tmp.data.energyTodayKwh,
             tmp.data.statusCode);
+      } else if (tmp.asleep) {
+        // Stan neutralny: to nie jest błąd, więc nie zaśmiecamy nim diagnostyki
+        // ani ekranu statystyk (kropka szara, nie czerwona).
+        if (!diag().pvAsleep) {
+          LOG("PV: falownik usypia (po zachodzie) — odpytuje co %lu min\n",
+              static_cast<unsigned long>(cfg::PV_REFRESH_NIGHT_MS / 60000));
+        }
+        diag().pvErr[0] = '\0';
+        diag().pvAsleep = true;
       } else {
         strncpy(diag().pvErr, tmp.errorMsg, sizeof(diag().pvErr) - 1);
+        diag().pvAsleep = false;
         LOG("PV BLAD: %s\n", tmp.errorMsg);
       }
     }
@@ -267,7 +296,9 @@ static void netTask(void*) {
     const bool otaAsked = takeOtaRequest();
     if (settings().otaEnabled &&
         (otaAsked || static_cast<int32_t>(millis() - nextOtaAt) >= 0)) {
-      ota.checkAndUpdate();  // przy sukcesie restartuje urządzenie
+      // otaAsked = kliknięcie w panelu; tylko wtedy wolno wymusić wersję, która
+      // wcześniej nie przeżyła okresu próbnego.
+      ota.checkAndUpdate(otaAsked);  // przy sukcesie restartuje urządzenie
       nextOtaAt = millis() + cfg::OTA_CHECK_MS;
     }
 
@@ -389,10 +420,19 @@ void setup() {
   LOG("=== Pogoda + PV — firmware v%d ===\n", FW_VERSION);
 
   settings().load();
+
+  // Zanim cokolwiek zaalokujemy: sprawdź, czy to świeża wersja po OTA (okres
+  // próbny) i zapamiętaj powód ostatniego resetu.
+  otaGuardBegin();
+
   gLock = xSemaphoreCreateMutex();
 
   if (!ui.begin()) {
-    Serial.println("BLAD: nie udalo sie utworzyc bufora TFT");
+    LOG("BLAD: nie udalo sie utworzyc bufora TFT (wolny heap %lu B)\n",
+        static_cast<unsigned long>(ESP.getFreeHeap()));
+    // Regresja typu v14: nowa wersja zjadła tyle RAM, że nie ma na bufor ekranu.
+    // Nie ma po co czekać 3 minuty — jeśli to wersja próbna, cofamy się natychmiast.
+    otaGuardFatal("brak RAM na bufor ekranu");
     while (true) {
       delay(1000);
     }
