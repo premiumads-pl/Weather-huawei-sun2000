@@ -55,6 +55,10 @@ class WeatherUi {
   // Czy zadanie sieciowe ma teraz odswiezac loty (ekran aktywny lub zaraz bedzie).
   bool needsFlights(uint32_t nowMs) const;
 
+  // Klatka jest "spokojna": nie trwa przejscie ani alert. Wtedy kolejne klatki
+  // roznia sie kosmetycznie, wiec mozna czytac bufor bez zatrzymywania rysowania.
+  bool stableFrame() const { return !transitioning_ && !alertActive_; }
+
   // Podglad w przegladarce: przypiecie ekranu (idx < 0 = rotacja automatyczna).
   void pinView(int idx);
   void viewState(int& cur, int& pin) const {

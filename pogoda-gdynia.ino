@@ -54,8 +54,6 @@ FlightModel gFlights{};
 volatile bool gWifiOk = false;
 volatile bool gBooting = true;
 volatile bool gFlightsNeeded = false;
-volatile bool gShotWanted = false;  // panel WWW chce zrzut — pauza rysowania
-volatile bool gRenderIdle = false;  // rysowanie faktycznie stoi
 volatile int gWifiAttempt = 0;
 char gBootMsg[48] = "Łączenie z WiFi...";
 
@@ -415,15 +413,14 @@ void setup() {
 
   ui.drawBoot(gBootMsg, 0);
 
-  // Zrzut ekranu: najpierw usypiamy rysowanie, zeby nie zlapac klatki w polowie
-  // (inaczej w podgladzie widac dwa ekrany naraz w trakcie przejscia).
+  // Zrzut ekranu leci z zadania web (rdzen 0) i NIE zatrzymuje rysowania (rdzen 1) —
+  // inaczej ekran zamiera na czas wysylania BMP. Zeby nie zlapac klatki w polowie
+  // przejscia, czekamy tylko na spokojna klatke; poza przejsciem kolejne klatki sa
+  // niemal identyczne, wiec czytanie bufora "w locie" jest niewidoczne.
   portal::setScreenshotHandler([](WiFiClient& c) {
-    gShotWanted = true;
     const uint32_t t0 = millis();
-    while (!gRenderIdle && millis() - t0 < 300) delay(5);
-
+    while (!ui.stableFrame() && millis() - t0 < 800) delay(10);
     ui.streamScreenshot(c, uiPv, gWifiOk);
-    gShotWanted = false;
   });
 
   portal::setViewHandler([](int i) { ui.pinView(i); },
@@ -440,14 +437,6 @@ void loop() {
     delay(1000);
     return;
   }
-
-  // --- podglad w przegladarce czyta bufor: nie ruszamy go w tym czasie ---
-  if (gShotWanted) {
-    gRenderIdle = true;
-    delay(10);
-    return;
-  }
-  gRenderIdle = false;
 
   const uint32_t now = millis();
 
