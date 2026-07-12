@@ -1,0 +1,82 @@
+name: Build firmware
+
+# Compiles the sketch exactly like tools/release.sh does, and enforces the
+# same static-RAM ceiling. This board has no PSRAM, so a build that quietly
+# grows past the ceiling leaves too little heap for TLS/OTA — see
+# CONTRIBUTING.md for why that's a "won't boot its own updater" bug, not a
+# style nitpick.
+
+on: [push, pull_request]
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FQBN: esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs
+  ESP32_CORE_VERSION: "3.3.10"
+  ESP32_INDEX_URL: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+  RAM_LIMIT_BYTES: 76000
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install arduino-cli
+        uses: arduino/setup-arduino-cli@v1
+
+      - name: Install esp32 core (pinned)
+        run: |
+          arduino-cli core update-index --additional-urls "$ESP32_INDEX_URL"
+          arduino-cli core install "esp32:esp32@${ESP32_CORE_VERSION}" --additional-urls "$ESP32_INDEX_URL"
+
+      # Versions pinned to match the maintainer's known-good local setup.
+      # Bump deliberately (and re-check the RAM ceiling) rather than drifting.
+      - name: Install libraries (pinned)
+        run: |
+          arduino-cli lib install \
+            "TFT_eSPI@2.5.43" \
+            "ArduinoJson@7.4.3" \
+            "PNGdec@1.1.6"
+
+      # TFT_eSPI is configured by overwriting its User_Setup.h, not via
+      # build flags. tools/release.sh assumes this has already been done
+      # once on the maintainer's machine (see README "Wiring" section for
+      # the manual step); CI has to do it fresh every run.
+      - name: Drop in this repo's TFT_eSPI User_Setup.h
+        run: |
+          LIB_DIR=$(arduino-cli lib list TFT_eSPI --format json | jq -r '.installed_libraries[0].library.install_dir')
+          echo "TFT_eSPI installed at: $LIB_DIR"
+          cp User_Setup.h "$LIB_DIR/User_Setup.h"
+
+      - name: Compile
+        run: |
+          arduino-cli compile --fqbn "$FQBN" --output-dir build . | tee build.log
+
+      - name: Enforce RAM ceiling (same rule as tools/release.sh)
+        run: |
+          STATIC=$(grep -oE 'Global variables use [0-9]+' build.log | grep -oE '[0-9]+' || echo 0)
+          echo "Static RAM used: ${STATIC} B (ceiling: ${RAM_LIMIT_BYTES} B)"
+          if [ "$STATIC" -eq 0 ]; then
+            echo "::error::Could not find a 'Global variables use' line in the build output — did the arduino-cli/compiler output format change? Update this check."
+            exit 1
+          fi
+          if [ "$STATIC" -gt "$RAM_LIMIT_BYTES" ]; then
+            echo "::error::Static RAM ${STATIC} B exceeds the ${RAM_LIMIT_BYTES} B ceiling. With no PSRAM this leaves too little heap for TLS/OTA (see CONTRIBUTING.md)."
+            exit 1
+          fi
+
+      - name: Collect firmware.bin
+        run: |
+          BIN=$(ls build/*.ino.bin | head -1)
+          cp "$BIN" build/firmware.bin
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware.bin
+          path: build/firmware.bin
+          if-no-files-found: error
