@@ -1,118 +1,260 @@
-# Pogoda + Fotowoltaika Huawei SUN2000
+# Weather + Huawei SUN2000 Wall Display
 
-Wyświetlacz ścienny na ESP32-S3 + ST7789 (320×240, landscape). Pokazuje prognozę
-pogody z Open-Meteo, dane z falownika Huawei SUN2000 przez Modbus TCP oraz mapę
-samolotów nad Zatoką Gdańską (ADS-B).
+[![Build firmware](https://github.com/premiumads-pl/Weather-huawei-sun2000/actions/workflows/build.yml/badge.svg)](https://github.com/premiumads-pl/Weather-huawei-sun2000/actions/workflows/build.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Płytka nie ma przycisków — wszystko przełącza się automatycznie.
+*[Polska wersja tego README](README.pl.md)*
 
-## Ekrany
+A wall-mounted ESP32-S3 display that shows the weather, your Huawei solar
+inverter's live output, a rain radar, and planes flying over the bay — no
+buttons, no app, updates itself over Wi-Fi.
 
-Rotacja co 9 s (mapa lotów: 15 s), przejścia slide, animowane wykresy.
-Stała belka górna (miasto, data, zegar, WiFi) i stały pasek PV na dole.
+![All six screens](docs/screens-contact-sheet.png)
 
-| # | Ekran | Zawartość |
-|---|-------|-----------|
-| 1 | **TERAZ** | wielka temperatura, ikona, odczuwalna, wiatr + kierunek, wilgotność, ciśnienie, zachmurzenie, wschód/zachód, UV |
-| 2 | **GODZINY** | krzywa temperatury na 12 h (gradient), słupki opadów, ikony co 2 h |
-| 3 | **5 DNI** | pionowe słupki zakresu min–max, ikony, paski opadów |
-| 4 | **PV** | moc chwilowa, wskaźnik obciążenia instalacji, profil produkcji dnia, dziś / dom / sieć / temperatura falownika |
-| 5 | **SAMOLOTY** | mapa Zatoki (Hel–Trójmiasto) + lista lotów; zielony = ląduje w Gdańsku, pomarańczowy = startuje z Gdańska |
+![Screens rotating](docs/screens.gif)
 
-**Alerty** (burza, ulewa, silny wiatr, mróz, upał, awaria falownika) przerywają
-rotację i wyświetlają ostrzeżenie.
+## Why this exists
 
-**Tryb nocny** — PWM na podświetleniu, przygaszenie 22:00–06:00.
+This started as a weather clock and grew into a small home dashboard: it
+polls a weather API, talks Modbus TCP to a solar inverter, decodes radar
+tiles, and tracks nearby air traffic — all on a $5 microcontroller with no
+PSRAM and a screen buffer that has to fight the network stack for every
+free byte of RAM. If you like squeezing embedded systems until they beg for
+mercy, this repo has some fun corners for you (see [Known
+limitations](#known-limitations) and the [issue tracker](../../issues)).
 
-## Konfiguracja — bez sekretów w kodzie
+## Features
 
-W repozytorium **nie ma** żadnych haseł, adresów IP ani kluczy. Wszystko siedzi
-w pamięci NVS urządzenia i ustawia się przez panel WWW.
+The board has no buttons — everything rotates automatically (every 9 s,
+15 s for the flight map) with slide transitions and animated charts. A
+fixed top bar (city, date, clock, Wi-Fi status) and a fixed bottom bar
+(today's PV yield / export) are always visible.
 
-1. Po pierwszym uruchomieniu urządzenie tworzy sieć **`Pogoda-Setup`**
-   (hasło `pogoda123`). Nazwa sieci i adres są pokazane na ekranie.
-2. Połącz się telefonem i otwórz `http://192.168.4.1`.
-3. W panelu:
-   - **Wyszukaj sieci bezprzewodowe** → wybierz swoją → wpisz hasło
-   - **Lokalizacja** → wpisz miasto → wybierz z listy (geokoder Open-Meteo)
-   - **Falownik** → adres IP (Modbus TCP) i moc szczytowa instalacji w kWp
-4. Po połączeniu panel zostaje dostępny w sieci domowej pod adresem IP
-   urządzenia (widocznym na ekranie startowym).
+| # | Screen | Shows |
+|---|--------|-------|
+| 0 | **Now** | current temperature, condition icon, "feels like", wind + direction, humidity, pressure, cloud cover, sunrise/sunset, UV index |
+| 1 | **Hours** | 12-hour temperature curve (gradient fill), precipitation bars, icons every 2 h |
+| 2 | **5 days** | vertical min–max range bars, condition icons, precipitation bars |
+| 3 | **PV** | instantaneous power, inverter load gauge, today's production profile, today/house/grid/inverter-temperature |
+| 4 | **Flights** | map of the Gdańsk Bay (Hel–Tricity) with live aircraft; green = landing at Gdańsk, orange = departing Gdańsk (via [adsb.fi](https://adsb.fi)) |
+| 5 | **Stats** | device diagnostics: subsystem health, heap, CPU temperature, uptime, Wi-Fi RSSI |
 
-Konfiguracja przeżywa aktualizacje OTA i zanik zasilania.
+Other things it does:
 
-## Aktualizacje OTA
+- **Rain radar** — real radar imagery from RainViewer overlaid on screen 0's
+  priority logic (a forecast model can miss a local downpour; radar can't).
+- **RGB status LED** — green = exporting to the grid, blue = balanced
+  (± 300 W), red = importing from the grid. Runs a 3-color self-test on
+  boot so you can confirm the LED wiring/mapping is correct.
+- **Alerts** — storm, heavy rain, high wind, frost, heat, and inverter-fault
+  conditions interrupt the rotation with a full-screen warning.
+- **Night mode** — backlight dims (PWM) between 22:00 and 06:00.
 
-Urządzenie co 15 minut sprawdza
-`releases/latest/download/version.json`. Jeśli numer wersji jest wyższy niż
-wkompilowany, pobiera `firmware.bin`, zapisuje go na partycji OTA i restartuje
-się. Na ekranie widać pasek postępu.
+## Remote diagnostics
 
-Publikacja nowej wersji:
+The device hangs on a wall with no USB cable attached, so a few JSON/HTTP
+endpoints stand in for a serial console (all also reachable from the
+"Diagnostics" tab of the web panel):
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/log` | in-RAM ring buffer of the last ~120 log lines |
+| `GET /api/diag` | JSON snapshot: heap (current/min-ever/largest free block), Wi-Fi RSSI, per-subsystem last-success age and last error, OTA status |
+| `GET /api/view?i=N` | pins screen `N` (`0`–`5`); `i=-1` returns to auto-rotation; responds with `{"cur":X,"pin":Y}` |
+| `GET /api/screen` | current screen as a 320×240 24-bit BMP (~1 s to fetch) |
+| `POST /api/reboot` | restarts without touching saved configuration |
+
+`/api/view` and `/api/screen` together are also how the screenshots and GIF
+on this page were generated — see
+[`tools/capture_screens.py`](tools/capture_screens.py).
+
+## Hardware / BOM
+
+| Part | Notes |
+|------|-------|
+| **ESP32-S3 Super Mini** | 4 MB flash, **no PSRAM** — this matters, see [Known limitations](#known-limitations) |
+| **ST7789 2.8" IPS TFT, 240×320** | driven in landscape (320×240, rotation 1) |
+| USB-C cable | for the first flash only; everything after that is OTA |
+
+### Wiring
+
+Pin-out is defined in [`User_Setup.h`](User_Setup.h) (a TFT_eSPI
+configuration file — see [Flashing](#flashing) for where it needs to go).
+
+| Signal | ESP32-S3 GPIO | Notes |
+|--------|:---:|-------|
+| MOSI | 11 | HSPI |
+| SCLK | 12 | HSPI |
+| CS | 10 | |
+| DC | 8 | |
+| RST | 9 | |
+| BL (backlight) | 14 | PWM, dimmed at night |
+| MISO | *not connected* | `TFT_MISO -1` — display is write-only, no read-back |
+| VCC | 3V3 | |
+| GND | GND | |
+
+Panel driver: `ST7789_DRIVER`, SPI bus: `HSPI` @ 27 MHz, colour order:
+`TFT_BGR`, `TFT_INVERSION_OFF`. If your panel shows inverted or
+wrong-hued colors, those last two are the first things to flip.
+
+## Flashing
+
+### Option A — build from source with `arduino-cli`
 
 ```bash
-./tools/release.sh "co się zmieniło"
-```
+# 1. TFT_eSPI needs this repo's display config instead of its own default:
+cp User_Setup.h "$(arduino-cli lib list TFT_eSPI --format json \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["installed_libraries"][0]["library"]["install_dir"])')/User_Setup.h"
 
-Skrypt podnosi `FW_VERSION`, kompiluje, commituje, taguje i tworzy Release
-z `firmware.bin` + `version.json`.
-
-## Sprzęt
-
-| Sygnał | GPIO |
-|--------|------|
-| CS  | 10 |
-| DC  | 8  |
-| RST | 9  |
-| MOSI| 11 |
-| SCLK| 12 |
-| BL  | 14 (PWM) |
-| MISO| — |
-
-ESP32-S3 (4 MB flash, 2 MB PSRAM), ST7789 240×320 używany w landscape 320×240,
-SPI 27 MHz (HSPI), TFT_eSPI.
-
-## Budowanie
-
-Wymagane: `arduino-cli`, rdzeń `esp32:esp32` ≥ 3.3, biblioteki `TFT_eSPI`
-i `ArduinoJson`.
-
-Skopiuj `User_Setup.h` z tego repo do katalogu biblioteki TFT_eSPI
-(nadpisuje domyślną konfigurację — sterownik, piny, `TFT_BGR`, `TFT_INVERSION_OFF`).
-
-```bash
+# 2. Compile (min_spiffs partitions are required — see below)
 arduino-cli compile \
   --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs" .
 
+# 3. Flash over USB
 arduino-cli upload -p /dev/cu.usbmodem101 \
   --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs" .
 ```
 
-Partycje `min_spiffs` są konieczne — dają dwie partycje aplikacji po 1,9 MB,
-bez tego OTA się nie zmieści.
+Requirements: `arduino-cli`, esp32 board core (`esp32:esp32`, this repo's CI
+pins **3.3.10**), and the libraries `TFT_eSPI`, `ArduinoJson`, `PNGdec`.
 
-## Źródła danych
+**`PartitionScheme=min_spiffs` is not optional.** It gives two ~1.9 MB app
+partitions; the default partition table's app slot is too small for OTA to
+have a second copy to write into, so remote updates would simply fail.
 
-- **Pogoda** — [Open-Meteo](https://open-meteo.com) (bez klucza)
-- **Geokoder** — Open-Meteo Geocoding API
-- **Fotowoltaika** — Huawei SUN2000, Modbus TCP :502
-  (rejestry 32064/32080/32106/32114/32016/32086/32087/32089/37100/37113)
-- **Samoloty** — [adsb.fi](https://adsb.fi) (ADS-B + MLAT) i trasy z
-  vrs-standing-data
+### Option B — flash a pre-built release with `esptool`
 
-## Konsola serwisowa
+Every [GitHub Release](../../releases) ships a ready-to-flash
+`firmware.bin`. This is the **application partition only** (an OTA-style
+image), so it has to be written to an ESP32-S3 that already has a
+bootloader and partition table on it — e.g. a board that was flashed at
+least once with option A, or with any other Arduino/ESP-IDF sketch using
+the same `min_spiffs` partition layout.
 
-Przez USB (115200):
-
-```
-wifi <ssid> <haslo>
-loc <nazwa> <lat> <lon>
-modbus <ip>
-peak <W>
-show
-reset          # kasuje zapisane WiFi
+```bash
+pip install esptool
+esptool.py --chip esp32s3 -p /dev/cu.usbmodem101 write_flash 0x10000 firmware.bin
 ```
 
-## Licencja
+### Option C — flash from the browser (planned)
 
-MIT
+[ESP Web Tools](https://esphome.github.io/esp-web-tools/) would let anyone
+flash a blank board from Chrome/Edge with one click, no CLI required. It's
+not wired up yet — see
+[the tracking issue](../../issues) for why (short version: a true
+"flash from scratch" needs the bootloader + partition table images
+published as release assets too, not just the app binary that
+`tools/release.sh` currently uploads). Contributions welcome.
+
+## Configuration — no secrets in the repo, ever
+
+There is **no** Wi-Fi password, IP address, or API key anywhere in this
+source tree. Everything lives in the device's NVS flash and is set through
+a web panel:
+
+1. On first boot (or after a Wi-Fi reset) the device creates an access
+   point named **`Pogoda-Setup`**. Its name/password and IP are shown on
+   the screen.
+2. Connect to it from a phone and open `http://192.168.4.1`.
+3. In the panel:
+   - **Scan for networks** → pick yours → enter the password.
+   - **Location** → type a city name → pick from the list (Open-Meteo
+     geocoder).
+   - **Inverter** → Modbus TCP IP address (the one FusionSolar shows you)
+     and the plant's peak power in kWp.
+4. Once connected, the same panel stays reachable on your home network at
+   the device's IP (also shown on the boot screen).
+
+This configuration survives OTA updates and power loss. None of it — SSID,
+password, coordinates, inverter IP — is ever committed to git or baked into
+`firmware.bin`.
+
+### Updates (OTA)
+
+The device polls
+`releases/latest/download/version.json` every 15 minutes. If the version
+number is higher than the one it's running, it downloads `firmware.bin`,
+writes it to the inactive OTA partition, and reboots — with a progress bar
+on screen. Maintainers publish a new version with `tools/release.sh
+"what changed"` (bumps `Version.h`, compiles, enforces the RAM ceiling
+below, tags, and creates the Release).
+
+## Compatibility
+
+**Inverter:** Huawei SUN2000 series over **Modbus TCP, port 502**
+(register set: `32064/32080/32106/32114/32016/32086/32087/32089/37100/37113`
+— DC/AC/grid power, daily/total energy, PV voltage, inverter temperature,
+efficiency, status code, meter status). Other Huawei SUN2000 models that
+expose the same register map should work; other brands will not, since the
+Modbus client (`PvClient`) currently talks to this one register layout
+directly rather than through an abstraction (see
+[open issues](../../issues) if you'd like to help generalize this).
+
+Two quirks worth knowing before you file a bug:
+
+- **The inverter accepts exactly one Modbus TCP session at a time.** If you
+  point another client (a script on your laptop, Home Assistant, etc.) at
+  it while the display is running, one of the two will get disconnected.
+- **It can take up to ~100 s to respond after it powers on** (e.g. at
+  sunrise, or after a grid outage) — the display treats "inverter offline"
+  as normal during that window rather than raising an alert immediately.
+
+**Weather:** [Open-Meteo](https://open-meteo.com) — free, no API key.
+Note it's a forecast *model*, not radar, so it can miss a very local
+downpour; that's why the rain radar (RainViewer) takes priority on screen 0
+when the two disagree.
+
+**Flights:** [adsb.fi](https://adsb.fi) (ADS-B + MLAT aggregator, free,
+no key) plus route lookups from `vrs-standing-data`.
+
+## Repository layout
+
+```
+pogoda-gdynia.ino    setup()/loop(), Wi-Fi + FreeRTOS task wiring, alerts
+Config.h              pins, timings, tunables (no secrets)
+Settings.h/.cpp       NVS-backed config (Wi-Fi, location, inverter) + PV history
+Portal.h/.cpp         captive portal + web panel + JSON API + serial console
+WeatherClient.h/.cpp, WeatherData.h    Open-Meteo fetch + parsed model
+PvClient.h/.cpp, PvData.h              Huawei SUN2000 Modbus TCP client + parsed model
+RadarClient.h/.cpp    RainViewer tile fetch + PNG decode + pixel sampling
+FlightClient.h/.cpp, FlightData.h      adsb.fi fetch + route cache
+MapData.h             generated coastline outline for the flight map
+WeatherUi.h/.cpp       all TFT_eSPI drawing (6 screens, header/footer, alerts)
+Led.h/.cpp             RGB status LED
+Ota.h/.cpp             GitHub-Releases-based OTA client
+Log.h/.cpp             in-RAM log ring buffer for /api/log
+tools/release.sh       version bump + build + RAM gate + tag + GitHub Release
+tools/capture_screens.py  screenshot capture used to generate docs/ images
+```
+
+## Contributing
+
+Bug reports, hardware variations, and pull requests are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md) for the build/test workflow and the
+project's one hard rule (no secrets in the repo). Check the
+[open issues](../../issues) for a prioritized backlog, including a few
+tagged [`good first issue`](../../issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22).
+
+## Known limitations
+
+- **No PSRAM, ~320 KB total RAM, and a screen buffer that eats most of
+  it.** Free heap has been observed as low as ~1 KB under load (TLS +
+  JSON parsing at the same time); see `GET /api/diag` on a running device.
+  There's a safety net (OTA frees the screen buffer and retries if heap is
+  critically low) but it's a genuinely tight fit, not a comfortable one.
+- **RainViewer only serves zoom ≤ 7** for the tile endpoint this project
+  uses; zoom 8+ returns a "Zoom Level Not Supported" placeholder tile whose
+  anti-aliased text can look like a false radar echo if you don't know to
+  expect it. Don't raise the zoom without re-verifying this.
+- **The Huawei inverter allows only one Modbus TCP client.** See
+  [Compatibility](#compatibility).
+- **Open-Meteo is a forecast model, not a measurement** — it can miss a
+  local storm entirely.
+- **PNGdec needs one contiguous ~46 KB heap block to decode a radar
+  tile**, on a heap that fragments down to ~34 KB free-contiguous under
+  load; the radar client asks the UI to temporarily release the screen
+  buffer while it decodes, which briefly freezes (not blanks) the display.
+
+## License
+
+[MIT](LICENSE) © 2026 Maciej
