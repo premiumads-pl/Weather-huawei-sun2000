@@ -74,8 +74,12 @@ SPI 27 MHz (HSPI), TFT_eSPI.
 
 ## Budowanie
 
-Wymagane: `arduino-cli`, rdzeń `esp32:esp32` ≥ 3.3, biblioteki `TFT_eSPI`
-i `ArduinoJson`.
+Wymagane: `arduino-cli`, rdzeń `esp32:esp32` ≥ 3.3, biblioteki `TFT_eSPI`,
+`ArduinoJson`, `PNGdec` i `PubSubClient` (MQTT).
+
+```bash
+arduino-cli lib install TFT_eSPI ArduinoJson PNGdec PubSubClient
+```
 
 Skopiuj `User_Setup.h` z tego repo do katalogu biblioteki TFT_eSPI
 (nadpisuje domyślną konfigurację — sterownik, piny, `TFT_BGR`, `TFT_INVERSION_OFF`).
@@ -100,6 +104,47 @@ bez tego OTA się nie zmieści.
 - **Samoloty** — [adsb.fi](https://adsb.fi) (ADS-B + MLAT) i trasy z
   vrs-standing-data
 
+## MQTT / Home Assistant
+
+Optional, **off by default**. Turn it on in the web panel under
+**MQTT / Home Assistant**: broker address, port (default `1883`), optional
+username/password, and a topic prefix (default `pogoda-gdynia`). The broker
+password is stored in NVS and is never returned by `/api/state` — the panel only
+sees a "password is set" flag.
+
+Once the device connects, it publishes Home Assistant MQTT Discovery configs
+(retained, on `homeassistant/sensor/<device-id>/<entity>/config`) **once per
+connection**, and they all share one `device` block — so Home Assistant shows a
+single device with 22 entities rather than 22 loose ones:
+
+| Group | Entities |
+|-------|----------|
+| **PV** | AC power, DC power, energy today (`total_increasing`), lifetime energy, grid balance (positive = exporting, negative = importing), house load, inverter temperature, inverter status |
+| **Weather** | temperature, apparent temperature, humidity, pressure, wind, cloud cover, UV index, precipitation (mm/h), condition |
+| **Device** (diagnostic) | ESP32 temperature, free heap, uptime, Wi-Fi RSSI, firmware version |
+
+States are grouped into one retained JSON per topic (`<prefix>/pv/state`,
+`<prefix>/wx/state`, `<prefix>/dev/state`) and picked apart with
+`value_template`, which keeps the packet count low: PV every 30 s, weather every
+15 min, device telemetry every 60 s.
+
+Availability uses `<prefix>/status` (`online` / `offline`, retained) with an MQTT
+Last Will, so Home Assistant marks the entities unavailable if the display drops
+off the network.
+
+If the broker is unreachable the device keeps working normally — connection
+attempts use short timeouts and back off from 5 s to 5 min, and the failure is
+reported on the on-device stats screen and in `GET /api/diag`.
+
+Same settings from the serial console:
+
+```
+mqtt <host> [port]        # sets the broker and enables publishing
+mqtt off
+mqttauth <user> <pass>    # pass "-" clears the password
+mqttprefix <prefix>
+```
+
 ## Konsola serwisowa
 
 Przez USB (115200):
@@ -109,6 +154,9 @@ wifi <ssid> <haslo>
 loc <nazwa> <lat> <lon>
 modbus <ip>
 peak <W>
+mqtt <host> [port]   # mqtt off — wyłącza
+mqttauth <user> <haslo>
+mqttprefix <prefiks>
 show
 reset          # kasuje zapisane WiFi
 ```

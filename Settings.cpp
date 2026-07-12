@@ -28,12 +28,27 @@ void Settings::load() {
   modbusPort = prefs.getUShort("mbport", 502);
   pvPeakW = prefs.getUShort("peak", 6000);
   otaEnabled = prefs.getBool("ota", true);
+
+  String mh = prefs.getString("mqhost", "");
+  String mu = prefs.getString("mquser", "");
+  String mp = prefs.getString("mqpass", "");
+  String mx = prefs.getString("mqpre", "pogoda-gdynia");
+  mqttPort = prefs.getUShort("mqport", 1883);
+  mqttEnabled = prefs.getBool("mqen", false);
   prefs.end();
 
   strncpy(ssid, s.c_str(), sizeof(ssid) - 1);
   strncpy(pass, p.c_str(), sizeof(pass) - 1);
   strncpy(city, c.c_str(), sizeof(city) - 1);
   strncpy(modbusHost, m.c_str(), sizeof(modbusHost) - 1);
+
+  strncpy(mqttHost, mh.c_str(), sizeof(mqttHost) - 1);
+  strncpy(mqttUser, mu.c_str(), sizeof(mqttUser) - 1);
+  strncpy(mqttPass, mp.c_str(), sizeof(mqttPass) - 1);
+  strncpy(mqttPrefix, mx.c_str(), sizeof(mqttPrefix) - 1);
+  if (mqttPrefix[0] == '\0') {
+    strncpy(mqttPrefix, "pogoda-gdynia", sizeof(mqttPrefix) - 1);
+  }
 }
 
 void Settings::save() {
@@ -47,6 +62,12 @@ void Settings::save() {
   prefs.putUShort("mbport", modbusPort);
   prefs.putUShort("peak", pvPeakW);
   prefs.putBool("ota", otaEnabled);
+  prefs.putString("mqhost", mqttHost);
+  prefs.putString("mquser", mqttUser);
+  prefs.putString("mqpass", mqttPass);
+  prefs.putString("mqpre", mqttPrefix);
+  prefs.putUShort("mqport", mqttPort);
+  prefs.putBool("mqen", mqttEnabled);
   prefs.end();
 }
 

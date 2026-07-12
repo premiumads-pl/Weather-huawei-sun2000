@@ -1466,30 +1466,36 @@ void WeatherUi::drawViewStats(int ox, float t) {
     plRight(spr_, PLF14, b, ox + W - 10, 46, col::OK);
   }
 
-  // --- źródła danych: zielona kropka = działa, czerwona = błąd ---
+  // --- źródła danych: zielona kropka = działa, czerwona = błąd, szara = wyłączone ---
   struct Src {
     const char* name;
     uint32_t okAt;
     const char* err;
-  } src[4] = {
-      {"Pogoda", d.weatherOkAt, d.weatherErr},
-      {"Falownik", d.pvOkAt, d.pvErr},
-      {"Radar", d.radarOkAt, d.radarErr},
-      {"Samoloty", d.flightOkAt, d.flightErr},
+    bool off;  // świadomie wyłączone przez użytkownika — to nie jest awaria
+  } src[5] = {
+      {"Pogoda", d.weatherOkAt, d.weatherErr, false},
+      {"Falownik", d.pvOkAt, d.pvErr, false},
+      {"Radar", d.radarOkAt, d.radarErr, false},
+      {"Samoloty", d.flightOkAt, d.flightErr, false},
+      {"MQTT", d.mqttOkAt, d.mqttErr, !settings().hasMqtt()},
   };
 
-  for (int i = 0; i < 4; ++i) {
-    const int y0 = 54 + i * 17;
-    if (e < (i + 1) * 0.12f) continue;
+  // 5 wierszy po 15 px zamiast 4 po 17 — karty niżej muszą się zmieścić.
+  for (int i = 0; i < 5; ++i) {
+    const int y0 = 52 + i * 15;
+    if (e < (i + 1) * 0.11f) continue;
 
-    const bool bad = src[i].err[0] != '\0';
-    const bool never = src[i].okAt == 0;
-    const uint16_t dot = bad ? col::ERR : (never ? col::WARN : col::OK);
+    const bool off = src[i].off;
+    const bool bad = !off && src[i].err[0] != '\0';
+    const bool never = !off && src[i].okAt == 0;
+    const uint16_t dot = off ? col::TEXT_MUTE : (bad ? col::ERR : (never ? col::WARN : col::OK));
 
     spr_.fillCircle(ox + 12, y0 + 6, 4, dot);
-    plStr(spr_, PLF14, src[i].name, ox + 24, y0 + 11, col::TEXT);
+    plStr(spr_, PLF14, src[i].name, ox + 24, y0 + 11, off ? col::TEXT_MUTE : col::TEXT);
 
-    if (bad) {
+    if (off) {
+      glRight(spr_, "wyłączony", ox + W - 10, y0 + 3, col::TEXT_MUTE);
+    } else if (bad) {
       glRight(spr_, src[i].err, ox + W - 10, y0 + 3, col::ERR);
     } else if (never) {
       glRight(spr_, "czekam...", ox + W - 10, y0 + 3, col::TEXT_MUTE);
@@ -1541,7 +1547,7 @@ void WeatherUi::drawViewStats(int ox, float t) {
   }
   snprintf(cards[2].sub, sizeof(cards[2].sub), "od restartu");
 
-  const int cy0 = 126, chh = 44;
+  const int cy0 = 128, chh = 44;
   for (int i = 0; i < 3; ++i) {
     const int x = ox + 6 + i * 104;
     const int grow = static_cast<int>(chh * clampf(e * 1.8f - 0.3f - i * 0.15f, 0.f, 1.f));
