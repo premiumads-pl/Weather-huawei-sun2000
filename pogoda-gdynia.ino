@@ -414,6 +414,16 @@ static Alert buildAlert(const WeatherModel& w, const PvModel& pv) {
 
 // ------------------------------------------------------------------ setup ----
 
+// KLUCZOWE dla rollbacku. Arduino core (initArduino(), esp32-hal-misc.c) domyslnie
+// sam potwierdza swiezy obraz OTA — jeszcze zanim ruszy setup(). Wtedy OtaGuard nigdy
+// nie zobaczylby stanu PENDING_VERIFY i caly mechanizm bylby atrapa: /api/diag pisalby
+// "stabilna", a ochrony by nie bylo (tak zachowywala sie v29).
+// Ten slaby symbol przejmuje odpowiedzialnosc: obraz potwierdzamy sami, dopiero gdy
+// udowodni, ze dziala (WiFi + udane pobranie po TLS + heap ponad progiem).
+extern "C" bool verifyRollbackLater() {
+  return true;
+}
+
 void setup() {
   Serial.begin(115200);
   delay(200);
