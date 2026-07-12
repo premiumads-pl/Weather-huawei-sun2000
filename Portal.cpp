@@ -378,6 +378,7 @@ void apiDiag() {
   j["heap_free"] = ESP.getFreeHeap();
   j["heap_min"] = d.minHeap == 0xFFFFFFFF ? ESP.getFreeHeap() : d.minHeap;
   j["heap_min_ever"] = ESP.getMinFreeHeap();
+  j["heap_largest_block"] = ESP.getMaxAllocHeap();
   j["psram"] = ESP.getPsramSize();
   j["cpu_temp"] = temperatureRead();
 
