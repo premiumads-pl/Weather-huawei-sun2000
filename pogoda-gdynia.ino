@@ -28,6 +28,7 @@
 #include "FlightData.h"
 #include "Led.h"
 #include "Log.h"
+#include "MqttClient.h"
 #include "Ota.h"
 #include "OtaGuard.h"
 #include "Portal.h"
@@ -156,6 +157,12 @@ static void netTask(void*) {
     gWifiOk = true;
     const uint32_t now = millis();
 
+    // ---- MQTT: utrzymanie sesji + telemetria urzadzenia ----
+    // Brak brokera nie moze zatrzymac reszty: proby laczenia maja krotki timeout
+    // i backoff, wiec ta linijka albo kosztuje mikrosekundy, albo raz na jakis
+    // czas ~2 s (nieudany TCP connect). Nigdy nie blokuje na dluzej.
+    mqttha::loop();
+
     // ---- pogoda ----
     if (static_cast<int32_t>(now - nextWeatherAt) >= 0) {
       if (!firstWeather) {
@@ -176,6 +183,7 @@ static void netTask(void*) {
         diag().weatherErr[0] = '\0';
         LOG("Pogoda OK: %.1f C, kod %d, heap %lu\n", tmp.current.tempC,
             tmp.current.weatherCode, (unsigned long)ESP.getFreeHeap());
+        mqttha::publishWeather(tmp);
       } else {
         strncpy(diag().weatherErr, tmp.errorMsg, sizeof(diag().weatherErr) - 1);
         LOG("Pogoda BLAD: %s (heap %lu)\n", tmp.errorMsg, (unsigned long)ESP.getFreeHeap());
@@ -239,6 +247,9 @@ static void netTask(void*) {
         diag().pvAsleep = false;
         LOG("PV BLAD: %s\n", tmp.errorMsg);
       }
+      // Do HA leci takze nieudany odczyt — jako moce 0 W i status "Offline"
+      // (liczniki energii zostaja na ostatniej znanej wartosci, patrz MqttClient.cpp).
+      mqttha::publishPv(tmp, ok);
     }
 
     // ---- radar opadowy (realny pomiar; model bywa ślepy na lokalne ulewy) ----

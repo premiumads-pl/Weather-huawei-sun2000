@@ -15,12 +15,17 @@ struct Diag {
   uint32_t pvOkAt = 0;
   uint32_t radarOkAt = 0;
   uint32_t flightOkAt = 0;
+  uint32_t mqttOkAt = 0;   // ostatnia udana publikacja
 
   char weatherErr[48] = {};
   char pvErr[48] = {};
   char radarErr[48] = {};
   char flightErr[48] = {};
   char otaMsg[48] = {};
+  char mqttErr[48] = {};
+
+  uint32_t mqttConnects = 0;
+  uint32_t mqttPublished = 0;
 
   uint8_t radarLevel = 0;
   uint32_t radarAgeSec = 0;

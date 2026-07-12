@@ -11,6 +11,7 @@
 
 #include "Config.h"
 #include "Log.h"
+#include "MqttClient.h"
 #include "Ota.h"
 #include "OtaGuard.h"
 #include "Settings.h"
@@ -107,6 +108,23 @@ li:hover{border-color:#00dcf0;background:#0d1c30}
 </div>
 
 <div class=c>
+<h2>MQTT / Home Assistant</h2>
+<label><input type=checkbox id=mqen style="width:auto;margin-right:8px"> Publikuj dane na brokera MQTT</label>
+<label>Adres brokera</label><input id=mqhost placeholder="np. 192.168.1.10 albo homeassistant.local">
+<div class=row>
+<div><label>Port</label><input id=mqport type=number placeholder=1883></div>
+<div><label>Prefiks tematów</label><input id=mqpre placeholder=pogoda-gdynia></div>
+</div>
+<label>Użytkownik (opcjonalnie)</label><input id=mquser autocapitalize=off autocorrect=off>
+<label>Hasło (opcjonalnie)</label><input id=mqpass type=password autocapitalize=off autocorrect=off
+ placeholder="(bez zmian)">
+<button onclick=saveMqtt()>Zapisz</button>
+<div class=hint id=qmsg></div>
+<div class=hint>Encje pojawią się w Home Assistancie same (MQTT Discovery) jako jedno
+urządzenie. Puste hasło = bez zmian; wpisz <b>-</b>, żeby je skasować.</div>
+</div>
+
+<div class=c>
 <h2>Aktualizacje</h2>
 <div class=hint>Urządzenie samo sprawdza GitHub co 15 minut.</div>
 <button class=s onclick=upd()>Sprawdź teraz</button>
@@ -159,6 +177,10 @@ async function load(){
  $('st').textContent=r.ap?'tryb konfiguracji':('połączono z '+r.ssid+' · '+r.ip);
  $('cur').textContent=r.city+' ('+r.lat.toFixed(4)+', '+r.lon.toFixed(4)+')';
  $('ssid').value=r.ssid||'';$('mb').value=r.mb||'';$('peak').value=(r.peak/1000).toFixed(1);
+ $('mqen').checked=!!r.mq_en;$('mqhost').value=r.mq_host||'';$('mqport').value=r.mq_port||1883;
+ $('mqpre').value=r.mq_pre||'';$('mquser').value=r.mq_user||'';$('mqpass').value='';
+ // hasla brokera NIE zwracamy — tylko informacje, ze jakies jest zapisane
+ $('mqpass').placeholder=r.mq_pass_set?'(zapisane — zostaw puste, aby nie zmieniać)':'(brak)';
 }
 async function scan(){
  $('nets').innerHTML='<li>Skanuję…</li>';
@@ -196,6 +218,16 @@ async function saveInv(){
   body:JSON.stringify({mb:$('mb').value,peak:Math.round($('peak').value*1000)})})).json();
  $('imsg').className='hint ok';$('imsg').textContent=r.msg;
 }
+async function saveMqtt(){
+ $('qmsg').textContent='Zapisuję…';
+ const r=await(await fetch('/api/mqtt',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({en:$('mqen').checked,host:$('mqhost').value,
+   port:parseInt($('mqport').value)||1883,pre:$('mqpre').value,
+   user:$('mquser').value,pass:$('mqpass').value})})).json();
+ $('qmsg').className='hint '+(r.ok?'ok':'err');
+ $('qmsg').textContent=r.msg;
+ load();
+}
 async function upd(){
  $('umsg').textContent='Sprawdzam…';
  const r=await(await fetch('/api/update',{method:'POST'})).json();
@@ -229,6 +261,15 @@ void apiState() {
   d["lon"] = settings().lon;
   d["mb"] = settings().modbusHost;
   d["peak"] = settings().pvPeakW;
+
+  // UWAGA: hasla brokera nie zwracamy NIGDY — tylko flage "cos jest ustawione".
+  d["mq_en"] = settings().mqttEnabled;
+  d["mq_host"] = settings().mqttHost;
+  d["mq_port"] = settings().mqttPort;
+  d["mq_pre"] = settings().mqttPrefix;
+  d["mq_user"] = settings().mqttUser;
+  d["mq_pass_set"] = settings().mqttPass[0] != '\0';
+
   String out;
   serializeJson(d, out);
   server.send(200, "application/json", out);
@@ -391,6 +432,63 @@ void apiInv() {
   server.send(200, "application/json", "{\"ok\":true,\"msg\":\"Zapisano\"}");
 }
 
+// Prefiks jest krotki celowo — wchodzi do kazdego pakietu discovery, ktory musi
+// sie zmiescic w 512 B bufora klienta MQTT. Dlatego twardo przycinamy do 23 znakow.
+void apiMqtt() {
+  JsonDocument in;
+  if (deserializeJson(in, server.arg("plain"))) {
+    server.send(400, "application/json", "{\"ok\":false,\"msg\":\"Zły JSON\"}");
+    return;
+  }
+
+  Settings& s = settings();
+  const bool en = in["en"] | false;
+  const char* host = in["host"] | "";
+  const char* pre = in["pre"] | "";
+  const char* user = in["user"] | "";
+  const char* pass = in["pass"] | "";
+  const int port = in["port"] | 1883;
+
+  if (en && strlen(host) == 0) {
+    server.send(200, "application/json",
+                "{\"ok\":false,\"msg\":\"Podaj adres brokera\"}");
+    return;
+  }
+
+  strncpy(s.mqttHost, host, sizeof(s.mqttHost) - 1);
+  s.mqttHost[sizeof(s.mqttHost) - 1] = '\0';
+  s.mqttPort = static_cast<uint16_t>((port < 1 || port > 65535) ? 1883 : port);
+
+  if (strlen(pre) > 0) {
+    strncpy(s.mqttPrefix, pre, sizeof(s.mqttPrefix) - 1);
+    s.mqttPrefix[sizeof(s.mqttPrefix) - 1] = '\0';
+  }
+
+  strncpy(s.mqttUser, user, sizeof(s.mqttUser) - 1);
+  s.mqttUser[sizeof(s.mqttUser) - 1] = '\0';
+
+  // Puste haslo = "nie ruszaj tego, co zapisane". Samo "-" = skasuj.
+  if (strcmp(pass, "-") == 0) {
+    s.mqttPass[0] = '\0';
+  } else if (strlen(pass) > 0) {
+    strncpy(s.mqttPass, pass, sizeof(s.mqttPass) - 1);
+    s.mqttPass[sizeof(s.mqttPass) - 1] = '\0';
+  }
+
+  s.mqttEnabled = en;
+  s.save();
+  mqttha::configChanged();  // zadanie sieciowe zestawi sesje od nowa
+
+  char msg[80];
+  snprintf(msg, sizeof(msg), "Zapisano. MQTT %s.", en ? "włączony" : "wyłączony");
+  JsonDocument d;
+  d["ok"] = true;
+  d["msg"] = msg;
+  String out;
+  serializeJson(d, out);
+  server.send(200, "application/json", out);
+}
+
 void apiUpdate() {
   if (WiFi.status() != WL_CONNECTED) {
     server.send(200, "application/json", "{\"msg\":\"Brak internetu\"}");
@@ -471,6 +569,17 @@ void apiDiag() {
   o["confirmed_ago_s"] = ago(d.otaConfirmAt);
   o["rejected_version"] = d.otaBadVersion;   // 0 = brak zablokowanej wersji
 
+  // bez hasla i bez uzytkownika — /api/diag bywa wklejane do zgloszen bledow
+  JsonObject m = j["mqtt"].to<JsonObject>();
+  m["enabled"] = settings().mqttEnabled;
+  m["host"] = settings().mqttHost;
+  m["port"] = settings().mqttPort;
+  m["prefix"] = settings().mqttPrefix;
+  m["ok_ago_s"] = ago(d.mqttOkAt);
+  m["connects"] = d.mqttConnects;
+  m["published"] = d.mqttPublished;
+  m["err"] = d.mqttErr;
+
   String out;
   serializeJsonPretty(j, out);
   server.sendHeader("Cache-Control", "no-store");
@@ -520,6 +629,7 @@ void routes() {
   server.on("/api/geo", apiGeo);
   server.on("/api/loc", HTTP_POST, apiLoc);
   server.on("/api/inv", HTTP_POST, apiInv);
+  server.on("/api/mqtt", HTTP_POST, apiMqtt);
   server.on("/api/update", HTTP_POST, apiUpdate);
   server.on("/api/forget", HTTP_POST, apiForget);
   server.on("/api/log", apiLog);
@@ -585,6 +695,9 @@ void clearWifiSavedFlag() { wifiSaved = false; }
 //   loc <nazwa> <lat> <lon>
 //   modbus <ip>
 //   peak <W>
+//   mqtt <host> [port] | mqtt off
+//   mqttauth <user> <haslo>   (haslo "-" kasuje)
+//   mqttprefix <prefiks>
 //   show / reset
 void serialConsole() {
   if (!Serial.available()) {
@@ -631,17 +744,71 @@ void serialConsole() {
     settings().lon = line.substring(b + 1).toFloat();
     settings().save();
     Serial.printf("OK: %s %.4f %.4f\n", settings().city, settings().lat, settings().lon);
+  } else if (line == "mqtt off") {
+    settings().mqttEnabled = false;
+    settings().save();
+    mqttha::configChanged();
+    Serial.println("OK: mqtt wylaczony");
+  } else if (line.startsWith("mqtt ")) {
+    String rest = line.substring(5);
+    rest.trim();
+    const int sp = rest.indexOf(' ');
+    String host = (sp < 0) ? rest : rest.substring(0, sp);
+    const int port = (sp < 0) ? 1883 : rest.substring(sp + 1).toInt();
+    if (host.length() == 0) {
+      Serial.println("uzycie: mqtt <host> [port] | mqtt off");
+      return;
+    }
+    strncpy(settings().mqttHost, host.c_str(), sizeof(settings().mqttHost) - 1);
+    settings().mqttPort =
+        static_cast<uint16_t>((port < 1 || port > 65535) ? 1883 : port);
+    settings().mqttEnabled = true;
+    settings().save();
+    mqttha::configChanged();
+    Serial.printf("OK: mqtt=%s:%u (wlaczony)\n", settings().mqttHost, settings().mqttPort);
+  } else if (line.startsWith("mqttauth ")) {
+    String rest = line.substring(9);
+    rest.trim();
+    const int sp = rest.indexOf(' ');
+    if (sp < 0) {
+      Serial.println("uzycie: mqttauth <user> <haslo>  (haslo \"-\" kasuje)");
+      return;
+    }
+    const String u = rest.substring(0, sp);
+    const String p = rest.substring(sp + 1);
+    strncpy(settings().mqttUser, u.c_str(), sizeof(settings().mqttUser) - 1);
+    if (p == "-") {
+      settings().mqttPass[0] = '\0';
+    } else {
+      strncpy(settings().mqttPass, p.c_str(), sizeof(settings().mqttPass) - 1);
+    }
+    settings().save();
+    mqttha::configChanged();
+    Serial.printf("OK: mqtt user=%s haslo=%s\n", settings().mqttUser,
+                  settings().mqttPass[0] ? "ustawione" : "brak");
+  } else if (line.startsWith("mqttprefix ")) {
+    strncpy(settings().mqttPrefix, line.substring(11).c_str(),
+            sizeof(settings().mqttPrefix) - 1);
+    settings().save();
+    mqttha::configChanged();
+    Serial.printf("OK: mqtt prefix=%s\n", settings().mqttPrefix);
   } else if (line == "show") {
     Serial.printf("fw=%d ssid=%s city=%s lat=%.4f lon=%.4f modbus=%s peak=%u\n", FW_VERSION,
                   settings().ssid, settings().city, settings().lat, settings().lon,
                   settings().modbusHost, settings().pvPeakW);
+    // haslo brokera nie jest wypisywane
+    Serial.printf("mqtt=%s host=%s:%u prefix=%s user=%s haslo=%s\n",
+                  settings().mqttEnabled ? "on" : "off", settings().mqttHost,
+                  settings().mqttPort, settings().mqttPrefix, settings().mqttUser,
+                  settings().mqttPass[0] ? "ustawione" : "brak");
   } else if (line == "reset") {
     settings().clearWifi();
     Serial.println("OK: wyczyszczono WiFi — restart");
     delay(300);
     ESP.restart();
   } else {
-    Serial.println("komendy: wifi | loc | modbus | peak | show | reset");
+    Serial.println("komendy: wifi | loc | modbus | peak | mqtt | mqttauth | mqttprefix | "
+                   "show | reset");
   }
 }
 

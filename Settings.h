@@ -19,8 +19,19 @@ struct Settings {
 
   bool otaEnabled = true;
 
+  // --- MQTT / Home Assistant (domyslnie WYLACZONE) ---
+  // Prefix jest krotki celowo: wchodzi do kazdego retained pakietu discovery,
+  // a bufor klienta MQTT ma tylko 512 B (patrz MqttClient.cpp).
+  char mqttHost[40] = {};
+  uint16_t mqttPort = 1883;
+  char mqttUser[32] = {};
+  char mqttPass[64] = {};
+  char mqttPrefix[24] = "pogoda-gdynia";
+  bool mqttEnabled = false;
+
   bool hasWifi() const { return ssid[0] != '\0'; }
   bool hasInverter() const { return modbusHost[0] != '\0'; }
+  bool hasMqtt() const { return mqttEnabled && mqttHost[0] != '\0'; }
 
   void load();
   void save();
