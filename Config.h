@@ -74,8 +74,10 @@ constexpr uint32_t ALERT_COOLDOWN_MS = 10UL * 60UL * 1000UL;
 constexpr uint32_t FRAME_ACTIVE_MS = 33;
 constexpr uint32_t FRAME_IDLE_MS = 70;
 
-constexpr int VIEW_COUNT = 5;
+constexpr int VIEW_COUNT = 6;   // TERAZ / GODZINY / 5 DNI / PV / SAMOLOTY / STATYSTYKI
 constexpr int VIEW_FLIGHTS = 4;
+constexpr int VIEW_STATS = 5;   // ekran serwisowy
 constexpr uint32_t VIEW_HOLD_FLIGHTS_MS = 15000;
+constexpr uint32_t VIEW_HOLD_STATS_MS = 6000;   // serwisowy — krótko
 
 }  // namespace cfg

@@ -112,6 +112,7 @@ class WeatherUi {
   void drawViewDays(int ox, float t, const WeatherModel& w);
   void drawViewPv(int ox, float t, const PvModel& pv, const PvHistory& hist);
   void drawViewFlights(int ox, float t, const FlightModel& fl);
+  void drawViewStats(int ox, float t);
   void drawAlert(float t);
   void drawNoData(int ox, const char* msg);
   uint32_t holdFor(uint8_t view) const;

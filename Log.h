@@ -26,6 +26,7 @@ struct Diag {
   uint32_t radarAgeSec = 0;
   int flightsTotal = 0;
   int otaRemote = 0;
+  uint32_t otaOkAt = 0;
   uint32_t wifiConnects = 0;
   uint32_t minHeap = 0xFFFFFFFF;
   uint32_t radarSkips = 0;   // ile razy radar odpuścił z braku pamięci

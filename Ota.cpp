@@ -242,6 +242,8 @@ bool Ota::checkAndUpdate() {
 
   lastRemote_ = remote;
   gStatus.remoteVersion = remote;
+  diag().otaRemote = remote;
+  diag().otaOkAt = millis();
 
   if (remote <= FW_VERSION) {
     gStatus.state = OtaState::IDLE;

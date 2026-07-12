@@ -9,7 +9,9 @@
 #include "Config.h"
 #include "MapData.h"
 #include "PlText.h"
+#include "Log.h"
 #include "RadarClient.h"
+#include <WiFi.h>
 #include "Settings.h"
 #include "Version.h"
 #include "WeatherIcons.h"
@@ -889,7 +891,9 @@ void WeatherUi::raiseAlert(const Alert& a, uint32_t nowMs) {
 // ------------------------------------------------------------------ RENDER ----
 
 uint32_t WeatherUi::holdFor(uint8_t view) const {
-  return (view == cfg::VIEW_FLIGHTS) ? cfg::VIEW_HOLD_FLIGHTS_MS : cfg::VIEW_HOLD_MS;
+  if (view == cfg::VIEW_FLIGHTS) return cfg::VIEW_HOLD_FLIGHTS_MS;
+  if (view == cfg::VIEW_STATS) return cfg::VIEW_HOLD_STATS_MS;
+  return cfg::VIEW_HOLD_MS;
 }
 
 bool WeatherUi::needsFlights(uint32_t nowMs) const {
@@ -929,6 +933,9 @@ void WeatherUi::drawView(uint8_t view, int ox, float t, const WeatherModel& w, c
       break;
     case 4:
       drawViewFlights(ox, t, fl);
+      break;
+    case 5:
+      drawViewStats(ox, t);
       break;
     default:
       break;
@@ -1421,4 +1428,126 @@ void WeatherUi::drawLedTest(const char* colorName) {
   tft_.fillRect(0, SPR_H, W, cfg::SCREEN_H - SPR_H, col::BG);
   blTarget_ = cfg::BL_DAY;
   tickBacklight();
+}
+
+// ---------------------------------------------- WIDOK 6: STATYSTYKI ----------
+
+void WeatherUi::drawViewStats(int ox, float t) {
+  const float e = easeOutCubic(t);
+  const Diag& d = diag();
+  const uint32_t now = millis();
+
+  plStr(spr_, PLF14, "STATYSTYKI URZĄDZENIA", ox + 10, 46, col::ACCENT);
+
+  char b[48];
+  if (d.otaRemote > FW_VERSION) {
+    snprintf(b, sizeof(b), "v%d → v%d", FW_VERSION, d.otaRemote);
+    plRight(spr_, PLF14, b, ox + W - 10, 46, col::WARN);
+  } else {
+    snprintf(b, sizeof(b), "v%d", FW_VERSION);
+    plRight(spr_, PLF14, b, ox + W - 10, 46, col::OK);
+  }
+
+  // --- źródła danych: zielona kropka = działa, czerwona = błąd ---
+  struct Src {
+    const char* name;
+    uint32_t okAt;
+    const char* err;
+  } src[4] = {
+      {"Pogoda", d.weatherOkAt, d.weatherErr},
+      {"Falownik", d.pvOkAt, d.pvErr},
+      {"Radar", d.radarOkAt, d.radarErr},
+      {"Samoloty", d.flightOkAt, d.flightErr},
+  };
+
+  for (int i = 0; i < 4; ++i) {
+    const int y0 = 54 + i * 17;
+    if (e < (i + 1) * 0.12f) continue;
+
+    const bool bad = src[i].err[0] != '\0';
+    const bool never = src[i].okAt == 0;
+    const uint16_t dot = bad ? col::ERR : (never ? col::WARN : col::OK);
+
+    spr_.fillCircle(ox + 12, y0 + 6, 4, dot);
+    plStr(spr_, PLF14, src[i].name, ox + 24, y0 + 11, col::TEXT);
+
+    if (bad) {
+      glRight(spr_, src[i].err, ox + W - 10, y0 + 3, col::ERR);
+    } else if (never) {
+      glRight(spr_, "czekam...", ox + W - 10, y0 + 3, col::TEXT_MUTE);
+    } else {
+      const uint32_t ago = (now - src[i].okAt) / 1000;
+      if (ago < 90) {
+        snprintf(b, sizeof(b), "OK  %lus temu", static_cast<unsigned long>(ago));
+      } else {
+        snprintf(b, sizeof(b), "OK  %lu min temu", static_cast<unsigned long>(ago / 60));
+      }
+      glRight(spr_, b, ox + W - 10, y0 + 3, col::TEXT_DIM);
+    }
+  }
+
+  // --- zdrowie: temperatura / RAM / czas pracy ---
+  const uint32_t up = now / 1000;
+  const uint32_t heap = ESP.getFreeHeap();
+  const uint32_t minHeap = d.minHeap == 0xFFFFFFFF ? heap : d.minHeap;
+
+  struct Card {
+    const char* label;
+    char value[14];
+    char sub[16];
+    uint16_t color;
+  } cards[3];
+
+  cards[0] = {"Temperatura", {0}, {0}, cpuTempC_ >= 75.f ? col::ERR : col::OK};
+  snprintf(cards[0].value, sizeof(cards[0].value), "%.0f°C", cpuTempC_);
+  snprintf(cards[0].sub, sizeof(cards[0].sub), "rdzeń ESP32");
+
+  // minimalna sterta jest ważniejsza niż bieżąca — to ona ostrzega przed padem
+  cards[1] = {"Wolna pamięć", {0}, {0},
+              minHeap < 25000 ? col::ERR : (minHeap < 45000 ? col::WARN : col::OK)};
+  snprintf(cards[1].value, sizeof(cards[1].value), "%luk", static_cast<unsigned long>(heap / 1024));
+  snprintf(cards[1].sub, sizeof(cards[1].sub), "min %luk",
+           static_cast<unsigned long>(minHeap / 1024));
+
+  cards[2] = {"Czas pracy", {0}, {0}, col::TEXT};
+  if (up < 3600) {
+    snprintf(cards[2].value, sizeof(cards[2].value), "%lum", static_cast<unsigned long>(up / 60));
+  } else if (up < 86400) {
+    snprintf(cards[2].value, sizeof(cards[2].value), "%luh", static_cast<unsigned long>(up / 3600));
+  } else {
+    snprintf(cards[2].value, sizeof(cards[2].value), "%lud",
+             static_cast<unsigned long>(up / 86400));
+  }
+  snprintf(cards[2].sub, sizeof(cards[2].sub), "restartów %lu",
+           static_cast<unsigned long>(d.wifiConnects));
+
+  const int cy0 = 126, chh = 42;
+  for (int i = 0; i < 3; ++i) {
+    const int x = ox + 6 + i * 104;
+    const int grow = static_cast<int>(chh * clampf(e * 1.4f - 0.4f - i * 0.08f, 0.f, 1.f));
+    if (grow < 5) continue;
+    spr_.fillRoundRect(x, cy0 + (chh - grow), 100, grow, 6, col::BG_CARD);
+    if (grow < chh - 2) continue;
+    spr_.fillRoundRect(x, cy0, 3, chh, 1, cards[i].color);
+    gl(spr_, cards[i].label, x + 9, cy0 + 5, col::TEXT_MUTE);
+    const int vw = pltxt::drawString(spr_, PLF18, cards[i].value, x + 9, cy0 + 33,
+                                     cards[i].color, cards[i].color);
+    gl(spr_, cards[i].sub, x + 12 + vw, cy0 + 26, col::TEXT_MUTE);
+  }
+
+  // --- sieć: siła sygnału + adres panelu ---
+  const int rssi = WiFi.RSSI();
+  const int bars = rssi >= -55 ? 4 : (rssi >= -65 ? 3 : (rssi >= -75 ? 2 : (rssi >= -85 ? 1 : 0)));
+  for (int i = 0; i < 4; ++i) {
+    const int bh = 4 + i * 3;
+    spr_.fillRect(ox + 10 + i * 6, 190 - bh, 4, bh,
+                  i < bars ? col::ACCENT : col::PV_TRACK);
+  }
+
+  snprintf(b, sizeof(b), "%s  %d dBm", WiFi.SSID().c_str(), rssi);
+  plStr(spr_, PLF14, b, ox + 40, 190, col::TEXT_DIM);
+
+  snprintf(b, sizeof(b), "http://%s", WiFi.localIP().toString().c_str());
+  plStr(spr_, PLF14, b, ox + 10, 205, col::ACCENT);
+  glRight(spr_, "panel", ox + W - 10, 197, col::TEXT_MUTE);
 }
