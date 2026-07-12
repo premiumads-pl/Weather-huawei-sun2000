@@ -825,25 +825,31 @@ void WeatherUi::drawViewPv(int ox, float t, const PvModel& pv, const PvHistory& 
   // --- 4 kafelki ---
   struct PvCard {
     const char* label;
-    char value[16];
+    char value[12];
+    char unit[6];
     uint16_t color;
   } cards[4];
 
-  cards[0] = {"Dziś", {0}, col::PV_SOLAR};
-  snprintf(cards[0].value, sizeof(cards[0].value), "%.1f kWh", d.energyTodayKwh);
+  cards[0] = {"Dziś", {0}, {0}, col::PV_SOLAR};
+  snprintf(cards[0].value, sizeof(cards[0].value), "%.1f", d.energyTodayKwh);
+  snprintf(cards[0].unit, sizeof(cards[0].unit), "kWh");
 
-  cards[1] = {"Dom", {0}, col::PV_HOUSE};
+  cards[1] = {"Dom", {0}, {0}, col::PV_HOUSE};
   fmtPower(v, sizeof(v), u, sizeof(u), static_cast<int32_t>(lroundf(animLoadW_)));
-  snprintf(cards[1].value, sizeof(cards[1].value), "%s %s", v, u);
+  snprintf(cards[1].value, sizeof(cards[1].value), "%s", v);
+  snprintf(cards[1].unit, sizeof(cards[1].unit), "%s", u);
 
   const int32_t g = static_cast<int32_t>(lroundf(animGridW_));
   const bool exporting = g >= 0;
-  cards[2] = {exporting ? "Oddaję" : "Pobór", {0}, exporting ? col::PV_EXPORT : col::PV_IMPORT};
+  cards[2] = {exporting ? "Oddaję" : "Pobór", {0}, {0},
+              exporting ? col::PV_EXPORT : col::PV_IMPORT};
   fmtPower(v, sizeof(v), u, sizeof(u), g < 0 ? -g : g);
-  snprintf(cards[2].value, sizeof(cards[2].value), "%s %s", v, u);
+  snprintf(cards[2].value, sizeof(cards[2].value), "%s", v);
+  snprintf(cards[2].unit, sizeof(cards[2].unit), "%s", u);
 
-  cards[3] = {"Falownik", {0}, d.inverterTempC > 65.f ? col::WARN : col::TEXT_DIM};
-  snprintf(cards[3].value, sizeof(cards[3].value), "%.0f °C", d.inverterTempC);
+  cards[3] = {"Falownik", {0}, {0}, d.inverterTempC > 65.f ? col::WARN : col::TEXT_DIM};
+  snprintf(cards[3].value, sizeof(cards[3].value), "%.0f", d.inverterTempC);
+  snprintf(cards[3].unit, sizeof(cards[3].unit), "°C");
 
   const int cy0 = 164, chh = 41;
   for (int i = 0; i < 4; ++i) {
@@ -854,7 +860,9 @@ void WeatherUi::drawViewPv(int ox, float t, const PvModel& pv, const PvHistory& 
     if (grow < chh - 2) continue;
     spr_.fillRoundRect(x, cy0, 3, chh, 1, cards[i].color);
     plStr(spr_, PLF14, cards[i].label, x + 8, cy0 + 14, col::TEXT_DIM);
-    plStr(spr_, PLF18, cards[i].value, x + 8, cy0 + 37, cards[i].color);
+    const int vw = pltxt::drawString(spr_, PLF18, cards[i].value, x + 8, cy0 + 37,
+                                     cards[i].color, cards[i].color);
+    gl(spr_, cards[i].unit, x + 11 + vw, cy0 + 30, col::TEXT_MUTE);
   }
 }
 
@@ -1506,30 +1514,32 @@ void WeatherUi::drawViewStats(int ox, float t) {
     uint16_t color;
   } cards[3];
 
-  cards[0] = {"Temperatura", {0}, {0}, cpuTempC_ >= 75.f ? col::ERR : col::OK};
+  cards[0] = {"TEMPERATURA", {0}, {0}, cpuTempC_ >= 75.f ? col::ERR : col::OK};
   snprintf(cards[0].value, sizeof(cards[0].value), "%.0f°C", cpuTempC_);
-  snprintf(cards[0].sub, sizeof(cards[0].sub), "rdzeń ESP32");
+  snprintf(cards[0].sub, sizeof(cards[0].sub), "rdzeń");
 
   // minimalna sterta jest ważniejsza niż bieżąca — to ona ostrzega przed padem
-  cards[1] = {"Wolna pamięć", {0}, {0},
+  cards[1] = {"WOLNY RAM", {0}, {0},
               minHeap < 25000 ? col::ERR : (minHeap < 45000 ? col::WARN : col::OK)};
-  snprintf(cards[1].value, sizeof(cards[1].value), "%luk", static_cast<unsigned long>(heap / 1024));
-  snprintf(cards[1].sub, sizeof(cards[1].sub), "min %luk",
+  snprintf(cards[1].value, sizeof(cards[1].value), "%lu kB",
+           static_cast<unsigned long>(heap / 1024));
+  snprintf(cards[1].sub, sizeof(cards[1].sub), "min %lu kB",
            static_cast<unsigned long>(minHeap / 1024));
 
-  cards[2] = {"Czas pracy", {0}, {0}, col::TEXT};
+  cards[2] = {"CZAS PRACY", {0}, {0}, col::TEXT};
   if (up < 3600) {
-    snprintf(cards[2].value, sizeof(cards[2].value), "%lum", static_cast<unsigned long>(up / 60));
+    snprintf(cards[2].value, sizeof(cards[2].value), "%lu min",
+             static_cast<unsigned long>(up / 60));
   } else if (up < 86400) {
-    snprintf(cards[2].value, sizeof(cards[2].value), "%luh", static_cast<unsigned long>(up / 3600));
+    snprintf(cards[2].value, sizeof(cards[2].value), "%lu godz",
+             static_cast<unsigned long>(up / 3600));
   } else {
-    snprintf(cards[2].value, sizeof(cards[2].value), "%lud",
+    snprintf(cards[2].value, sizeof(cards[2].value), "%lu dni",
              static_cast<unsigned long>(up / 86400));
   }
-  snprintf(cards[2].sub, sizeof(cards[2].sub), "restartów %lu",
-           static_cast<unsigned long>(d.wifiConnects));
+  snprintf(cards[2].sub, sizeof(cards[2].sub), "od restartu");
 
-  const int cy0 = 126, chh = 42;
+  const int cy0 = 126, chh = 44;
   for (int i = 0; i < 3; ++i) {
     const int x = ox + 6 + i * 104;
     const int grow = static_cast<int>(chh * clampf(e * 1.8f - 0.3f - i * 0.15f, 0.f, 1.f));
@@ -1537,10 +1547,9 @@ void WeatherUi::drawViewStats(int ox, float t) {
     spr_.fillRoundRect(x, cy0 + (chh - grow), 100, grow, 6, col::BG_CARD);
     if (grow < chh - 2) continue;
     spr_.fillRoundRect(x, cy0, 3, chh, 1, cards[i].color);
-    gl(spr_, cards[i].label, x + 9, cy0 + 5, col::TEXT_MUTE);
-    const int vw = pltxt::drawString(spr_, PLF18, cards[i].value, x + 9, cy0 + 33,
-                                     cards[i].color, cards[i].color);
-    gl(spr_, cards[i].sub, x + 12 + vw, cy0 + 26, col::TEXT_MUTE);
+    gl(spr_, cards[i].label, x + 9, cy0 + 4, col::TEXT_MUTE);
+    plStr(spr_, PLF18, cards[i].value, x + 9, cy0 + 30, cards[i].color);
+    gl(spr_, cards[i].sub, x + 9, cy0 + 34, col::TEXT_MUTE);
   }
 
   // --- sieć: siła sygnału + adres panelu ---
