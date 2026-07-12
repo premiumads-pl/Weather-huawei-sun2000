@@ -139,6 +139,72 @@ int bigStr(TFT_eSPI& s, const GFXfont* f, const char* t, int x, int baseline, ui
   return w;
 }
 
+// Łuk ze zaokrąglonymi końcami — WŁASNY, bo TFT_eSPI::drawSmoothArc jest niebezpieczne
+// przy przesuniętym viewporcie. Jego końcówki rysuje drawWedgeLine, która MIESZA UKŁADY
+// WSPÓŁRZĘDNYCH: bounding box przycina razem z datumem (współrzędne fizyczne bufora),
+// ale pętle skanujące jadą po współrzędnych użytkownika i zapisują przez
+// setWindow()/pushColor(). W dolnym pasie (datum -103) setWindow przepuszcza y=113,
+// bo height() zwraca wtedy 206, a bufor ma tylko 103 wiersze — zapis leci ~7 kB
+// ZA koniec bufora i rozwala stertę. (Sprawdzone w TFT_eSPI 2.5.43.)
+//
+// Składamy więc łuk z prymitywów, które viewport honorują poprawnie:
+//   drawArc          -> drawPixel / drawFastHLine / drawFastVLine (wirtualne),
+//   fillSmoothCircle -> drawFastHLine + drawPixel z alfą (też wirtualne).
+// Efekt wizualny ten sam.
+void smoothArc(TFT_eSPI& s, int cx, int cy, int r, int ir, int a0, int a1, uint16_t fg,
+               uint16_t bg) {
+  if (a1 <= a0 || r <= ir) {
+    return;
+  }
+  const float mid = (r + ir) * 0.5f;
+  const int cap = (r - ir) / 2;
+  for (int i = 0; i < 2; ++i) {
+    const float a = static_cast<float>(i == 0 ? a0 : a1) * 0.01745329f;
+    const int ex = cx + static_cast<int>(lroundf(-sinf(a) * mid));
+    const int ey = cy + static_cast<int>(lroundf(cosf(a) * mid));
+    s.fillSmoothCircle(ex, ey, cap, fg, bg);
+  }
+  s.drawArc(cx, cy, r, ir, static_cast<uint32_t>(a0), static_cast<uint32_t>(a1), fg, bg, true);
+}
+
+// ------------------------------------------------------------------- pasy -----
+
+// Sprite fizycznie ma tylko `bandH` wierszy, ale kod rysujący nie chce o tym wiedzieć.
+// setViewport z vpDatum = true przesuwa układ współrzędnych o -top i przycina rysowanie
+// do rzeczywistego bufora: rysunek w globalnym y=150 trafia w pasie dolnym do wiersza
+// 150-103 = 47, a w pasie górnym jest po prostu wycinany.
+//
+// Sprawdzone w źródłach TFT_eSPI 2.5.43: drawPixel / drawChar / drawLine / drawFastVLine /
+// drawFastHLine / fillRect / readPixel są WIRTUALNE, a TFT_eSprite nadpisuje je wersjami,
+// które honorują _xDatum/_yDatum i przycinają do viewportu. Pozostałe prymitywy, których
+// używamy (fillCircle, fillRoundRect, fillTriangle, drawCircle, drawRect, drawArc,
+// fillSmoothCircle, drawString...), są zbudowane wyłącznie na tych wirtualnych, więc
+// dziedziczą przesunięcie za darmo.
+// JEDYNY wyjątek to drawSmoothArc — patrz smoothArc() wyżej. Jeśli będziesz dokładać
+// nowe prymitywy TFT_eSPI, sprawdź najpierw, czy nie piszą przez setWindow()/pushColor().
+//
+// virtH = wysokość układu współrzędnych (206 dla ekranu, 240 dla zrzutu ze stopką);
+// width()/height() sprite'a zwracają wtedy wymiary WIRTUALNE, czego wymagają
+// wxico::draw (obcinanie ikon) i TFT_eSPI::drawString.
+void WeatherUi::setBand(TFT_eSprite& s, int top, int virtH) {
+  s.setViewport(0, -top, W, virtH, true);
+}
+
+// UWAGA: przy aktywnym viewporcie NIE WOLNO wołać fillSprite() — jego szybka ścieżka
+// robi memset(_img, ..., _iwidth * _yHeight * 2), czyli w naszym przypadku 132 kB
+// do bufora 66 kB (rozwaliłoby stertę). Zamiast tego wszędzie fillRect(0, 0, W, VIEW_H).
+
+template <typename F>
+void WeatherUi::pushBands(F&& paint) {
+  for (int b = 0; b < BAND_N; ++b) {
+    const int top = b * BAND_H;
+    setBand(spr_, top, VIEW_H);
+    paint(static_cast<TFT_eSPI&>(spr_));
+    spr_.pushSprite(0, top);
+  }
+  spr_.resetViewport();
+}
+
 // ---------------------------------------------------------------------- init --
 
 bool WeatherUi::begin() {
@@ -152,13 +218,14 @@ bool WeatherUi::begin() {
   tft_.fillScreen(col::BG);
 
   spr_.setColorDepth(16);
-  if (spr_.createSprite(cfg::SCREEN_W, SPR_H) == nullptr) {
+  if (spr_.createSprite(cfg::SCREEN_W, BAND_H) == nullptr) {
     return false;
   }
   spr_.setSwapBytes(false);
-  spr_.fillSprite(col::BG);
+  spr_.fillRect(0, 0, W, BAND_H, col::BG);   // viewport swiezy = wspolrzedne pasa
   spr_.pushSprite(0, 0);
-  tft_.fillRect(0, SPR_H, cfg::SCREEN_W, cfg::SCREEN_H - SPR_H, col::BG);
+  spr_.pushSprite(0, BAND_H);
+  tft_.fillRect(0, VIEW_H, cfg::SCREEN_W, cfg::SCREEN_H - VIEW_H, col::BG);
 
   blCurrent_ = 0;
   blTarget_ = cfg::BL_DAY;
@@ -185,82 +252,91 @@ void WeatherUi::tickBacklight() {
 
 void WeatherUi::drawBoot(const char* status, int attempt) {
   if (!ready_) return;
-  spr_.fillSprite(col::BG);
-
-  // delikatna poświata u góry
-  for (int y = 0; y < 60; ++y) {
-    const uint16_t c = lerp565(col::HEADER, col::BG, y / 60.f);
-    spr_.drawFastHLine(0, y, W, c);
-  }
-
-  wxico::draw(spr_, 0, W / 2, 92, 64);
-  plCenter(spr_, PLF18, settings().city, W / 2, 148, col::TEXT);
-  plCenter(spr_, PLF14, status, W / 2, 172, col::TEXT_DIM);
-
-  // pasek postępu — animowany "knight rider"
+  // Faza animacji liczona RAZ — inaczej oba pasy mogłyby wypaść z innej klatki.
   const int bx = 70, bw = 180, by = 182;
-  spr_.fillRoundRect(bx, by, bw, 6, 3, col::PV_TRACK);
   const uint32_t ph = (millis() / 12) % (bw + 60);
-  const int sx = bx + static_cast<int>(ph) - 60;
-  for (int i = 0; i < 60; ++i) {
-    const int x = sx + i;
-    if (x < bx || x >= bx + bw) continue;
-    spr_.drawFastVLine(x, by, 6, lerp565(col::PV_TRACK, col::ACCENT, i / 59.f));
-  }
 
-  if (attempt > 1) {
-    char b[32];
-    snprintf(b, sizeof(b), "próba %d", attempt);
-    plCenter(spr_, PLF14, b, W / 2, 202, col::TEXT_MUTE);
-  }
-  spr_.pushSprite(0, 0);
-  tft_.fillRect(0, SPR_H, W, cfg::SCREEN_H - SPR_H, col::BG);
+  pushBands([&](TFT_eSPI& spr) {
+    spr.fillRect(0, 0, W, VIEW_H, col::BG);
+
+    // delikatna poświata u góry
+    for (int y = 0; y < 60; ++y) {
+      const uint16_t c = lerp565(col::HEADER, col::BG, y / 60.f);
+      spr.drawFastHLine(0, y, W, c);
+    }
+
+    wxico::draw(spr, 0, W / 2, 92, 64);
+    plCenter(spr, PLF18, settings().city, W / 2, 148, col::TEXT);
+    plCenter(spr, PLF14, status, W / 2, 172, col::TEXT_DIM);
+
+    // pasek postępu — animowany "knight rider"
+    spr.fillRoundRect(bx, by, bw, 6, 3, col::PV_TRACK);
+    const int sx = bx + static_cast<int>(ph) - 60;
+    for (int i = 0; i < 60; ++i) {
+      const int x = sx + i;
+      if (x < bx || x >= bx + bw) continue;
+      spr.drawFastVLine(x, by, 6, lerp565(col::PV_TRACK, col::ACCENT, i / 59.f));
+    }
+
+    if (attempt > 1) {
+      char b[32];
+      snprintf(b, sizeof(b), "próba %d", attempt);
+      plCenter(spr, PLF14, b, W / 2, 202, col::TEXT_MUTE);
+    }
+  });
+
+  tft_.fillRect(0, VIEW_H, W, cfg::SCREEN_H - VIEW_H, col::BG);
   if (blTarget_ == 0) blTarget_ = cfg::BL_DAY;
   tickBacklight();
 }
 
 void WeatherUi::drawFatal(const char* msg) {
   if (!ready_) return;
-  spr_.fillSprite(col::BG);
-  spr_.fillRoundRect(20, 78, W - 40, 86, 8, col::ALERT_BG);
-  spr_.drawRoundRect(20, 78, W - 40, 86, 8, col::ERR);
-  plCenter(spr_, PLF18, "Błąd", W / 2, 112, col::ERR);
-  plCenter(spr_, PLF14, msg, W / 2, 142, col::TEXT);
-  spr_.pushSprite(0, 0);
+  pushBands([&](TFT_eSPI& spr) {
+    spr.fillRect(0, 0, W, VIEW_H, col::BG);
+    spr.fillRoundRect(20, 78, W - 40, 86, 8, col::ALERT_BG);
+    spr.drawRoundRect(20, 78, W - 40, 86, 8, col::ERR);
+    plCenter(spr, PLF18, "Błąd", W / 2, 112, col::ERR);
+    plCenter(spr, PLF14, msg, W / 2, 142, col::TEXT);
+  });
 }
 
 void WeatherUi::drawColorTest() {
   if (!ready_) return;
-  spr_.fillSprite(TFT_BLACK);
-  spr_.fillRect(0, 0, W, 68, TFT_RED);
-  spr_.fillRect(0, 68, W, 68, TFT_GREEN);
-  spr_.fillRect(0, 136, W, 70, TFT_BLUE);
-  plStr(spr_, PLF18, "CZERWONY", 12, 42, TFT_WHITE);
-  plStr(spr_, PLF18, "ZIELONY", 12, 110, TFT_BLACK);
-  plStr(spr_, PLF18, "NIEBIESKI", 12, 178, TFT_WHITE);
-  spr_.pushSprite(0, 0);
+  pushBands([&](TFT_eSPI& spr) {
+    spr.fillRect(0, 0, W, 68, TFT_RED);
+    spr.fillRect(0, 68, W, 68, TFT_GREEN);
+    spr.fillRect(0, 136, W, 70, TFT_BLUE);
+    plStr(spr, PLF18, "CZERWONY", 12, 42, TFT_WHITE);
+    plStr(spr, PLF18, "ZIELONY", 12, 110, TFT_BLACK);
+    plStr(spr, PLF18, "NIEBIESKI", 12, 178, TFT_WHITE);
+  });
   blTarget_ = cfg::BL_DAY;
 }
 
 // ------------------------------------------------------------------- chrome ----
 
-void WeatherUi::drawHeader(const WeatherModel& w, bool wifiOk, uint32_t nowMs) {
-  spr_.fillRect(0, 0, W, cfg::HEADER_H, col::HEADER);
-  spr_.drawFastHLine(0, cfg::HEADER_H - 1, W, col::DIVIDER);
+void WeatherUi::drawHeader(TFT_eSPI& spr, const WeatherModel& w, bool wifiOk, uint32_t nowMs) {
+  // Belka mieści się w całości w pasie górnym — w dolnym nie ma co liczyć.
+  if (!spr.checkViewport(0, 0, W, cfg::HEADER_H)) {
+    return;
+  }
+  spr.fillRect(0, 0, W, cfg::HEADER_H, col::HEADER);
+  spr.drawFastHLine(0, cfg::HEADER_H - 1, W, col::DIVIDER);
 
   // status sieci — kropka + delikatny puls przy braku WiFi
   uint16_t dot = wifiOk ? col::OK : col::ERR;
   if (!wifiOk && ((nowMs / 500) % 2)) {
     dot = col::BG_CARD;
   }
-  spr_.fillCircle(12, 14, 4, dot);
+  spr.fillCircle(12, 14, 4, dot);
 
-  plStr(spr_, PLF14, settings().city, 24, 19, col::TEXT);
+  plStr(spr, PLF14, settings().city, 24, 19, col::TEXT);
 
   time_t now = time(nullptr);
   if (now < 1700000000) {
-    plRight(spr_, PLF18, "--:--", W - 10, 21, col::TEXT_MUTE);
-    plCenter(spr_, PLF14, "synchronizacja czasu", W / 2 + 10, 19, col::TEXT_MUTE);
+    plRight(spr, PLF18, "--:--", W - 10, 21, col::TEXT_MUTE);
+    plCenter(spr, PLF14, "synchronizacja czasu", W / 2 + 10, 19, col::TEXT_MUTE);
     return;
   }
 
@@ -274,15 +350,18 @@ void WeatherUi::drawHeader(const WeatherModel& w, bool wifiOk, uint32_t nowMs) {
   char mid[32];
   snprintf(mid, sizeof(mid), "%s %d %s", kDow[tmv.tm_wday % 7], tmv.tm_mday,
            kMon[tmv.tm_mon % 12]);
-  plCenter(spr_, PLF14, mid, W / 2 + 10, 19, col::TEXT_DIM);
+  plCenter(spr, PLF14, mid, W / 2 + 10, 19, col::TEXT_DIM);
 
   char clk[8];
   snprintf(clk, sizeof(clk), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
-  plRight(spr_, PLF18, clk, W - 10, 21, col::ACCENT);
+  plRight(spr, PLF18, clk, W - 10, 21, col::ACCENT);
 }
 
-void WeatherUi::drawProgress(uint32_t nowMs) {
-  spr_.fillRect(0, cfg::PROG_Y, W, cfg::PROG_H + 2, col::BG);
+void WeatherUi::drawProgress(TFT_eSPI& spr, uint32_t nowMs) {
+  if (!spr.checkViewport(0, cfg::PROG_Y, W, cfg::PROG_H + 2)) {
+    return;
+  }
+  spr.fillRect(0, cfg::PROG_Y, W, cfg::PROG_H + 2, col::BG);
 
   const int segW = W / cfg::VIEW_COUNT;
   float frac = 0.f;
@@ -297,11 +376,11 @@ void WeatherUi::drawProgress(uint32_t nowMs) {
   for (int i = 0; i < cfg::VIEW_COUNT; ++i) {
     const int x = i * segW;
     const int wSeg = (i == cfg::VIEW_COUNT - 1) ? (W - x) : (segW - 3);
-    spr_.fillRect(x, cfg::PROG_Y, wSeg, cfg::PROG_H, col::PV_TRACK);
+    spr.fillRect(x, cfg::PROG_Y, wSeg, cfg::PROG_H, col::PV_TRACK);
     if (i < view_) {
-      spr_.fillRect(x, cfg::PROG_Y, wSeg, cfg::PROG_H, col::GRID_HI);
+      spr.fillRect(x, cfg::PROG_Y, wSeg, cfg::PROG_H, col::GRID_HI);
     } else if (i == view_) {
-      spr_.fillRect(x, cfg::PROG_Y, static_cast<int>(wSeg * frac), cfg::PROG_H,
+      spr.fillRect(x, cfg::PROG_Y, static_cast<int>(wSeg * frac), cfg::PROG_H,
                     alertActive_ ? alert_.color : col::ACCENT);
     }
   }
@@ -338,9 +417,13 @@ void WeatherUi::drawFooter(const PvModel& pv, bool wifiOk) {
   drawFooterTo(tft_, pv, wifiOk);
 }
 
-// Ta sama stopka, ale na dowolnym celu — TFT albo tymczasowy sprite (zrzut ekranu).
+// Ta sama stopka, ale na dowolnym celu — TFT albo pasek zrzutu ekranu. Zawsze rysuje
+// się na GLOBALNYM y=206; cel (viewport) sam decyduje, czy to w niego wpada.
 void WeatherUi::drawFooterTo(TFT_eSPI& dst, const PvModel& pv, bool wifiOk) {
-  const int y = (&dst == &tft_) ? 206 : 0;   // w sprite'cie stopka zaczyna sie od 0
+  const int y = VIEW_H;   // 206
+  if (!dst.checkViewport(0, y, W, cfg::SCREEN_H - VIEW_H)) {
+    return;
+  }
 
   dst.fillRect(0, y, W, 34, col::HEADER);
   dst.drawFastHLine(0, y, W, col::DIVIDER);
@@ -407,13 +490,18 @@ void WeatherUi::drawSysBoxTo(TFT_eSPI& dst, int y) {
   plRight(dst, PLF14, b, W - 4, y + 30, tc);
 }
 
-void WeatherUi::drawContentBg() {
-  spr_.fillRect(0, CY, W, CH, col::BG);
+// Czyścimy CAŁY obszar rysowania (0..205), a nie tylko treść (34..205).
+// Ten sam bufor obsługuje oba pasy, więc piksel, którego klatka nie zamaluje,
+// zostaje z POPRZEDNIEGO PASA. Konkretnie: wiersz 28 leży między belką (0..27)
+// a paskiem postępu (29..33) i nikt go nie rysuje — w pasie górnym wyświetliłby
+// się wtedy kawałek wiersza 131 z pasa dolnego poprzedniej klatki.
+void WeatherUi::drawContentBg(TFT_eSPI& spr) {
+  spr.fillRect(0, 0, W, VIEW_H, col::BG);
 }
 
 // ------------------------------------------------------------ WIDOK 1: TERAZ --
 
-void WeatherUi::drawViewNow(int ox, float t, const WeatherModel& w) {
+void WeatherUi::drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& w) {
   const WeatherSnapshot& c = w.current;
   const float e = easeOutCubic(t);
 
@@ -421,19 +509,19 @@ void WeatherUi::drawViewNow(int ox, float t, const WeatherModel& w) {
   char big[12];
   fmtTemp(big, sizeof(big), c.tempC);
   const uint16_t tc = tempColor(c.tempC);
-  const int bw = bigStr(spr_, &FreeSansBold24pt7b, big, ox + 12, 96, tc);
-  plStr(spr_, PLF18, "°C", ox + 16 + bw, 70, col::TEXT_DIM);
-  gl(spr_, "TEMPERATURA", ox + 13, 54, col::TEXT_MUTE);
+  const int bw = bigStr(spr, &FreeSansBold24pt7b, big, ox + 12, 96, tc);
+  plStr(spr, PLF18, "°C", ox + 16 + bw, 70, col::TEXT_DIM);
+  gl(spr, "TEMPERATURA", ox + 13, 54, col::TEXT_MUTE);
 
   char feels[32];
   snprintf(feels, sizeof(feels), "odczuwalna %d°C", static_cast<int>(lroundf(c.feelsC)));
-  plStr(spr_, PLF14, feels, ox + 12, 114, col::TEXT_DIM);
+  plStr(spr, PLF14, feels, ox + 12, 114, col::TEXT_DIM);
 
   // --- ikona + opis ---
   const int icx = ox + 258;
   const int size = 40 + static_cast<int>(24 * e);
-  wxico::draw(spr_, c.weatherCode, icx, 76, size);
-  plCenter(spr_, PLF14, wxico::labelForCode(c.weatherCode), icx, 114, col::TEXT);
+  wxico::draw(spr, c.weatherCode, icx, 76, size);
+  plCenter(spr, PLF14, wxico::labelForCode(c.weatherCode), icx, 114, col::TEXT);
 
   // --- 4 kafelki ---
   struct Card {
@@ -464,33 +552,33 @@ void WeatherUi::drawViewNow(int ox, float t, const WeatherModel& w) {
     const int grow = static_cast<int>(chh * clampf(e * 1.3f - i * 0.08f, 0.f, 1.f));
     if (grow < 4) continue;
     const int yy = cy0 + (chh - grow);
-    spr_.fillRoundRect(x, yy, cw, grow, 6, col::BG_CARD);
+    spr.fillRoundRect(x, yy, cw, grow, 6, col::BG_CARD);
     if (grow < chh - 2) continue;
 
-    spr_.fillRect(x, cy0, 3, chh, cards[i].color);
-    spr_.fillRoundRect(x, cy0, 3, chh, 1, cards[i].color);
+    spr.fillRect(x, cy0, 3, chh, cards[i].color);
+    spr.fillRoundRect(x, cy0, 3, chh, 1, cards[i].color);
 
-    plStr(spr_, PLF14, cards[i].label, x + 8, cy0 + 17, col::TEXT_DIM);
+    plStr(spr, PLF14, cards[i].label, x + 8, cy0 + 17, col::TEXT_DIM);
     if (cards[i].extra != nullptr) {
-      plRight(spr_, PLF14, cards[i].extra, x + cw - 7, cy0 + 17, cards[i].color);
+      plRight(spr, PLF14, cards[i].extra, x + cw - 7, cy0 + 17, cards[i].color);
     }
-    const int vw = pltxt::drawString(spr_, PLF18, cards[i].value, x + 8, cy0 + 43, col::TEXT,
+    const int vw = pltxt::drawString(spr, PLF18, cards[i].value, x + 8, cy0 + 43, col::TEXT,
                                      col::TEXT);
-    gl(spr_, cards[i].unit, x + 10 + vw, cy0 + 36, col::TEXT_MUTE);
+    gl(spr, cards[i].unit, x + 10 + vw, cy0 + 36, col::TEXT_MUTE);
   }
 
   // --- pasek dolny: wschód / zachód / UV ---
   const int by = 196;
-  spr_.fillCircle(ox + 14, by - 4, 5, col::SUN);
-  spr_.fillRect(ox + 8, by - 3, 13, 5, col::BG);
+  spr.fillCircle(ox + 14, by - 4, 5, col::SUN);
+  spr.fillRect(ox + 8, by - 3, 13, 5, col::BG);
   char b[24];
   snprintf(b, sizeof(b), "%s", w.sunrise[0] ? w.sunrise : "--:--");
-  plStr(spr_, PLF14, b, ox + 26, by, col::TEXT_DIM);
+  plStr(spr, PLF14, b, ox + 26, by, col::TEXT_DIM);
 
-  spr_.fillCircle(ox + 118, by - 4, 5, col::ACCENT_WARM);
-  spr_.fillRect(ox + 112, by - 9, 13, 5, col::BG);
+  spr.fillCircle(ox + 118, by - 4, 5, col::ACCENT_WARM);
+  spr.fillRect(ox + 112, by - 9, 13, 5, col::BG);
   snprintf(b, sizeof(b), "%s", w.sunset[0] ? w.sunset : "--:--");
-  plStr(spr_, PLF14, b, ox + 130, by, col::TEXT_DIM);
+  plStr(spr, PLF14, b, ox + 130, by, col::TEXT_DIM);
 
   // UV BIEŻĄCE (nie dobowe maksimum — po zachodzie ma być 0).
   // W ciągu dnia w nawiasie dopisujemy dzisiejszy szczyt.
@@ -505,16 +593,16 @@ void WeatherUi::drawViewNow(int ox, float t, const WeatherModel& w) {
   } else {
     snprintf(b, sizeof(b), "UV %.0f", uv);
   }
-  plRight(spr_, PLF14, b, ox + W - 10, by, uvc);
+  plRight(spr, PLF14, b, ox + W - 10, by, uvc);
   // Opad — priorytet ma RADAR (realny pomiar). Model bywa ślepy na lokalne ulewy.
   if (w.radarValid && w.radarLevel > 0) {
     const uint16_t rc = w.radarLevel >= 4 ? col::ERR
                         : (w.radarLevel == 3 ? col::WARN : col::RAIN);
     snprintf(b, sizeof(b), "RADAR: %s", radarLabel(w.radarLevel));
-    plCenter(spr_, PLF14, b, ox + 218, by, rc);
+    plCenter(spr, PLF14, b, ox + 218, by, rc);
   } else if (c.precipMm > 0.05f) {
     snprintf(b, sizeof(b), "deszcz %.1f mm/h", c.precipMm);
-    plCenter(spr_, PLF14, b, ox + 218, by, col::RAIN);
+    plCenter(spr, PLF14, b, ox + 218, by, col::RAIN);
   } else {
     float next12 = 0.f;
     for (int i = 0; i < WX_HOURS; ++i) {
@@ -522,18 +610,18 @@ void WeatherUi::drawViewNow(int ox, float t, const WeatherModel& w) {
     }
     if (next12 > 0.2f) {
       snprintf(b, sizeof(b), "opad 12h %.1f mm", next12);
-      plCenter(spr_, PLF14, b, ox + 218, by, col::RAIN_DK);
+      plCenter(spr, PLF14, b, ox + 218, by, col::RAIN_DK);
     }
   }
 }
 
 // --------------------------------------------------------- WIDOK 2: GODZINY --
 
-void WeatherUi::drawViewHours(int ox, float t, const WeatherModel& w) {
+void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel& w) {
   const float e = easeOutCubic(t);
 
-  plStr(spr_, PLF14, "NAJBLIŻSZE 12 GODZIN", ox + 10, 46, col::ACCENT);
-  glRight(spr_, "TEMP / OPAD", ox + W - 10, 38, col::TEXT_MUTE);
+  plStr(spr, PLF14, "NAJBLIŻSZE 12 GODZIN", ox + 10, 46, col::ACCENT);
+  glRight(spr, "TEMP / OPAD", ox + W - 10, 38, col::TEXT_MUTE);
 
   // 13 punktów: teraz + 12 godzin
   float temp[13];
@@ -569,7 +657,7 @@ void WeatherUi::drawViewHours(int ox, float t, const WeatherModel& w) {
     if (rain[i] > rmax) rmax = rain[i];
   }
   if (vmin > vmax) {
-    drawNoData(ox, "Brak danych godzinowych");
+    drawNoData(spr, ox, "Brak danych godzinowych");
     return;
   }
   if (vmax - vmin < 2.f) {
@@ -592,7 +680,7 @@ void WeatherUi::drawViewHours(int ox, float t, const WeatherModel& w) {
   for (int g = 0; g <= 2; ++g) {
     const int y = yTop + g * (yBot - yTop) / 2;
     for (int x = ox + 14; x < ox + W - 10; x += 6) {
-      spr_.drawPixel(x, y, col::GRID);
+      spr.drawPixel(x, y, col::GRID);
     }
   }
 
@@ -606,8 +694,8 @@ void WeatherUi::drawViewHours(int ox, float t, const WeatherModel& w) {
       const int y = y0 + static_cast<int>((y1 - y0) * f);
       const int ya = yBot - static_cast<int>((yBot - y) * e);
       const uint16_t lc = tempColor(temp[i] + (temp[i + 1] - temp[i]) * f);
-      spr_.drawFastVLine(x, ya, yBot - ya, lerp565(col::BG, lc, 0.16f));
-      spr_.drawFastVLine(x, ya - 1, 3, lc);
+      spr.drawFastVLine(x, ya, yBot - ya, lerp565(col::BG, lc, 0.16f));
+      spr.drawFastVLine(x, ya - 1, 3, lc);
     }
   }
 
@@ -617,17 +705,17 @@ void WeatherUi::drawViewHours(int ox, float t, const WeatherModel& w) {
     const int x = px(i);
     const int y = yBot - static_cast<int>((yBot - py(i)) * e);
     if (i % 2 == 0) {
-      spr_.fillCircle(x, y, 3, col::BG);
-      spr_.fillCircle(x, y, 2, tempColor(temp[i]));
+      spr.fillCircle(x, y, 3, col::BG);
+      spr.fillCircle(x, y, 2, tempColor(temp[i]));
       char b[8];
       fmtTempInt(b, sizeof(b), temp[i]);
-      plCenter(spr_, PLF14, b, x, y - 7, col::TEXT);
+      plCenter(spr, PLF14, b, x, y - 7, col::TEXT);
     }
   }
 
   // opady
   const int rBase = 156;
-  spr_.drawFastHLine(ox + 12, rBase, W - 24, col::GRID_HI);
+  spr.drawFastHLine(ox + 12, rBase, W - 24, col::GRID_HI);
   if (rmax < 0.05f) {
     int prob = 0;
     for (int i = 0; i < WX_HOURS; ++i) {
@@ -637,7 +725,7 @@ void WeatherUi::drawViewHours(int ox, float t, const WeatherModel& w) {
     }
     char b[40];
     snprintf(b, sizeof(b), "bez opadów  (max szansa %d%%)", prob);
-    plCenter(spr_, PLF14, b, ox + W / 2, rBase - 6, col::TEXT_MUTE);
+    plCenter(spr, PLF14, b, ox + W / 2, rBase - 6, col::TEXT_MUTE);
   } else {
     const float scale = rmax < 1.f ? 1.f : rmax;
     for (int i = 1; i < 13; ++i) {
@@ -645,12 +733,12 @@ void WeatherUi::drawViewHours(int ox, float t, const WeatherModel& w) {
       const int h = static_cast<int>((rain[i] / scale) * 26.f * e);
       if (h < 1) continue;
       const int x = px(i) - 6;
-      spr_.fillRoundRect(x, rBase - h, 12, h, 2, col::RAIN);
+      spr.fillRoundRect(x, rBase - h, 12, h, 2, col::RAIN);
     }
     char b[16];
     snprintf(b, sizeof(b), "%.1f mm", rmax);
-    glRight(spr_, b, ox + W - 12, rBase - 34, col::RAIN);
-    gl(spr_, "OPAD", ox + 12, rBase - 34, col::RAIN_DK);
+    glRight(spr, b, ox + W - 12, rBase - 34, col::RAIN);
+    gl(spr, "OPAD", ox + 12, rBase - 34, col::RAIN_DK);
   }
 
   // godziny + ikony
@@ -659,18 +747,18 @@ void WeatherUi::drawViewHours(int ox, float t, const WeatherModel& w) {
     const int x = px(i);
     char h[8];
     snprintf(h, sizeof(h), "%02d", hourLbl[i]);
-    glCenter(spr_, h, x, 160, i == 0 ? col::ACCENT : col::TEXT_DIM);
-    wxico::draw(spr_, code[i], x, 186, 24);
+    glCenter(spr, h, x, 160, i == 0 ? col::ACCENT : col::TEXT_DIM);
+    wxico::draw(spr, code[i], x, 186, 24);
   }
 }
 
 // --------------------------------------------------------- WIDOK 3: 5 DNI ----
 
-void WeatherUi::drawViewDays(int ox, float t, const WeatherModel& w) {
+void WeatherUi::drawViewDays(TFT_eSPI& spr, int ox, float t, const WeatherModel& w) {
   const float e = easeOutCubic(t);
 
-  plStr(spr_, PLF14, "PROGNOZA 5 DNI", ox + 10, 46, col::ACCENT);
-  glRight(spr_, "MAX / MIN °C", ox + W - 10, 38, col::TEXT_MUTE);
+  plStr(spr, PLF14, "PROGNOZA 5 DNI", ox + 10, 46, col::ACCENT);
+  glRight(spr, "MAX / MIN °C", ox + W - 10, 38, col::TEXT_MUTE);
 
   float vmin = 1e9f, vmax = -1e9f, rmax = 0.f;
   int n = 0;
@@ -683,7 +771,7 @@ void WeatherUi::drawViewDays(int ox, float t, const WeatherModel& w) {
     if (d.precipMm > rmax) rmax = d.precipMm;
   }
   if (n == 0) {
-    drawNoData(ox, "Brak prognozy dziennej");
+    drawNoData(spr, ox, "Brak prognozy dziennej");
     return;
   }
   if (vmax - vmin < 4.f) {
@@ -703,11 +791,11 @@ void WeatherUi::drawViewDays(int ox, float t, const WeatherModel& w) {
     if (!d.valid) continue;
     const int cx = ox + 32 + i * 64;
 
-    wxico::draw(spr_, d.weatherCode, cx, 66, 28);
+    wxico::draw(spr, d.weatherCode, cx, 66, 28);
 
     char b[12];
     fmtTempInt(b, sizeof(b), d.tempMax);
-    plCenter(spr_, PLF14, b, cx, 95, tempColor(d.tempMax));
+    plCenter(spr, PLF14, b, cx, 95, tempColor(d.tempMax));
 
     // słupek zakresu temperatur — rośnie od dołu
     const int y1 = mapY(d.tempMax);
@@ -715,20 +803,20 @@ void WeatherUi::drawViewDays(int ox, float t, const WeatherModel& w) {
     const int full = y0 - y1;
     const int h = static_cast<int>(full * clampf(e * 1.25f - i * 0.06f, 0.f, 1.f));
     const int bx = cx - 8;
-    spr_.fillRoundRect(bx, yTop, 16, yBot - yTop, 8, col::PV_TRACK);
+    spr.fillRoundRect(bx, yTop, 16, yBot - yTop, 8, col::PV_TRACK);
     if (h > 2) {
       const int top = y0 - h;
       for (int y = top; y <= y0; ++y) {
         const float f = (y0 == top) ? 0.f : static_cast<float>(y0 - y) / (y0 - top);
         const float tv = d.tempMin + (d.tempMax - d.tempMin) * f;
-        spr_.drawFastHLine(bx + 1, y, 14, tempColor(tv));
+        spr.drawFastHLine(bx + 1, y, 14, tempColor(tv));
       }
-      spr_.fillRoundRect(bx, top, 16, 5, 2, tempColor(d.tempMax));
-      spr_.fillRoundRect(bx, y0 - 4, 16, 5, 2, tempColor(d.tempMin));
+      spr.fillRoundRect(bx, top, 16, 5, 2, tempColor(d.tempMax));
+      spr.fillRoundRect(bx, y0 - 4, 16, 5, 2, tempColor(d.tempMin));
     }
 
     fmtTempInt(b, sizeof(b), d.tempMin);
-    plCenter(spr_, PLF14, b, cx, 171, col::TEXT_DIM);
+    plCenter(spr, PLF14, b, cx, 171, col::TEXT_DIM);
 
     // opad — pasek pod słupkiem
     if (d.precipMm > 0.2f) {
@@ -736,35 +824,35 @@ void WeatherUi::drawViewDays(int ox, float t, const WeatherModel& w) {
       int rw = static_cast<int>((d.precipMm / scale) * 44.f * e);
       if (rw < 3) rw = 3;
       if (rw > 44) rw = 44;
-      spr_.fillRoundRect(cx - 22, 176, 44, 4, 2, col::PV_TRACK);
-      spr_.fillRoundRect(cx - 22, 176, rw, 4, 2, col::RAIN);
+      spr.fillRoundRect(cx - 22, 176, 44, 4, 2, col::PV_TRACK);
+      spr.fillRoundRect(cx - 22, 176, rw, 4, 2, col::RAIN);
     }
 
-    plCenter(spr_, PLF14, d.name, cx, 195, i == 0 ? col::ACCENT : col::TEXT);
-    glCenter(spr_, d.date, cx, 197, col::TEXT_MUTE);
+    plCenter(spr, PLF14, d.name, cx, 195, i == 0 ? col::ACCENT : col::TEXT);
+    glCenter(spr, d.date, cx, 197, col::TEXT_MUTE);
   }
 }
 
-void WeatherUi::drawNoData(int ox, const char* msg, const char* sub) {
-  spr_.fillRoundRect(ox + 40, CY + 50, W - 80, 60, 8, col::BG_CARD);
+void WeatherUi::drawNoData(TFT_eSPI& spr, int ox, const char* msg, const char* sub) {
+  spr.fillRoundRect(ox + 40, CY + 50, W - 80, 60, 8, col::BG_CARD);
   if (sub && sub[0]) {
-    plCenter(spr_, PLF14, msg, ox + W / 2, CY + 78, col::TEXT_DIM);
-    glCenter(spr_, sub, ox + W / 2, CY + 84, col::TEXT_MUTE);
+    plCenter(spr, PLF14, msg, ox + W / 2, CY + 78, col::TEXT_DIM);
+    glCenter(spr, sub, ox + W / 2, CY + 84, col::TEXT_MUTE);
   } else {
-    plCenter(spr_, PLF14, msg, ox + W / 2, CY + 86, col::TEXT_DIM);
+    plCenter(spr, PLF14, msg, ox + W / 2, CY + 86, col::TEXT_DIM);
   }
 }
 
 // ------------------------------------------------------------- WIDOK 4: PV ----
 
-void WeatherUi::drawViewPv(int ox, float t, const PvModel& pv, const PvHistory& hist) {
+void WeatherUi::drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, const PvHistory& hist) {
   const float e = easeOutCubic(t);
-  plStr(spr_, PLF14, "FOTOWOLTAIKA", ox + 10, 46, col::PV_SOLAR);
+  plStr(spr, PLF14, "FOTOWOLTAIKA", ox + 10, 46, col::PV_SOLAR);
 
   if (!pv.online) {
     // Noc: falownik ma prawo milczeć (Huawei wyłącza Modbus TCP po zachodzie).
     // Piszemy to wprost, zamiast straszyć awarią do rana.
-    drawNoData(ox, pv.errorMsg[0] ? pv.errorMsg : "Falownik nie odpowiada",
+    drawNoData(spr, ox, pv.errorMsg[0] ? pv.errorMsg : "Falownik nie odpowiada",
                pv.asleep ? "Modbus TCP wyłączony po zachodzie" : nullptr);
     return;
   }
@@ -776,21 +864,21 @@ void WeatherUi::drawViewPv(int ox, float t, const PvModel& pv, const PvHistory& 
   const uint16_t sc = fault ? col::ERR : (pvStatusIsRunning(d.statusCode) ? col::OK : col::WARN);
   const char* sl = pvStatusLabel(d.statusCode);
   const int slw = pltxt::stringWidth(PLF14, sl);
-  spr_.fillCircle(ox + W - 16 - slw - 10, 42, 4, sc);
-  plRight(spr_, PLF14, sl, ox + W - 12, 46, sc);
+  spr.fillCircle(ox + W - 16 - slw - 10, 42, 4, sc);
+  plRight(spr, PLF14, sl, ox + W - 12, 46, sc);
 
   // --- wielka moc AC (animowana) ---
   const int32_t acNow = static_cast<int32_t>(lroundf(animAcW_));
   char v[16], u[8];
   fmtPower(v, sizeof(v), u, sizeof(u), acNow);
-  gl(spr_, "MOC CHWILOWA", ox + 13, 54, col::TEXT_MUTE);
-  const int pw = bigStr(spr_, &FreeSansBold24pt7b, v, ox + 12, 100, col::PV_SOLAR);
-  plStr(spr_, PLF18, u, ox + 16 + pw, 74, col::TEXT_DIM);
+  gl(spr, "MOC CHWILOWA", ox + 13, 54, col::TEXT_MUTE);
+  const int pw = bigStr(spr, &FreeSansBold24pt7b, v, ox + 12, 100, col::PV_SOLAR);
+  plStr(spr, PLF18, u, ox + 16 + pw, 74, col::TEXT_DIM);
 
   char sub[40];
   snprintf(sub, sizeof(sub), "DC %ld W   |   %.0f V", static_cast<long>(d.powerDcW),
            d.pvVoltageV);
-  gl(spr_, sub, ox + 13, 108, col::TEXT_DIM);
+  gl(spr, sub, ox + 13, 108, col::TEXT_DIM);
 
   // --- wskaźnik (arc) ---
   if (pvScaleW_ < static_cast<float>(settings().pvPeakW)) pvScaleW_ = static_cast<float>(settings().pvPeakW);
@@ -798,28 +886,28 @@ void WeatherUi::drawViewPv(int ox, float t, const PvModel& pv, const PvHistory& 
 
   const int gx = ox + 266, gy = 88, gr = 34, gir = 26;
   const float frac = clampf(animAcW_ / pvScaleW_, 0.f, 1.f) * e;
-  glCenter(spr_, "OBCIAZENIE", gx, 48, col::TEXT_MUTE);
-  spr_.drawSmoothArc(gx, gy, gr, gir, 30, 330, col::PV_TRACK, col::BG, true);
+  glCenter(spr, "OBCIAZENIE", gx, 48, col::TEXT_MUTE);
+  smoothArc(spr, gx, gy, gr, gir, 30, 330, col::PV_TRACK, col::BG);
   if (frac > 0.005f) {
-    const uint32_t end = 30 + static_cast<uint32_t>(300.f * frac);
+    const int end = 30 + static_cast<int>(300.f * frac);
     const uint16_t ac = lerp565(col::PV_SOLAR, col::PV_EXPORT, clampf(frac, 0.f, 1.f));
-    spr_.drawSmoothArc(gx, gy, gr, gir, 30, end, ac, col::BG, true);
+    smoothArc(spr, gx, gy, gr, gir, 30, end, ac, col::BG);
   }
   char pct[8];
   snprintf(pct, sizeof(pct), "%d%%", static_cast<int>(lroundf(frac * 100.f)));
-  plCenter(spr_, PLF18, pct, gx, gy + 3, col::TEXT);
+  plCenter(spr, PLF18, pct, gx, gy + 3, col::TEXT);
   char peak[14];
   snprintf(peak, sizeof(peak), "z %.1f kWp", pvScaleW_ / 1000.f);
-  glCenter(spr_, peak, gx, gy + 9, col::TEXT_MUTE);
+  glCenter(spr, peak, gx, gy + 9, col::TEXT_MUTE);
 
   // --- sparkline: profil produkcji dziś ---
-  gl(spr_, "PRODUKCJA DZIS", ox + 12, 122, col::TEXT_MUTE);
+  gl(spr, "PRODUKCJA DZIS", ox + 12, 122, col::TEXT_MUTE);
   char tot[24];
   snprintf(tot, sizeof(tot), "RAZEM %.0f kWh", d.energyTotalKwh);
-  glRight(spr_, tot, ox + W - 12, 122, col::TEXT_MUTE);
+  glRight(spr, tot, ox + W - 12, 122, col::TEXT_MUTE);
 
   const int sx = ox + 12, sy = 132, sw = W - 24, sh = 26;
-  spr_.fillRoundRect(sx, sy, sw, sh, 3, col::CHART_SPARK_BG);
+  spr.fillRoundRect(sx, sy, sw, sh, 3, col::CHART_SPARK_BG);
   const int s0 = 30, s1 = 137;  // 05:00 .. 22:50
   uint16_t hpk = hist.peak();
   if (hpk < 500) hpk = 500;
@@ -828,14 +916,14 @@ void WeatherUi::drawViewPv(int ox, float t, const PvModel& pv, const PvHistory& 
     const int x = sx + ((s - s0) * (sw - 2)) / (s1 - s0);
     int h = static_cast<int>((static_cast<float>(hist.watts[s]) / hpk) * (sh - 3) * e);
     if (h < 1) h = 1;
-    spr_.drawFastVLine(x, sy + sh - 1 - h, h, col::PV_SOLAR);
-    spr_.drawFastVLine(x + 1, sy + sh - 1 - h, h, col::PV_SOLAR_DK);
+    spr.drawFastVLine(x, sy + sh - 1 - h, h, col::PV_SOLAR);
+    spr.drawFastVLine(x + 1, sy + sh - 1 - h, h, col::PV_SOLAR_DK);
   }
   // znaczniki godzin 8 / 12 / 16 / 20
   for (int hh = 8; hh <= 20; hh += 4) {
     const int s = hh * 6;
     const int x = sx + ((s - s0) * (sw - 2)) / (s1 - s0);
-    spr_.drawFastVLine(x, sy + sh - 3, 3, col::GRID_HI);
+    spr.drawFastVLine(x, sy + sh - 3, 3, col::GRID_HI);
   }
 
   // --- 4 kafelki ---
@@ -872,40 +960,40 @@ void WeatherUi::drawViewPv(int ox, float t, const PvModel& pv, const PvHistory& 
     const int x = ox + 6 + i * 78;
     const int grow = static_cast<int>(chh * clampf(e * 1.3f - i * 0.08f, 0.f, 1.f));
     if (grow < 4) continue;
-    spr_.fillRoundRect(x, cy0 + (chh - grow), 74, grow, 6, col::BG_CARD);
+    spr.fillRoundRect(x, cy0 + (chh - grow), 74, grow, 6, col::BG_CARD);
     if (grow < chh - 2) continue;
-    spr_.fillRoundRect(x, cy0, 3, chh, 1, cards[i].color);
-    plStr(spr_, PLF14, cards[i].label, x + 8, cy0 + 14, col::TEXT_DIM);
-    const int vw = pltxt::drawString(spr_, PLF18, cards[i].value, x + 8, cy0 + 37,
+    spr.fillRoundRect(x, cy0, 3, chh, 1, cards[i].color);
+    plStr(spr, PLF14, cards[i].label, x + 8, cy0 + 14, col::TEXT_DIM);
+    const int vw = pltxt::drawString(spr, PLF18, cards[i].value, x + 8, cy0 + 37,
                                      cards[i].color, cards[i].color);
-    gl(spr_, cards[i].unit, x + 11 + vw, cy0 + 30, col::TEXT_MUTE);
+    gl(spr, cards[i].unit, x + 11 + vw, cy0 + 30, col::TEXT_MUTE);
   }
 }
 
 // ------------------------------------------------------------------- ALERT ----
 
-void WeatherUi::drawAlert(float t) {
+void WeatherUi::drawAlert(TFT_eSPI& spr, float t) {
   const float e = easeOutCubic(t);
   const int pad = static_cast<int>(20 * (1.f - e));
   const int x = 8 + pad, y = CY + 4 + pad / 2;
   const int w = W - 16 - pad * 2, h = CH - 12 - pad;
 
-  spr_.fillRoundRect(x, y, w, h, 10, col::ALERT_BG);
-  spr_.drawRoundRect(x, y, w, h, 10, alert_.color);
-  spr_.drawRoundRect(x + 1, y + 1, w - 2, h - 2, 9, alert_.color);
+  spr.fillRoundRect(x, y, w, h, 10, col::ALERT_BG);
+  spr.drawRoundRect(x, y, w, h, 10, alert_.color);
+  spr.drawRoundRect(x + 1, y + 1, w - 2, h - 2, 9, alert_.color);
 
   if (alert_.iconCode >= 0) {
-    wxico::draw(spr_, alert_.iconCode, x + 52, y + 76, 56);
+    wxico::draw(spr, alert_.iconCode, x + 52, y + 76, 56);
   } else {
     // trójkąt ostrzegawczy
     const int cx = x + 52, cy = y + 76;
-    spr_.fillTriangle(cx, cy - 26, cx - 28, cy + 22, cx + 28, cy + 22, alert_.color);
-    spr_.fillRect(cx - 3, cy - 12, 6, 20, col::ALERT_BG);
-    spr_.fillRect(cx - 3, cy + 12, 6, 6, col::ALERT_BG);
+    spr.fillTriangle(cx, cy - 26, cx - 28, cy + 22, cx + 28, cy + 22, alert_.color);
+    spr.fillRect(cx - 3, cy - 12, 6, 20, col::ALERT_BG);
+    spr.fillRect(cx - 3, cy + 12, 6, 6, col::ALERT_BG);
   }
 
-  plStr(spr_, PLF18, alert_.title, x + 100, y + 62, alert_.color);
-  plStr(spr_, PLF14, alert_.text, x + 100, y + 92, col::TEXT);
+  plStr(spr, PLF18, alert_.title, x + 100, y + 62, alert_.color);
+  plStr(spr, PLF14, alert_.text, x + 100, y + 92, col::TEXT);
 }
 
 void WeatherUi::raiseAlert(const Alert& a, uint32_t nowMs) {
@@ -941,33 +1029,60 @@ bool WeatherUi::needsFlights(uint32_t nowMs) const {
   return false;
 }
 
-void WeatherUi::drawView(uint8_t view, int ox, float t, const WeatherModel& w, const PvModel& pv,
-                         const PvHistory& hist, const FlightModel& fl) {
+void WeatherUi::drawView(TFT_eSPI& spr, uint8_t view, int ox, float t, const WeatherModel& w,
+                         const PvModel& pv, const PvHistory& hist, const FlightModel& fl,
+                         uint32_t nowMs, uint32_t heapNow) {
   switch (view) {
     case 0:
-      if (w.ready) drawViewNow(ox, t, w);
-      else drawNoData(ox, "Pobieram prognozę...");
+      if (w.ready) drawViewNow(spr, ox, t, w);
+      else drawNoData(spr, ox, "Pobieram prognozę...");
       break;
     case 1:
-      if (w.ready) drawViewHours(ox, t, w);
-      else drawNoData(ox, "Pobieram prognozę...");
+      if (w.ready) drawViewHours(spr, ox, t, w);
+      else drawNoData(spr, ox, "Pobieram prognozę...");
       break;
     case 2:
-      if (w.ready) drawViewDays(ox, t, w);
-      else drawNoData(ox, "Pobieram prognozę...");
+      if (w.ready) drawViewDays(spr, ox, t, w);
+      else drawNoData(spr, ox, "Pobieram prognozę...");
       break;
     case 3:
-      drawViewPv(ox, t, pv, hist);
+      drawViewPv(spr, ox, t, pv, hist);
       break;
     case 4:
-      drawViewFlights(ox, t, fl);
+      drawViewFlights(spr, ox, t, fl);
       break;
     case 5:
-      drawViewStats(ox, t);
+      drawViewStats(spr, ox, t, nowMs, heapNow);
       break;
     default:
       break;
   }
+}
+
+// Pełna klatka w GLOBALNYCH współrzędnych (y=0..205). Wywoływana raz na pas —
+// wszystko liczy się deterministycznie z nowMs i stanu obiektu, więc oba pasy
+// dostają identyczną treść i sklejają się w jeden obraz.
+void WeatherUi::paintFrame(TFT_eSPI& spr, const WeatherModel& w, const PvModel& pv,
+                           const PvHistory& hist, const FlightModel& fl, bool wifiOk,
+                           uint32_t nowMs, uint32_t heapNow) {
+  const float enterT = clampf(static_cast<float>(nowMs - enterStart_) / cfg::ENTER_ANIM_MS,
+                              0.f, 1.f);
+  drawContentBg(spr);
+
+  if (alertActive_) {
+    drawAlert(spr, clampf(static_cast<float>(nowMs - alertStart_) / 260.f, 0.f, 1.f));
+  } else if (transitioning_) {
+    const float p =
+        easeOutCubic(static_cast<float>(nowMs - transStart_) / cfg::TRANSITION_MS);
+    const int off = static_cast<int>(p * W);
+    drawView(spr, prevView_, -off, 1.f, w, pv, hist, fl, nowMs, heapNow);
+    drawView(spr, view_, W - off, enterT, w, pv, hist, fl, nowMs, heapNow);
+  } else {
+    drawView(spr, view_, 0, enterT, w, pv, hist, fl, nowMs, heapNow);
+  }
+
+  drawHeader(spr, w, wifiOk, nowMs);
+  drawProgress(spr, nowMs);
 }
 
 bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory& hist,
@@ -1031,26 +1146,44 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
   const float enterT = clampf(static_cast<float>(nowMs - enterStart_) / cfg::ENTER_ANIM_MS,
                               0.f, 1.f);
 
-  // --- rysowanie ---
-  drawContentBg();
+  // --- rysowanie: dwa pasy po 103 px ---
+  // Każdy pas rysuje CAŁĄ klatkę (w globalnym układzie) i wypycha swój kawałek.
+  // Sklejenie na y=103 wychodzi piksel w piksel, bo obie iteracje dostają to samo
+  // nowMs i ten sam stan — elementy przecięte granicą (np. łuk PV, ikona pogody)
+  // są rysowane w obu pasach, każdy zobaczy tylko swoją połowę.
+  // Jeden odczyt sterty na klatkę, nie na pas — inaczej ekran statystyk pokazałby
+  // w górnym pasie inną liczbę niż w dolnym (patrz komentarz przy paintFrame).
+  const uint32_t heapNow = ESP.getFreeHeap();
 
-  if (alertActive_) {
-    drawAlert(clampf(static_cast<float>(nowMs - alertStart_) / 260.f, 0.f, 1.f));
-  } else if (transitioning_) {
-    const float p =
-        easeOutCubic(static_cast<float>(nowMs - transStart_) / cfg::TRANSITION_MS);
-    const int off = static_cast<int>(p * W);
-    drawView(prevView_, -off, 1.f, w, pv, hist, fl);
-    drawView(view_, W - off, enterT, w, pv, hist, fl);
-  } else {
-    drawView(view_, 0, enterT, w, pv, hist, fl);
+  uint32_t tPaint = 0, tPush = 0;
+  for (int b = 0; b < BAND_N; ++b) {
+    const int top = b * BAND_H;
+    const uint32_t t0 = cfg::PROFILE_FRAME ? micros() : 0;
+    setBand(spr_, top, VIEW_H);
+    paintFrame(spr_, w, pv, hist, fl, wifiOk, nowMs, heapNow);
+    const uint32_t t1 = cfg::PROFILE_FRAME ? micros() : 0;
+    spr_.pushSprite(0, top);
+    if (cfg::PROFILE_FRAME) {
+      tPaint += t1 - t0;
+      tPush += micros() - t1;
+    }
   }
+  spr_.resetViewport();
 
-  drawHeader(w, wifiOk, nowMs);
-  drawProgress(nowMs);
-  spr_.pushSprite(0, 0);
   drawFooter(pv, wifiOk);   // poza buforem, wprost na TFT
   tickBacklight();
+
+  if (cfg::PROFILE_FRAME) {
+    static uint32_t lastLog = 0;
+    if (nowMs - lastLog > 2000) {
+      lastLog = nowMs;
+      Serial.printf("KLATKA: rysowanie %lu us, wypchniecie %lu us, heap %lu (min %lu), blok %lu\n",
+                    static_cast<unsigned long>(tPaint), static_cast<unsigned long>(tPush),
+                    static_cast<unsigned long>(ESP.getFreeHeap()),
+                    static_cast<unsigned long>(ESP.getMinFreeHeap()),
+                    static_cast<unsigned long>(ESP.getMaxAllocHeap()));
+    }
+  }
 
   animating = animating || transitioning_ || alertActive_ || enterT < 1.f ||
               blCurrent_ != blTarget_;
@@ -1086,13 +1219,13 @@ void fmtAlt(char* buf, size_t n, int32_t ft) {
 
 }  // namespace
 
-void WeatherUi::drawViewFlights(int ox, float t, const FlightModel& fl) {
+void WeatherUi::drawViewFlights(TFT_eSPI& spr, int ox, float t, const FlightModel& fl) {
   const float e = easeOutCubic(t);
   const int mx = ox;
   const int my = CY;
 
   // --- morze ---
-  spr_.fillRect(mx, my, gmap::MAP_W, gmap::MAP_H, col::MAP_SEA);
+  spr.fillRect(mx, my, gmap::MAP_W, gmap::MAP_H, col::MAP_SEA);
 
   // --- ląd (pasy poziome z prekalkulowanej rasteryzacji) ---
   for (int row = 0; row < gmap::MAP_H; ++row) {
@@ -1101,7 +1234,7 @@ void WeatherUi::drawViewFlights(int ox, float t, const FlightModel& fl) {
     for (uint16_t s = a; s < b; ++s) {
       const uint8_t x0 = pgm_read_byte(&gmap::LAND_SPANS[s][0]);
       const uint8_t x1 = pgm_read_byte(&gmap::LAND_SPANS[s][1]);
-      spr_.drawFastHLine(mx + x0, my + row, x1 - x0 + 1, col::MAP_LAND);
+      spr.drawFastHLine(mx + x0, my + row, x1 - x0 + 1, col::MAP_LAND);
     }
   }
 
@@ -1111,7 +1244,7 @@ void WeatherUi::drawViewFlights(int ox, float t, const FlightModel& fl) {
     const int16_t x = static_cast<int16_t>(pgm_read_word(&gmap::COAST_PTS[i][0]));
     const int16_t y = static_cast<int16_t>(pgm_read_word(&gmap::COAST_PTS[i][1]));
     if (i > 0) {
-      spr_.drawLine(mx + px, my + py, mx + x, my + y, col::MAP_COAST);
+      spr.drawLine(mx + px, my + py, mx + x, my + y, col::MAP_COAST);
     }
     px = x;
     py = y;
@@ -1120,25 +1253,25 @@ void WeatherUi::drawViewFlights(int ox, float t, const FlightModel& fl) {
   // --- etykiety miejsc ---
   int lx, ly;
   mapProject(54.6053f, 18.8026f, ox, lx, ly);
-  gl(spr_, "HEL", lx + 5, ly - 3, col::MAP_LABEL);
+  gl(spr, "HEL", lx + 5, ly - 3, col::MAP_LABEL);
 
   mapProject(54.3500f, 18.6600f, ox, lx, ly);
-  gl(spr_, "GDANSK", lx - 12, ly, col::MAP_LABEL);
+  gl(spr, "GDANSK", lx - 12, ly, col::MAP_LABEL);
 
   mapProject(54.7186f, 18.4092f, ox, lx, ly);
-  glRight(spr_, "PUCK", lx - 3, ly - 4, col::MAP_LABEL);
+  glRight(spr, "PUCK", lx - 3, ly - 4, col::MAP_LABEL);
 
   // --- lotnisko EPGD ---
   mapProject(cfg::EPGD_LAT, cfg::EPGD_LON, ox, lx, ly);
-  spr_.drawRect(lx - 3, ly - 3, 7, 7, col::TEXT);
-  spr_.drawFastHLine(lx - 5, ly, 11, col::TEXT);
-  gl(spr_, "EPGD", lx + 8, ly - 3, col::TEXT_DIM);
+  spr.drawRect(lx - 3, ly - 3, 7, 7, col::TEXT);
+  spr.drawFastHLine(lx - 5, ly, 11, col::TEXT);
+  gl(spr, "EPGD", lx + 8, ly - 3, col::TEXT_DIM);
 
   // --- dom (Częstochowska) ---
   mapProject(settings().lat, settings().lon, ox, lx, ly);
-  spr_.drawCircle(lx, ly, 6, col::ACCENT);
-  spr_.fillCircle(lx, ly, 3, col::ACCENT);
-  gl(spr_, "GDYNIA", lx - 40, ly - 4, col::ACCENT);
+  spr.drawCircle(lx, ly, 6, col::ACCENT);
+  spr.fillCircle(lx, ly, 3, col::ACCENT);
+  gl(spr, "GDYNIA", lx - 40, ly - 4, col::ACCENT);
 
   // --- samoloty ---
   for (int i = 0; i < fl.count; ++i) {
@@ -1156,8 +1289,8 @@ void WeatherUi::drawViewFlights(int ox, float t, const FlightModel& fl) {
     const int ay = y - static_cast<int>(cosf(a + 2.5f) * r);
     const int bx = x + static_cast<int>(sinf(a - 2.5f) * r);
     const int by = y - static_cast<int>(cosf(a - 2.5f) * r);
-    spr_.fillTriangle(tx, ty, ax, ay, bx, by, c);
-    spr_.drawTriangle(tx, ty, ax, ay, bx, by, col::BG);
+    spr.fillTriangle(tx, ty, ax, ay, bx, by, c);
+    spr.drawTriangle(tx, ty, ax, ay, bx, by, col::BG);
 
     // numer wiążący z listą
     int nx = x + 12;
@@ -1165,43 +1298,43 @@ void WeatherUi::drawViewFlights(int ox, float t, const FlightModel& fl) {
     if (nx > mx + gmap::MAP_W - 9) nx = x - 12;
     if (ny < my + 9) ny = y + 12;
     if (ny > my + gmap::MAP_H - 9) ny = y - 12;
-    spr_.fillCircle(nx, ny, 7, c);
-    spr_.drawCircle(nx, ny, 7, col::BG);
+    spr.fillCircle(nx, ny, 7, c);
+    spr.drawCircle(nx, ny, 7, col::BG);
     char nb[4];
     snprintf(nb, sizeof(nb), "%d", i + 1);
-    glCenter(spr_, nb, nx, ny - 3, col::BG);
+    glCenter(spr, nb, nx, ny - 3, col::BG);
   }
 
   // --- legenda ---
   const int ly0 = my + gmap::MAP_H - 12;
-  spr_.fillRect(mx, ly0, gmap::MAP_W, 12, col::BG);
-  spr_.fillCircle(mx + 7, ly0 + 6, 4, col::FLY_ARRIVE);
-  gl(spr_, "przylot GDN", mx + 14, ly0 + 2, col::TEXT_DIM);
-  spr_.fillCircle(mx + 100, ly0 + 6, 4, col::FLY_DEPART);
-  gl(spr_, "odlot GDN", mx + 107, ly0 + 2, col::TEXT_DIM);
-  spr_.fillCircle(mx + 180, ly0 + 6, 4, col::FLY_OVER);
-  gl(spr_, "przelot", mx + 187, ly0 + 2, col::TEXT_DIM);
+  spr.fillRect(mx, ly0, gmap::MAP_W, 12, col::BG);
+  spr.fillCircle(mx + 7, ly0 + 6, 4, col::FLY_ARRIVE);
+  gl(spr, "przylot GDN", mx + 14, ly0 + 2, col::TEXT_DIM);
+  spr.fillCircle(mx + 100, ly0 + 6, 4, col::FLY_DEPART);
+  gl(spr, "odlot GDN", mx + 107, ly0 + 2, col::TEXT_DIM);
+  spr.fillCircle(mx + 180, ly0 + 6, 4, col::FLY_OVER);
+  gl(spr, "przelot", mx + 187, ly0 + 2, col::TEXT_DIM);
 
   // ---------------------------------------------------------- panel listy ----
   const int lxp = ox + 228;
-  spr_.drawFastVLine(ox + 224, CY, CH, col::DIVIDER);
+  spr.drawFastVLine(ox + 224, CY, CH, col::DIVIDER);
 
-  plStr(spr_, PLF14, "NA NIEBIE", lxp, 46, col::ACCENT);
+  plStr(spr, PLF14, "NA NIEBIE", lxp, 46, col::ACCENT);
   if (fl.ready) {
     char cb[8];
     snprintf(cb, sizeof(cb), "%d", fl.total);
-    plRight(spr_, PLF14, cb, ox + 318, 46, col::TEXT_DIM);
+    plRight(spr, PLF14, cb, ox + 318, 46, col::TEXT_DIM);
   }
 
   if (!fl.ready) {
-    plStr(spr_, PLF14, "Pobieram", lxp, 110, col::TEXT_MUTE);
-    plStr(spr_, PLF14, "dane...", lxp, 128, col::TEXT_MUTE);
+    plStr(spr, PLF14, "Pobieram", lxp, 110, col::TEXT_MUTE);
+    plStr(spr, PLF14, "dane...", lxp, 128, col::TEXT_MUTE);
     return;
   }
   if (fl.count == 0) {
-    plStr(spr_, PLF14, "Pusto", lxp, 110, col::TEXT_DIM);
-    gl(spr_, "brak samolotow", lxp, 118, col::TEXT_MUTE);
-    gl(spr_, "nad zatoka", lxp, 128, col::TEXT_MUTE);
+    plStr(spr, PLF14, "Pusto", lxp, 110, col::TEXT_DIM);
+    gl(spr, "brak samolotow", lxp, 118, col::TEXT_MUTE);
+    gl(spr, "nad zatoka", lxp, 128, col::TEXT_MUTE);
     return;
   }
 
@@ -1212,18 +1345,18 @@ void WeatherUi::drawViewFlights(int ox, float t, const FlightModel& fl) {
     const int grow = static_cast<int>(23 * clampf(e * 1.5f - i * 0.09f, 0.f, 1.f));
     if (grow < 6) continue;
 
-    spr_.fillRoundRect(lxp - 2, y0, 92, 23, 4, col::BG_CARD);
-    spr_.fillCircle(lxp + 8, y0 + 9, 8, c);
+    spr.fillRoundRect(lxp - 2, y0, 92, 23, 4, col::BG_CARD);
+    spr.fillCircle(lxp + 8, y0 + 9, 8, c);
     char nb[4];
     snprintf(nb, sizeof(nb), "%d", i + 1);
-    glCenter(spr_, nb, lxp + 8, y0 + 6, col::BG);
+    glCenter(spr, nb, lxp + 8, y0 + 6, col::BG);
 
-    plStr(spr_, PLF14, f.callsign, lxp + 20, y0 + 12, col::TEXT);
-    gl(spr_, f.routeKnown ? f.route : "lokalny", lxp + 20, y0 + 15, c);
+    plStr(spr, PLF14, f.callsign, lxp + 20, y0 + 12, col::TEXT);
+    gl(spr, f.routeKnown ? f.route : "lokalny", lxp + 20, y0 + 15, c);
 
     char ab[10];
     fmtAlt(ab, sizeof(ab), f.altFt);
-    glRight(spr_, ab, ox + 318, y0 + 15, col::TEXT_MUTE);
+    glRight(spr, ab, ox + 318, y0 + 15, col::TEXT_MUTE);
   }
 }
 
@@ -1231,40 +1364,42 @@ void WeatherUi::drawViewFlights(int ox, float t, const FlightModel& fl) {
 
 void WeatherUi::drawSetup(const char* apSsid, const char* apPass, const char* apIp) {
   if (!ready_) return;
-  spr_.fillSprite(col::BG);
+  const uint32_t ph = (millis() / 400) % 4;   // faza raz dla obu pasów
 
-  spr_.fillRect(0, 0, W, cfg::HEADER_H, col::HEADER);
-  spr_.drawFastHLine(0, cfg::HEADER_H - 1, W, col::DIVIDER);
-  plStr(spr_, PLF14, "KONFIGURACJA", 12, 19, col::ACCENT);
-  glRight(spr_, "krok 1 z 2", W - 12, 10, col::TEXT_MUTE);
+  pushBands([&](TFT_eSPI& spr) {
+    spr.fillRect(0, 0, W, VIEW_H, col::BG);
 
-  plStr(spr_, PLF14, "1. Połącz telefon z siecią:", 14, 56, col::TEXT_DIM);
+    spr.fillRect(0, 0, W, cfg::HEADER_H, col::HEADER);
+    spr.drawFastHLine(0, cfg::HEADER_H - 1, W, col::DIVIDER);
+    plStr(spr, PLF14, "KONFIGURACJA", 12, 19, col::ACCENT);
+    glRight(spr, "krok 1 z 2", W - 12, 10, col::TEXT_MUTE);
 
-  spr_.fillRoundRect(14, 64, 292, 40, 8, col::BG_CARD);
-  spr_.fillRoundRect(14, 64, 4, 40, 2, col::ACCENT);
-  plStr(spr_, PLF18, apSsid, 26, 82, col::TEXT);
-  plStr(spr_, PLF14, "hasło:", 26, 99, col::TEXT_MUTE);
-  plStr(spr_, PLF14, apPass, 68, 99, col::ACCENT);
+    plStr(spr, PLF14, "1. Połącz telefon z siecią:", 14, 56, col::TEXT_DIM);
 
-  plStr(spr_, PLF14, "2. Otwórz w przeglądarce:", 14, 128, col::TEXT_DIM);
+    spr.fillRoundRect(14, 64, 292, 40, 8, col::BG_CARD);
+    spr.fillRoundRect(14, 64, 4, 40, 2, col::ACCENT);
+    plStr(spr, PLF18, apSsid, 26, 82, col::TEXT);
+    plStr(spr, PLF14, "hasło:", 26, 99, col::TEXT_MUTE);
+    plStr(spr, PLF14, apPass, 68, 99, col::ACCENT);
 
-  spr_.fillRoundRect(14, 136, 292, 38, 8, col::BG_CARD);
-  spr_.fillRoundRect(14, 136, 4, 38, 2, col::ACCENT_WARM);
-  char url[32];
-  snprintf(url, sizeof(url), "http://%s", apIp);
-  plStr(spr_, PLF18, url, 26, 161, col::TEXT);
+    plStr(spr, PLF14, "2. Otwórz w przeglądarce:", 14, 128, col::TEXT_DIM);
 
-  plStr(spr_, PLF14, "Tam wybierzesz swoją sieć Wi-Fi,", 14, 186, col::TEXT_MUTE);
-  plStr(spr_, PLF14, "lokalizację i adres falownika.", 14, 202, col::TEXT_MUTE);
+    spr.fillRoundRect(14, 136, 292, 38, 8, col::BG_CARD);
+    spr.fillRoundRect(14, 136, 4, 38, 2, col::ACCENT_WARM);
+    char url[32];
+    snprintf(url, sizeof(url), "http://%s", apIp);
+    plStr(spr, PLF18, url, 26, 161, col::TEXT);
 
-  // pulsujaca kropka aktywnosci
-  const uint32_t ph = (millis() / 400) % 4;
-  for (uint32_t i = 0; i < 3; ++i) {
-    spr_.fillCircle(292 + i * 8 - 16, 196, 2, (i == ph) ? col::ACCENT : col::PV_TRACK);
-  }
+    plStr(spr, PLF14, "Tam wybierzesz swoją sieć Wi-Fi,", 14, 186, col::TEXT_MUTE);
+    plStr(spr, PLF14, "lokalizację i adres falownika.", 14, 202, col::TEXT_MUTE);
 
-  spr_.pushSprite(0, 0);
-  tft_.fillRect(0, SPR_H, W, cfg::SCREEN_H - SPR_H, col::BG);
+    // pulsujaca kropka aktywnosci
+    for (uint32_t i = 0; i < 3; ++i) {
+      spr.fillCircle(292 + i * 8 - 16, 196, 2, (i == ph) ? col::ACCENT : col::PV_TRACK);
+    }
+  });
+
+  tft_.fillRect(0, VIEW_H, W, cfg::SCREEN_H - VIEW_H, col::BG);
   blTarget_ = cfg::BL_DAY;
   tickBacklight();
 }
@@ -1273,33 +1408,37 @@ void WeatherUi::drawSetup(const char* apSsid, const char* apPass, const char* ap
 
 void WeatherUi::drawOta(int progress, const char* msg) {
   if (!ready_) return;
-  spr_.fillSprite(col::BG);
-
-  for (int y = 0; y < 70; ++y) {
-    spr_.drawFastHLine(0, y, W, lerp565(col::HEADER, col::BG, y / 70.f));
-  }
-
-  // strzalka w dol
-  const int cx = W / 2;
-  spr_.fillRect(cx - 5, 52, 10, 26, col::ACCENT);
-  spr_.fillTriangle(cx, 92, cx - 16, 74, cx + 16, 74, col::ACCENT);
-  spr_.fillRoundRect(cx - 22, 100, 44, 5, 2, col::ACCENT);
-
-  plCenter(spr_, PLF18, "Aktualizacja", cx, 134, col::TEXT);
-  plCenter(spr_, PLF14, msg && msg[0] ? msg : "Pobieram...", cx, 158, col::TEXT_DIM);
-
-  const int bx = 40, bw = W - 80, by = 176;
-  spr_.fillRoundRect(bx, by, bw, 10, 5, col::PV_TRACK);
   const int p = progress < 0 ? 0 : (progress > 100 ? 100 : progress);
-  if (p > 0) {
-    spr_.fillRoundRect(bx, by, (bw * p) / 100, 10, 5, col::ACCENT);
-  }
-  char b[8];
-  snprintf(b, sizeof(b), "%d%%", p);
-  plCenter(spr_, PLF14, b, cx, 208, col::ACCENT);
-  plCenter(spr_, PLF14, "Nie odłączaj zasilania", cx, 230, col::TEXT_MUTE);
 
-  spr_.pushSprite(0, 0);
+  pushBands([&](TFT_eSPI& spr) {
+    spr.fillRect(0, 0, W, VIEW_H, col::BG);
+
+    for (int y = 0; y < 70; ++y) {
+      spr.drawFastHLine(0, y, W, lerp565(col::HEADER, col::BG, y / 70.f));
+    }
+
+    // strzalka w dol
+    const int cx = W / 2;
+    spr.fillRect(cx - 5, 52, 10, 26, col::ACCENT);
+    spr.fillTriangle(cx, 92, cx - 16, 74, cx + 16, 74, col::ACCENT);
+    spr.fillRoundRect(cx - 22, 100, 44, 5, 2, col::ACCENT);
+
+    plCenter(spr, PLF18, "Aktualizacja", cx, 134, col::TEXT);
+    plCenter(spr, PLF14, msg && msg[0] ? msg : "Pobieram...", cx, 158, col::TEXT_DIM);
+
+    const int bx = 40, bw = W - 80, by = 176;
+    spr.fillRoundRect(bx, by, bw, 10, 5, col::PV_TRACK);
+    if (p > 0) {
+      spr.fillRoundRect(bx, by, (bw * p) / 100, 10, 5, col::ACCENT);
+    }
+    char b[8];
+    snprintf(b, sizeof(b), "%d%%", p);
+    plCenter(spr, PLF14, b, cx, 200, col::ACCENT);
+  });
+
+  // Poniżej bufora (y>=206) rysujemy wprost na TFT.
+  tft_.fillRect(0, VIEW_H, W, cfg::SCREEN_H - VIEW_H, col::BG);
+  plCenter(tft_, PLF14, "Nie odłączaj zasilania", W / 2, 228, col::TEXT_MUTE);
   blTarget_ = cfg::BL_DAY;
   tickBacklight();
 }
@@ -1309,56 +1448,58 @@ void WeatherUi::drawOta(int progress, const char* msg) {
 void WeatherUi::drawNetInfo(const char* ssid, const char* ip, int rssi, int secsLeft,
                             int total) {
   if (!ready_) return;
-  spr_.fillSprite(col::BG);
 
-  // belka
-  spr_.fillRect(0, 0, W, cfg::HEADER_H, col::HEADER);
-  spr_.drawFastHLine(0, cfg::HEADER_H - 1, W, col::DIVIDER);
-  spr_.fillCircle(12, 14, 4, col::OK);
-  plStr(spr_, PLF14, "POŁĄCZONO Z SIECIĄ", 24, 19, col::OK);
-  char fw[10];
-  snprintf(fw, sizeof(fw), "v%d", FW_VERSION);
-  plRight(spr_, PLF14, fw, W - 10, 19, col::TEXT_MUTE);
+  pushBands([&](TFT_eSPI& spr) {
+    spr.fillRect(0, 0, W, VIEW_H, col::BG);
 
-  // ikona WiFi — łuki o sile zależnej od RSSI
-  const int wx = 42, wy = 96;
-  const int bars = rssi >= -55 ? 3 : (rssi >= -70 ? 2 : (rssi >= -82 ? 1 : 0));
-  for (int i = 0; i < 3; ++i) {
-    const int r = 14 + i * 10;
-    const uint16_t c = (i < bars) ? col::ACCENT : col::PV_TRACK;
-    spr_.drawSmoothArc(wx, wy, r, r - 4, 225, 315, c, col::BG, true);
-  }
-  spr_.fillCircle(wx, wy, 4, bars > 0 ? col::ACCENT : col::PV_TRACK);
+    // belka
+    spr.fillRect(0, 0, W, cfg::HEADER_H, col::HEADER);
+    spr.drawFastHLine(0, cfg::HEADER_H - 1, W, col::DIVIDER);
+    spr.fillCircle(12, 14, 4, col::OK);
+    plStr(spr, PLF14, "POŁĄCZONO Z SIECIĄ", 24, 19, col::OK);
+    char fw[10];
+    snprintf(fw, sizeof(fw), "v%d", FW_VERSION);
+    plRight(spr, PLF14, fw, W - 10, 19, col::TEXT_MUTE);
 
-  // sieć
-  gl(spr_, "SIEC", 92, 50, col::TEXT_MUTE);
-  plStr(spr_, PLF18, ssid, 92, 76, col::TEXT);
-  char sig[20];
-  snprintf(sig, sizeof(sig), "%d dBm", rssi);
-  gl(spr_, sig, 92, 84, col::TEXT_DIM);
+    // ikona WiFi — łuki o sile zależnej od RSSI
+    const int wx = 42, wy = 96;
+    const int bars = rssi >= -55 ? 3 : (rssi >= -70 ? 2 : (rssi >= -82 ? 1 : 0));
+    for (int i = 0; i < 3; ++i) {
+      const int r = 14 + i * 10;
+      const uint16_t c = (i < bars) ? col::ACCENT : col::PV_TRACK;
+      smoothArc(spr, wx, wy, r, r - 4, 225, 315, c, col::BG);
+    }
+    spr.fillCircle(wx, wy, 4, bars > 0 ? col::ACCENT : col::PV_TRACK);
 
-  // adres IP — duży, żeby dało się przepisać
-  spr_.fillRoundRect(14, 112, W - 28, 62, 10, col::BG_CARD);
-  spr_.fillRoundRect(14, 112, 4, 62, 2, col::ACCENT);
-  gl(spr_, "ADRES IP URZADZENIA", 30, 120, col::TEXT_MUTE);
-  bigStr(spr_, &FreeSansBold18pt7b, ip, 30, 162, col::ACCENT);
+    // sieć
+    gl(spr, "SIEC", 92, 50, col::TEXT_MUTE);
+    plStr(spr, PLF18, ssid, 92, 76, col::TEXT);
+    char sig[20];
+    snprintf(sig, sizeof(sig), "%d dBm", rssi);
+    gl(spr, sig, 92, 84, col::TEXT_DIM);
 
-  plCenter(spr_, PLF14, "Panel konfiguracji dostępny pod tym adresem", W / 2, 196,
-           col::TEXT_DIM);
+    // adres IP — duży, żeby dało się przepisać
+    spr.fillRoundRect(14, 112, W - 28, 62, 10, col::BG_CARD);
+    spr.fillRoundRect(14, 112, 4, 62, 2, col::ACCENT);
+    gl(spr, "ADRES IP URZADZENIA", 30, 120, col::TEXT_MUTE);
+    bigStr(spr, &FreeSansBold18pt7b, ip, 30, 162, col::ACCENT);
 
-  // odliczanie
-  const int bx = 40, bw = W - 80, by = 186;
-  spr_.fillRoundRect(bx, by, bw, 6, 3, col::PV_TRACK);
-  const float f = (total > 0) ? clampf(static_cast<float>(secsLeft) / total, 0.f, 1.f) : 0.f;
-  if (f > 0.f) {
-    spr_.fillRoundRect(bx, by, static_cast<int>(bw * f), 6, 3, col::ACCENT);
-  }
-  char cd[24];
-  snprintf(cd, sizeof(cd), "start za %d s", secsLeft);
-  plCenter(spr_, PLF14, cd, W / 2, 204, col::TEXT_MUTE);
+    plCenter(spr, PLF14, "Panel konfiguracji dostępny pod tym adresem", W / 2, 196,
+             col::TEXT_DIM);
 
-  spr_.pushSprite(0, 0);
-  tft_.fillRect(0, SPR_H, W, cfg::SCREEN_H - SPR_H, col::BG);
+    // odliczanie
+    const int bx = 40, bw = W - 80, by = 186;
+    spr.fillRoundRect(bx, by, bw, 6, 3, col::PV_TRACK);
+    const float f = (total > 0) ? clampf(static_cast<float>(secsLeft) / total, 0.f, 1.f) : 0.f;
+    if (f > 0.f) {
+      spr.fillRoundRect(bx, by, static_cast<int>(bw * f), 6, 3, col::ACCENT);
+    }
+    char cd[24];
+    snprintf(cd, sizeof(cd), "start za %d s", secsLeft);
+    plCenter(spr, PLF14, cd, W / 2, 204, col::TEXT_MUTE);
+  });
+
+  tft_.fillRect(0, VIEW_H, W, cfg::SCREEN_H - VIEW_H, col::BG);
   blTarget_ = cfg::BL_DAY;
   tickBacklight();
 }
@@ -1385,13 +1526,14 @@ bool WeatherUi::restoreBuffer() {
     return true;
   }
   spr_.setColorDepth(16);
-  if (spr_.createSprite(cfg::SCREEN_W, SPR_H) == nullptr) {
+  if (spr_.createSprite(cfg::SCREEN_W, BAND_H) == nullptr) {
     Serial.println("UI: nie udalo sie odtworzyc bufora!");
     return false;
   }
   footerInit_ = false;
   spr_.setSwapBytes(false);
-  spr_.fillSprite(col::BG);
+  // createSprite ustawia viewport na fizyczny pas, więc fillRect(0,0,W,BAND_H) jest OK.
+  spr_.fillRect(0, 0, W, BAND_H, col::BG);
   freed_ = false;
   Serial.printf("UI: odtworzono bufor, wolny heap=%u B\n",
                 static_cast<unsigned>(ESP.getFreeHeap()));
@@ -1440,51 +1582,57 @@ void WeatherUi::drawOtaDirect(int progress, const char* msg) {
 
 void WeatherUi::drawLedTest(const char* colorName) {
   if (!ready_) return;
-  spr_.fillSprite(col::BG);
-
-  spr_.fillRect(0, 0, W, cfg::HEADER_H, col::HEADER);
-  spr_.drawFastHLine(0, cfg::HEADER_H - 1, W, col::DIVIDER);
-  plStr(spr_, PLF14, "TEST DIODY RGB", 12, 19, col::ACCENT);
 
   uint16_t c = col::TEXT_MUTE;
   if (strcmp(colorName, "CZERWONY") == 0) c = C565(255, 40, 40);
   else if (strcmp(colorName, "ZIELONY") == 0) c = C565(40, 230, 90);
   else if (strcmp(colorName, "NIEBIESKI") == 0) c = C565(60, 130, 255);
 
-  spr_.fillCircle(W / 2, 96, 40, c);
-  spr_.drawCircle(W / 2, 96, 46, col::DIVIDER);
+  pushBands([&](TFT_eSPI& spr) {
+    spr.fillRect(0, 0, W, VIEW_H, col::BG);
 
-  plCenter(spr_, PLF14, "Dioda powinna teraz świecić na:", W / 2, 152, col::TEXT_DIM);
-  plCenter(spr_, PLF18, colorName, W / 2, 180, c);
-  plCenter(spr_, PLF14, "Sprawdź, czy kolory się zgadzają.", W / 2, 202, col::TEXT_MUTE);
+    spr.fillRect(0, 0, W, cfg::HEADER_H, col::HEADER);
+    spr.drawFastHLine(0, cfg::HEADER_H - 1, W, col::DIVIDER);
+    plStr(spr, PLF14, "TEST DIODY RGB", 12, 19, col::ACCENT);
 
-  spr_.pushSprite(0, 0);
-  tft_.fillRect(0, SPR_H, W, cfg::SCREEN_H - SPR_H, col::BG);
+    spr.fillCircle(W / 2, 96, 40, c);
+    spr.drawCircle(W / 2, 96, 46, col::DIVIDER);
+
+    plCenter(spr, PLF14, "Dioda powinna teraz świecić na:", W / 2, 152, col::TEXT_DIM);
+    plCenter(spr, PLF18, colorName, W / 2, 180, c);
+    plCenter(spr, PLF14, "Sprawdź, czy kolory się zgadzają.", W / 2, 202, col::TEXT_MUTE);
+  });
+
+  tft_.fillRect(0, VIEW_H, W, cfg::SCREEN_H - VIEW_H, col::BG);
   blTarget_ = cfg::BL_DAY;
   tickBacklight();
 }
 
 // ---------------------------------------------- WIDOK 6: STATYSTYKI ----------
 
-void WeatherUi::drawViewStats(int ox, float t) {
+void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
+                              uint32_t heapNow) {
   const float e = easeOutCubic(t);
   const Diag& d = diag();
-  const uint32_t now = millis();
+  // NIE millis()/getFreeHeap() — te wartości muszą być identyczne we wszystkich
+  // pasach i paskach tej samej klatki, inaczej wiersz przecięty granicą pasa
+  // (np. "Samoloty" na y=103, "MQTT" na granicy paska zrzutu) rwie się w pół.
+  const uint32_t now = nowMs;
 
-  plStr(spr_, PLF14, "STATYSTYKI URZĄDZENIA", ox + 10, 46, col::ACCENT);
+  plStr(spr, PLF14, "STATYSTYKI URZĄDZENIA", ox + 10, 46, col::ACCENT);
 
   char b[48];
   if (otaTrialActive()) {
     // Okres próbny: wersja jeszcze nie potwierdziła, że działa. Jeśli w ciągu
     // 3 minut nie udowodni (WiFi + dane + sterta), urządzenie samo się cofnie.
     snprintf(b, sizeof(b), "v%d · próbna", FW_VERSION);
-    plRight(spr_, PLF14, b, ox + W - 10, 46, col::WARN);
+    plRight(spr, PLF14, b, ox + W - 10, 46, col::WARN);
   } else if (d.otaRemote > FW_VERSION) {
     snprintf(b, sizeof(b), "v%d → v%d", FW_VERSION, d.otaRemote);
-    plRight(spr_, PLF14, b, ox + W - 10, 46, col::WARN);
+    plRight(spr, PLF14, b, ox + W - 10, 46, col::WARN);
   } else {
     snprintf(b, sizeof(b), "v%d", FW_VERSION);
-    plRight(spr_, PLF14, b, ox + W - 10, 46, col::OK);
+    plRight(spr, PLF14, b, ox + W - 10, 46, col::OK);
   }
 
   // --- źródła danych: zielona kropka = działa, czerwona = błąd, szara = wyłączone ---
@@ -1514,15 +1662,15 @@ void WeatherUi::drawViewStats(int ox, float t) {
     const bool never = !off && src[i].okAt == 0;
     const uint16_t dot = off ? col::TEXT_MUTE : (bad ? col::ERR : (never ? col::WARN : col::OK));
 
-    spr_.fillCircle(ox + 12, y0 + 6, 4, dot);
-    plStr(spr_, PLF14, src[i].name, ox + 24, y0 + 11, off ? col::TEXT_MUTE : col::TEXT);
+    spr.fillCircle(ox + 12, y0 + 6, 4, dot);
+    plStr(spr, PLF14, src[i].name, ox + 24, y0 + 11, off ? col::TEXT_MUTE : col::TEXT);
 
     if (off) {
-      glRight(spr_, src[i].offMsg, ox + W - 10, y0 + 3, col::TEXT_MUTE);
+      glRight(spr, src[i].offMsg, ox + W - 10, y0 + 3, col::TEXT_MUTE);
     } else if (bad) {
-      glRight(spr_, src[i].err, ox + W - 10, y0 + 3, col::ERR);
+      glRight(spr, src[i].err, ox + W - 10, y0 + 3, col::ERR);
     } else if (never) {
-      glRight(spr_, "czekam...", ox + W - 10, y0 + 3, col::TEXT_MUTE);
+      glRight(spr, "czekam...", ox + W - 10, y0 + 3, col::TEXT_MUTE);
     } else {
       const uint32_t ago = (now - src[i].okAt) / 1000;
       if (ago < 90) {
@@ -1530,13 +1678,13 @@ void WeatherUi::drawViewStats(int ox, float t) {
       } else {
         snprintf(b, sizeof(b), "OK  %lu min temu", static_cast<unsigned long>(ago / 60));
       }
-      glRight(spr_, b, ox + W - 10, y0 + 3, col::TEXT_DIM);
+      glRight(spr, b, ox + W - 10, y0 + 3, col::TEXT_DIM);
     }
   }
 
   // --- zdrowie: temperatura / RAM / czas pracy ---
   const uint32_t up = now / 1000;
-  const uint32_t heap = ESP.getFreeHeap();
+  const uint32_t heap = heapNow;   // złapany raz na klatkę u wołającego
   const uint32_t minHeap = d.minHeap == 0xFFFFFFFF ? heap : d.minHeap;
 
   struct Card {
@@ -1579,12 +1727,12 @@ void WeatherUi::drawViewStats(int ox, float t) {
     const int x = ox + 6 + i * 104;
     const int grow = static_cast<int>(chh * clampf(e * 1.8f - 0.3f - i * 0.15f, 0.f, 1.f));
     if (grow < 5) continue;
-    spr_.fillRoundRect(x, cy0 + (chh - grow), 100, grow, 6, col::BG_CARD);
+    spr.fillRoundRect(x, cy0 + (chh - grow), 100, grow, 6, col::BG_CARD);
     if (grow < chh - 2) continue;
-    spr_.fillRoundRect(x, cy0, 3, chh, 1, cards[i].color);
-    gl(spr_, cards[i].label, x + 9, cy0 + 4, col::TEXT_MUTE);
-    plStr(spr_, PLF18, cards[i].value, x + 9, cy0 + 30, cards[i].color);
-    gl(spr_, cards[i].sub, x + 9, cy0 + 34, col::TEXT_MUTE);
+    spr.fillRoundRect(x, cy0, 3, chh, 1, cards[i].color);
+    gl(spr, cards[i].label, x + 9, cy0 + 4, col::TEXT_MUTE);
+    plStr(spr, PLF18, cards[i].value, x + 9, cy0 + 30, cards[i].color);
+    gl(spr, cards[i].sub, x + 9, cy0 + 34, col::TEXT_MUTE);
   }
 
   // --- sieć: siła sygnału + adres panelu ---
@@ -1592,21 +1740,32 @@ void WeatherUi::drawViewStats(int ox, float t) {
   const int bars = rssi >= -55 ? 4 : (rssi >= -65 ? 3 : (rssi >= -75 ? 2 : (rssi >= -85 ? 1 : 0)));
   for (int i = 0; i < 4; ++i) {
     const int bh = 4 + i * 3;
-    spr_.fillRect(ox + 10 + i * 6, 190 - bh, 4, bh,
+    spr.fillRect(ox + 10 + i * 6, 190 - bh, 4, bh,
                   i < bars ? col::ACCENT : col::PV_TRACK);
   }
 
   snprintf(b, sizeof(b), "%s  %d dBm", WiFi.SSID().c_str(), rssi);
-  plStr(spr_, PLF14, b, ox + 40, 190, col::TEXT_DIM);
+  plStr(spr, PLF14, b, ox + 40, 190, col::TEXT_DIM);
 
   snprintf(b, sizeof(b), "http://%s", WiFi.localIP().toString().c_str());
-  plStr(spr_, PLF14, b, ox + 10, 205, col::ACCENT);
-  glRight(spr_, "panel", ox + W - 10, 197, col::TEXT_MUTE);
+  plStr(spr, PLF14, b, ox + 10, 205, col::ACCENT);
+  glRight(spr, "panel", ox + W - 10, 197, col::TEXT_MUTE);
 }
 
 // ------------------------------------- ZRZUT EKRANU DO PRZEGLĄDARKI ----------
 // BMP 320x240 24-bit, wysyłany wiersz po wierszu — w RAM-ie trzymamy tylko
 // jedną linię (960 B), a nie cały obraz (230 kB).
+//
+// Po przejściu na dwa pasy bufor wyświetlacza trzyma tylko połowę obrazu naraz,
+// więc nie da się już go po prostu odczytać. Zamiast tego zrzut RYSUJE ekran od nowa
+// do własnego, wąskiego sprite'a (320x24 = 15 kB) — pasek po pasku, od dołu, tak jak
+// idzie BMP. Dzięki temu:
+//   - nie dotykamy bufora wyświetlacza, więc obraz na TFT dalej płynie (zrzut leci
+//     z zadania web na rdzeniu 0, rysowanie z loop() na rdzeniu 1),
+//   - stopka PV (y=206..239), która nigdy nie była w buforze, po prostu wpada w
+//     ostatnie paski.
+// Koszt: 10 przebiegów rysowania na jeden zrzut, ale każdy z nich jest w większości
+// przycinany "za darmo" przez viewport.
 
 // Podglad w przegladarce: wymuszenie konkretnego ekranu. idx < 0 wraca do rotacji.
 void WeatherUi::pinView(int idx) {
@@ -1627,9 +1786,10 @@ void WeatherUi::pinView(int idx) {
   alertActive_ = false;
 }
 
-void WeatherUi::streamScreenshot(WiFiClient& client, const PvModel& pv, bool wifiOk) {
+void WeatherUi::streamScreenshot(WiFiClient& client, const WeatherModel& w, const PvModel& pv,
+                                 const PvHistory& hist, const FlightModel& fl, bool wifiOk) {
   if (!ready_ || freed_) {
-    return;
+    return;   // trwa OTA — sterty i tak nie ma na nic
   }
 
   constexpr int WD = cfg::SCREEN_W;
@@ -1650,40 +1810,45 @@ void WeatherUi::streamScreenshot(WiFiClient& client, const PvModel& pv, bool wif
   hdr[34] = dataSize; hdr[35] = dataSize >> 8;
   hdr[36] = dataSize >> 16; hdr[37] = dataSize >> 24;
 
+  // Własny pasek roboczy — NIE bufor wyświetlacza. 320x24x16bpp = 15,4 kB.
+  TFT_eSprite shot(&tft_);
+  shot.setColorDepth(16);
+  if (shot.createSprite(WD, SHOT_H) == nullptr) {
+    return;   // brak pamięci — lepiej nic nie wysłać niż zabrać ją radarowi
+  }
+  shot.setSwapBytes(false);
+
   client.print("HTTP/1.1 200 OK\r\nContent-Type: image/bmp\r\n");
   client.printf("Content-Length: %lu\r\n", static_cast<unsigned long>(fileSize));
   client.print("Cache-Control: no-store\r\nConnection: close\r\n\r\n");
   client.write(hdr, sizeof(hdr));
 
-  // Stopka leży poza buforem — odtwarzamy ją w małym sprite'cie tylko na zrzut.
-  TFT_eSprite foot(&tft_);
-  foot.setColorDepth(16);
-  const bool haveFoot = (foot.createSprite(WD, 34) != nullptr);
-  if (haveFoot) {
-    foot.setSwapBytes(false);
-    drawFooterTo(foot, pv, wifiOk);
-  }
+  // Jedna klatka = jeden moment w czasie. Gdyby każdy pasek brał świeże millis()
+  // albo świeży odczyt sterty, rozjechałyby się nie tylko animacje: między paskami
+  // leci transmisja BMP (setki ms), więc napisy "OK 12s temu" i "WOLNY RAM" na ekranie
+  // statystyk pokazałyby w kolejnych paskach RÓŻNE wartości i litery rwałyby się w pół.
+  const uint32_t nowMs = millis();
+  const uint32_t heapNow = ESP.getFreeHeap();
 
   static uint8_t line[WD * 3];
-  for (int y = HT - 1; y >= 0; --y) {          // BMP idzie od dołu
-    for (int x = 0; x < WD; ++x) {
-      uint16_t c;
-      if (y < SPR_H) {
-        c = spr_.readPixel(x, y);
-      } else if (haveFoot) {
-        c = foot.readPixel(x, y - SPR_H);
-      } else {
-        c = col::HEADER;
+  for (int top = HT - SHOT_H; top >= 0; top -= SHOT_H) {   // BMP idzie od dołu
+    setBand(shot, top, HT);          // układ globalny 0..239 (ze stopką)
+    // paintFrame czyści 0..205, drawFooterTo maluje 206..239 — razem cały ekran,
+    // więc świeżo wyzerowany sprite nie prześwituje nigdzie na czarno.
+    paintFrame(shot, w, pv, hist, fl, wifiOk, nowMs, heapNow);
+    drawFooterTo(shot, pv, wifiOk);  // sama sprawdzi, czy wpada w ten pasek
+
+    for (int y = top + SHOT_H - 1; y >= top; --y) {
+      for (int x = 0; x < WD; ++x) {
+        const uint16_t c = shot.readPixel(x, y);   // współrzędne globalne
+        line[x * 3 + 0] = static_cast<uint8_t>((c & 0x1F) << 3);          // B
+        line[x * 3 + 1] = static_cast<uint8_t>(((c >> 5) & 0x3F) << 2);   // G
+        line[x * 3 + 2] = static_cast<uint8_t>(((c >> 11) & 0x1F) << 3);  // R
       }
-      line[x * 3 + 0] = static_cast<uint8_t>((c & 0x1F) << 3);          // B
-      line[x * 3 + 1] = static_cast<uint8_t>(((c >> 5) & 0x3F) << 2);   // G
-      line[x * 3 + 2] = static_cast<uint8_t>(((c >> 11) & 0x1F) << 3);  // R
+      client.write(line, sizeof(line));
     }
-    client.write(line, sizeof(line));
   }
 
-  if (haveFoot) {
-    foot.deleteSprite();
-  }
+  shot.deleteSprite();
   client.flush();
 }

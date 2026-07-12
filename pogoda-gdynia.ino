@@ -475,19 +475,22 @@ void setup() {
   ui.drawBoot(gBootMsg, 0);
 
   // Zrzut ekranu leci z zadania web (rdzen 0) i NIE zatrzymuje rysowania (rdzen 1) —
-  // inaczej ekran zamiera na czas wysylania BMP. Zeby nie zlapac klatki w polowie
-  // przejscia, czekamy tylko na spokojna klatke; poza przejsciem kolejne klatki sa
-  // niemal identyczne, wiec czytanie bufora "w locie" jest niewidoczne.
+  // inaczej ekran zamiera na czas wysylania BMP. Rysuje wlasna kopie klatki do
+  // malego sprite'a, wiec bufora wyswietlacza w ogole nie dotyka. Czekamy tylko na
+  // spokojna klatke, zeby nie zlapac ekranu w polowie przejscia miedzy widokami.
   portal::setScreenshotHandler([](WiFiClient& c) {
     const uint32_t t0 = millis();
     while (!ui.stableFrame() && millis() - t0 < 800) delay(10);
-    ui.streamScreenshot(c, uiPv, gWifiOk);
+    ui.streamScreenshot(c, uiWeather, uiPv, uiHist, uiFlights, gWifiOk);
   });
 
   portal::setViewHandler([](int i) { ui.pinView(i); },
                          [](int& cur, int& pin) { ui.viewState(cur, pin); });
 
-  xTaskCreatePinnedToCore(webTask, "web", 12288, nullptr, 2, nullptr, 0);
+  // Zrzut ekranu rysuje teraz calą klatkę (a nie tylko czyta bufor), więc stos zadania
+  // web musi pomieścić cały łańcuch rysujący. 4 kB zapasu ze sterty, której i tak
+  // przybyło 66 kB.
+  xTaskCreatePinnedToCore(webTask, "web", 16384, nullptr, 2, nullptr, 0);
   xTaskCreatePinnedToCore(netTask, "net", 16384, nullptr, 3, nullptr, 0);
 }
 
@@ -517,14 +520,6 @@ void loop() {
       ESP.restart();
     }
     delay(60);
-    return;
-  }
-
-  // --- radar prosi o pamięć: oddaj bufor, zostaw ostatnią klatkę na ekranie ---
-  if (radarNeedsMemory()) {
-    ui.releaseBuffer(false);
-    radarMemoryReady();
-    delay(50);
     return;
   }
 

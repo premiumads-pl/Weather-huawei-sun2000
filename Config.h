@@ -78,6 +78,10 @@ constexpr uint32_t ALERT_COOLDOWN_MS = 10UL * 60UL * 1000UL;
 constexpr uint32_t FRAME_ACTIVE_MS = 33;
 constexpr uint32_t FRAME_IDLE_MS = 70;
 
+// Pomiar czasu klatki (rysowanie / wypchnięcie na SPI) + stan sterty, co 2 s na
+// Serial. Przydatne po zmianie na dwa pasy — domyślnie wyłączone, bo to tylko log.
+constexpr bool PROFILE_FRAME = false;
+
 constexpr int VIEW_COUNT = 6;   // TERAZ / GODZINY / 5 DNI / PV / SAMOLOTY / STATYSTYKI
 constexpr int VIEW_FLIGHTS = 4;
 constexpr int VIEW_STATS = 5;   // ekran serwisowy

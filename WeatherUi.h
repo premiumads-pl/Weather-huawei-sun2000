@@ -38,12 +38,15 @@ class WeatherUi {
   void drawNetInfo(const char* ssid, const char* ip, int rssi, int secsLeft, int total);
   void drawLedTest(const char* colorName);
 
-  // Na czas OTA oddajemy 150 kB bufora — inaczej TLS + pobieranie 1,3 MB
-  // nie mają z czego działać (zostawało ~17 kB heapu).
+  // Na czas OTA oddajemy bufor ekranu — inaczej TLS + pobieranie 1,3 MB
+  // nie mają z czego działać.
   void releaseBuffer(bool clearScreen = true);
 
   // Zrzut ekranu do przegladarki: BMP 320x240 24-bit, wysylany wierszami.
-  void streamScreenshot(WiFiClient& client, const PvModel& pv, bool wifiOk);
+  // Rysuje ekran od nowa do wlasnego, malego sprite'a — nie dotyka bufora
+  // wyswietlacza, wiec obraz na TFT sie nie zatrzymuje.
+  void streamScreenshot(WiFiClient& client, const WeatherModel& w, const PvModel& pv,
+                        const PvHistory& hist, const FlightModel& fl, bool wifiOk);
   void drawFooterTo(TFT_eSPI& dst, const PvModel& pv, bool wifiOk);
   bool restoreBuffer();  // odtwarza bufor po zakończonym OTA
   void drawOtaDirect(int progress, const char* msg);
@@ -76,9 +79,45 @@ class WeatherUi {
   bool ready_ = false;
   bool freed_ = false;
 
-  // Bufor obejmuje tylko y=0..205 (belka + pasek + widoki). Stopka PV idzie wprost
-  // na TFT. Oszczędza 21,7 kB RAM, a bez tego nie starcza sterty na TLS.
-  static constexpr int SPR_H = 206;
+  // --- RYSOWANIE W DWÓCH PASACH ---------------------------------------------
+  // Bufor obejmuje tylko y=0..205 (belka + pasek + widoki); stopka PV idzie wprost
+  // na TFT. Ale nawet 320x206x16bpp to 132 kB — sterta tego nie wytrzymywała
+  // (heap_min_ever spadał do ~10 kB, dekoder PNG radaru nie miał gdzie się zmieścić).
+  //
+  // Dlatego sprite ma teraz tylko 320x103 = 66 kB i jest rysowany DWA RAZY na klatkę:
+  // pas górny (y=0..102) i pas dolny (y=103..205), każdy wypychany osobno.
+  // Kod rysujący nadal operuje na globalnych współrzędnych ekranu (0..205) —
+  // przesunięcie i przycięcie robi viewport sprite'a (setViewport z vpDatum),
+  // który TFT_eSPI honoruje we wszystkich prymitywach (drawPixel, fillRect,
+  // drawFastH/VLine, drawLine, drawChar, readPixel — wszystkie są wirtualne).
+  static constexpr int VIEW_H = 206;   // wirtualna wysokość obszaru rysowania (y=0..205)
+  static constexpr int BAND_H = 103;   // fizyczna wysokość sprite'a = jeden pas
+  static constexpr int BAND_N = VIEW_H / BAND_H;  // 2 pasy
+
+  // Zrzut ekranu rysujemy w wąskich paskach do własnego sprite'a (240 = 10 x 24),
+  // żeby nie ruszać bufora wyświetlacza i nie zamrażać obrazu.
+  static constexpr int SHOT_H = 24;
+
+  // Ustawia sprite jako pas [top, top+bandH) w układzie globalnym o wysokości virtH.
+  static void setBand(TFT_eSprite& s, int top, int virtH);
+
+  // Rysuje pełną klatkę (tło + widok + belka + pasek) do wskazanego celu.
+  // Cel sam decyduje, co z tego wpada w jego pas — tu rysujemy zawsze całość.
+  //
+  // heapNow: JEDNA klatka = JEDEN moment. paintFrame() leci raz na pas (2x na klatkę,
+  // 10x na zrzut), a ekran statystyk pokazuje dane, które zmieniają się same z siebie
+  // (millis(), wolny heap). Gdyby każdy pas czytał je od nowa, napis przecięty granicą
+  // pasa pokazałby w górnej połowie inną wartość niż w dolnej — litery rozjechałyby się
+  // w poziomie. Widać to zwłaszcza w zrzucie: między paskami leci transmisja BMP, więc
+  // mijają setki ms. Dlatego nowMs i heapNow łapiemy RAZ, u wołającego, i wieziemy
+  // przez stos (nie przez pole — render() i zrzut jadą na różnych rdzeniach).
+  void paintFrame(TFT_eSPI& spr, const WeatherModel& w, const PvModel& pv,
+                  const PvHistory& hist, const FlightModel& fl, bool wifiOk, uint32_t nowMs,
+                  uint32_t heapNow);
+
+  // Rysuje treść dwa razy (pas górny + dolny) i wypycha oba pasy na TFT.
+  template <typename F>
+  void pushBands(F&& paint);
 
   // stopka: rysujemy tylko gdy dane się zmieniły (inaczej migotałaby)
   int32_t lastAc_ = INT32_MIN;
@@ -117,21 +156,24 @@ class WeatherUi {
   float cpuTempC_ = 0.f;
   uint32_t cpuTempAt_ = 0;
 
-  // rysowanie
-  void drawHeader(const WeatherModel& w, bool wifiOk, uint32_t nowMs);
-  void drawProgress(uint32_t nowMs);
+  // Rysowanie. Wszystkie te funkcje operują na GLOBALNYCH współrzędnych ekranu
+  // (y=0..205) i nie wiedzą, w którym pasie są — przycina je viewport celu.
+  void drawHeader(TFT_eSPI& spr, const WeatherModel& w, bool wifiOk, uint32_t nowMs);
+  void drawProgress(TFT_eSPI& spr, uint32_t nowMs);
   void drawFooter(const PvModel& pv, bool wifiOk);
   void drawSysBoxTo(TFT_eSPI& dst, int y);
-  void drawContentBg();
-  void drawView(uint8_t view, int ox, float t, const WeatherModel& w, const PvModel& pv,
-                const PvHistory& hist, const FlightModel& fl);
-  void drawViewNow(int ox, float t, const WeatherModel& w);
-  void drawViewHours(int ox, float t, const WeatherModel& w);
-  void drawViewDays(int ox, float t, const WeatherModel& w);
-  void drawViewPv(int ox, float t, const PvModel& pv, const PvHistory& hist);
-  void drawViewFlights(int ox, float t, const FlightModel& fl);
-  void drawViewStats(int ox, float t);
-  void drawAlert(float t);
-  void drawNoData(int ox, const char* msg, const char* sub = nullptr);
+  void drawContentBg(TFT_eSPI& spr);
+  void drawView(TFT_eSPI& spr, uint8_t view, int ox, float t, const WeatherModel& w,
+                const PvModel& pv, const PvHistory& hist, const FlightModel& fl,
+                uint32_t nowMs, uint32_t heapNow);
+  void drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
+  void drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
+  void drawViewDays(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
+  void drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, const PvHistory& hist);
+  void drawViewFlights(TFT_eSPI& spr, int ox, float t, const FlightModel& fl);
+  void drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs, uint32_t heapNow);
+  void drawAlert(TFT_eSPI& spr, float t);
+  // Podtytuł (sub) niesie powód ciszy falownika — noc, nie awaria.
+  void drawNoData(TFT_eSPI& spr, int ox, const char* msg, const char* sub = nullptr);
   uint32_t holdFor(uint8_t view) const;
 };

@@ -3522,14 +3522,24 @@ inline const char* labelForCode(int code) {
 }
 
 // Usrednianie boxem + alpha blending z tlem sprite'a.
-inline void draw(TFT_eSprite& s, int code, int cx, int cy, int size) {
+// Cel to TFT_eSPI& (a nie TFT_eSprite&), bo rysowanie idzie przez wirtualne
+// drawPixel/readPixel — dziala tak samo na sprite'cie pasa, na pasku zrzutu ekranu
+// i na samym TFT. Wspolrzedne sa GLOBALNE; przesuniecie i przyciecie robi viewport.
+inline void draw(TFT_eSPI& s, int code, int cx, int cy, int size) {
   if (size < 4) return;
-  const IconId id = iconForCode(code);
-  const uint16_t* rgb = rgbFor(id);
-  const uint8_t* alp = alphaFor(id);
 
   const int x0 = cx - size / 2;
   const int y0 = cy - size / 2;
+
+  // Ikona to najdrozszy element klatki (usrednianie boxem + alpha). Jesli caly jej
+  // prostokat wypada poza pas, nie ma sensu liczyc ani jednego piksela.
+  if (!s.checkViewport(x0, y0, size, size)) {
+    return;
+  }
+
+  const IconId id = iconForCode(code);
+  const uint16_t* rgb = rgbFor(id);
+  const uint8_t* alp = alphaFor(id);
 
   for (int y = 0; y < size; ++y) {
     const int sy0 = (y * SRC) / size;
