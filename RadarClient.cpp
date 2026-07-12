@@ -4,7 +4,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <PNGdec.h>
-#include <WiFiClientSecure.h>
+#include <WiFiClient.h>
 #include <cmath>
 #include <cstring>
 #include <new>
@@ -22,7 +22,7 @@ constexpr size_t kMaxPng = 40000;
 // Obiekt PNG waży ~47 kB (PNGdec trzyma 32 kB słownika inflate). Jako zmienna
 // globalna zjadał tyle RAM-u NA STAŁE i pogoda nie miała już z czego sparsować
 // JSON-a. Tworzymy go więc tylko na czas dekodowania i od razu zwalniamy.
-constexpr uint32_t kMinHeapForRadar = 78000;
+constexpr uint32_t kMinHeapForRadar = 64000;
 
 PNG* png = nullptr;
 uint8_t* gPng = nullptr;
@@ -77,9 +77,10 @@ int pngDraw(PNGDRAW* draw) {
   return 1;
 }
 
+// RainViewer serwuje wszystko po zwyklym HTTP. Rezygnacja z TLS oszczedza ~40 kB
+// sterty — dokladnie tyle, ile brakowalo dekoderowi PNG.
 bool httpGet(const char* url, uint8_t** buf, size_t* len, String* text) {
-  WiFiClientSecure client;
-  client.setInsecure();
+  WiFiClient client;
   client.setTimeout(12);
 
   HTTPClient http;
@@ -152,7 +153,7 @@ bool RadarClient::fetch(RadarSnapshot& out) {
 
   // --- 1. najnowsza klatka ---
   String body;
-  if (!httpGet("https://api.rainviewer.com/public/weather-maps.json", nullptr, nullptr,
+  if (!httpGet("http://api.rainviewer.com/public/weather-maps.json", nullptr, nullptr,
                &body)) {
     strncpy(out.errorMsg, "Radar niedostępny", sizeof(out.errorMsg) - 1);
     return false;
@@ -174,6 +175,9 @@ bool RadarClient::fetch(RadarSnapshot& out) {
     return false;
   }
   const char* host = doc["host"] | "https://tilecache.rainviewer.com";
+  if (strncmp(host, "https://", 8) == 0) {
+    host += 8;   // pobieramy kafelek po HTTP — bez TLS starcza RAM-u na dekoder
+  }
   JsonObjectConst last = past[past.size() - 1];
   const char* path = last["path"];
   const uint32_t frameTime = last["time"] | 0;
@@ -197,7 +201,8 @@ bool RadarClient::fetch(RadarSnapshot& out) {
   gBestLevel = 0;
 
   char url[160];
-  snprintf(url, sizeof(url), "%s%s/%d/%d/%d/%d/0/0_0.png", host, path, kTile, kZoom, tx, ty);
+  snprintf(url, sizeof(url), "http://%s%s/%d/%d/%d/%d/0/0_0.png", host, path, kTile, kZoom,
+           tx, ty);
 
   // --- 3. pobierz i zdekoduj PNG ---
   if (!httpGet(url, &gPng, &gPngLen, nullptr)) {
