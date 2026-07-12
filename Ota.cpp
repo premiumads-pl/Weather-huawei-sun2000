@@ -10,6 +10,7 @@
 #include <esp_partition.h>
 
 #include "Config.h"
+#include "Log.h"
 #include "Version.h"
 
 namespace {
@@ -207,9 +208,36 @@ bool Ota::checkAndUpdate() {
 
   int remote = 0;
   if (!fetchRemoteVersion(remote)) {
-    gStatus.state = OtaState::IDLE;
-    setMsg("");
-    return false;
+    // SIEĆ BEZPIECZEŃSTWA: jeśli sterty jest tak mało, że nie da się zestawić TLS,
+    // urządzenie nie mogłoby się już NIGDY zaktualizować po sieci (dokładnie to
+    // zabiło v14). Oddajemy więc 150 kB bufora ekranu i próbujemy jeszcze raz.
+    const uint32_t heap = ESP.getFreeHeap();
+    if (heap < 60000) {
+      LOG("OTA: malo RAM (%lu B) — zwalniam bufor i probuje ponownie\n",
+          static_cast<unsigned long>(heap));
+      gStatus.state = OtaState::DOWNLOADING;   // UI odda bufor
+      setMsg("Sprawdzam aktualizacje...");
+      for (int i = 0; i < 60 && !gUiFreed; ++i) {
+        delay(50);
+      }
+      if (!fetchRemoteVersion(remote)) {
+        gStatus.state = OtaState::FAILED;
+        LOG("OTA: nie udalo sie mimo zwolnienia bufora — restart\n");
+        delay(3000);
+        ESP.restart();
+        return false;
+      }
+      // udało się — jeśli nie ma nowszej wersji, wracamy do normalnej pracy
+      if (remote <= FW_VERSION) {
+        gStatus.state = OtaState::IDLE;
+        setMsg("");
+        return false;   // render() sam odtworzy bufor
+      }
+    } else {
+      gStatus.state = OtaState::IDLE;
+      setMsg("");
+      return false;
+    }
   }
 
   lastRemote_ = remote;

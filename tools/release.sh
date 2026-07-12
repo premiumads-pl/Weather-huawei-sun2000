@@ -21,7 +21,25 @@ echo "==> wersja ${CUR} -> ${NEW}"
 # --- kompilacja ---
 echo "==> kompiluje..."
 rm -rf build
-TMPDIR=/tmp arduino-cli compile --fqbn "$FQBN" --output-dir build .
+TMPDIR=/tmp arduino-cli compile --fqbn "$FQBN" --output-dir build . 2>&1 | tee build.log
+
+# --- BARIERA RAM ---
+# Bufor ekranu to 150 kB. Jeśli statyczny RAM przekroczy ~75 kB, na stertę nie
+# zostaje dość miejsca na TLS i urządzenie przestaje umieć cokolwiek pobrać —
+# łącznie z własną aktualizacją. Dokładnie tak zabiłem v14 (PNGdec: +47 kB).
+STATIC=$(grep -oE 'Global variables use [0-9]+' build.log | grep -oE '[0-9]+' || echo 0)
+LIMIT=76000
+echo "==> statyczny RAM: ${STATIC} B (limit ${LIMIT} B)"
+if [ "$STATIC" -gt "$LIMIT" ]; then
+  echo ""
+  echo "!!! STOP: statyczny RAM ${STATIC} B > ${LIMIT} B."
+  echo "!!! Przy tak małej stercie urządzenie nie zestawi TLS i NIE ZAKTUALIZUJE SIĘ"
+  echo "!!! po sieci — wyjście tylko przez USB. Cofam podniesienie wersji."
+  sed -i '' "s/#define FW_VERSION ${NEW}/#define FW_VERSION ${CUR}/" Version.h
+  rm -f build.log
+  exit 1
+fi
+rm -f build.log
 
 BIN=$(ls build/*.ino.bin | head -1)
 cp "$BIN" build/firmware.bin
