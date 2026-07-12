@@ -62,6 +62,13 @@ inline void drawGlyph(TFT_eSPI& s, const FontSet& font, int x, int baseline, int
   const uint8_t h = glyph.height;
   const uint8_t rowBytes = (w + 7) / 8;
   const int top = baseline + glyph.yOffset;
+
+  // Rysujemy w dwoch pasach — znak spoza pasa odrzucamy od razu, zamiast wolac
+  // drawPixel dla kazdego jego piksela i liczyc na przyciecie.
+  if (w > 0 && h > 0 && !s.checkViewport(x + glyph.xOffset, top, w, h)) {
+    return;
+  }
+
   for (uint8_t yy = 0; yy < h; ++yy) {
     for (uint8_t xx = 0; xx < w; ++xx) {
       const uint8_t bit =
