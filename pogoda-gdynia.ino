@@ -54,6 +54,8 @@ FlightModel gFlights{};
 volatile bool gWifiOk = false;
 volatile bool gBooting = true;
 volatile bool gFlightsNeeded = false;
+volatile bool gShotWanted = false;  // panel WWW chce zrzut — pauza rysowania
+volatile bool gRenderIdle = false;  // rysowanie faktycznie stoi
 volatile int gWifiAttempt = 0;
 char gBootMsg[48] = "Łączenie z WiFi...";
 
@@ -413,7 +415,19 @@ void setup() {
 
   ui.drawBoot(gBootMsg, 0);
 
-  portal::setScreenshotHandler([](WiFiClient& c) { ui.streamScreenshot(c, uiPv, gWifiOk); });
+  // Zrzut ekranu: najpierw usypiamy rysowanie, zeby nie zlapac klatki w polowie
+  // (inaczej w podgladzie widac dwa ekrany naraz w trakcie przejscia).
+  portal::setScreenshotHandler([](WiFiClient& c) {
+    gShotWanted = true;
+    const uint32_t t0 = millis();
+    while (!gRenderIdle && millis() - t0 < 300) delay(5);
+
+    ui.streamScreenshot(c, uiPv, gWifiOk);
+    gShotWanted = false;
+  });
+
+  portal::setViewHandler([](int i) { ui.pinView(i); },
+                         [](int& cur, int& pin) { ui.viewState(cur, pin); });
 
   xTaskCreatePinnedToCore(webTask, "web", 12288, nullptr, 2, nullptr, 0);
   xTaskCreatePinnedToCore(netTask, "net", 16384, nullptr, 3, nullptr, 0);
@@ -426,6 +440,14 @@ void loop() {
     delay(1000);
     return;
   }
+
+  // --- podglad w przegladarce czyta bufor: nie ruszamy go w tym czasie ---
+  if (gShotWanted) {
+    gRenderIdle = true;
+    delay(10);
+    return;
+  }
+  gRenderIdle = false;
 
   const uint32_t now = millis();
 

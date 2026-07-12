@@ -55,6 +55,13 @@ class WeatherUi {
   // Czy zadanie sieciowe ma teraz odswiezac loty (ekran aktywny lub zaraz bedzie).
   bool needsFlights(uint32_t nowMs) const;
 
+  // Podglad w przegladarce: przypiecie ekranu (idx < 0 = rotacja automatyczna).
+  void pinView(int idx);
+  void viewState(int& cur, int& pin) const {
+    cur = view_;
+    pin = pinned_;
+  }
+
   void raiseAlert(const Alert& a, uint32_t nowMs);
   void setBacklightTarget(uint8_t v) { blTarget_ = v; }
   void tickBacklight();
@@ -79,6 +86,7 @@ class WeatherUi {
 
   // rotacja widoków
   uint8_t view_ = 0;
+  int8_t pinned_ = -1;  // >=0: ekran zablokowany z panelu WWW
   uint8_t prevView_ = 0;
   uint32_t viewStart_ = 0;
   uint32_t enterStart_ = 0;

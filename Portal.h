@@ -28,4 +28,7 @@ void serialConsole();
 // Zrzut ekranu urzadzenia (BMP) — podpina go szkic glowny.
 void setScreenshotHandler(void (*fn)(WiFiClient&));
 
+// Sterowanie ekranem z panelu: set(idx) — idx<0 wraca do rotacji; get(cur, pin).
+void setViewHandler(void (*setFn)(int), void (*getFn)(int&, int&));
+
 }  // namespace portal

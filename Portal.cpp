@@ -24,6 +24,8 @@ bool apMode = false;
 bool started = false;
 bool wifiSaved = false;
 void (*gScreenshot)(WiFiClient&) = nullptr;
+void (*gViewSet)(int) = nullptr;
+void (*gViewGet)(int&, int&) = nullptr;
 char apIpStr[20] = "192.168.4.1";
 
 const char kApSsid[] = "Pogoda-Setup";
@@ -58,9 +60,25 @@ li{padding:10px 12px;border:1px solid #24405f;border-radius:8px;margin-bottom:6p
 li:hover{border-color:#00dcf0;background:#0d1c30}
 .sig{color:#7d93ad;font-size:12px}
 .b{display:inline-block;padding:2px 7px;border-radius:5px;background:#1e3350;font-size:11px;color:#9fb6cf}
+.scr{position:relative;background:#000;border:2px solid #24405f;border-radius:10px;overflow:hidden;
+  aspect-ratio:4/3}
+.scr img{display:block;width:100%;height:100%;image-rendering:pixelated}
+.tabs{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.tabs button{flex:1 1 auto;width:auto;margin:0;padding:8px 6px;font-size:12px;font-weight:600;
+  background:#1e3350;color:#9fb6cf}
+.tabs button.on{background:#00b9cc;color:#04121c}
+.live{position:absolute;top:8px;right:8px;padding:3px 8px;border-radius:20px;font-size:11px;
+  font-weight:600;background:rgba(4,18,28,.72);color:#28e070}
 </style><div class=w>
 <h1>Pogoda Gdynia + Fotowoltaika</h1>
 <div class=sub>Firmware v<span id=fw>?</span> &middot; <span id=st>...</span></div>
+
+<div class=c>
+<h2>Ekran urządzenia</h2>
+<div class=scr><img id=shot alt="wczytuję ekran…"><div class=live id=live>● na żywo</div></div>
+<div class=tabs id=tabs></div>
+<div class=hint id=vmsg>Klikaj, żeby przejść na dany ekran — urządzenie też się przełączy.</div>
+</div>
 
 <div class=c>
 <h2>Sieć Wi-Fi</h2>
@@ -96,15 +114,6 @@ li:hover{border-color:#00dcf0;background:#0d1c30}
 </div>
 
 <div class=c>
-<h2>Podgląd ekranu</h2>
-<img id=shot style="width:100%;border-radius:8px;border:1px solid #24405f;background:#081221"
- src="" alt="">
-<button class=s onclick=shot()>Odśwież zrzut</button>
-<label style="display:flex;align-items:center;gap:8px;margin-top:10px">
- <input type=checkbox id=auto style="width:auto" onchange=autoshot()> odświeżaj co 3 s</label>
-</div>
-
-<div class=c>
 <h2>Diagnostyka</h2>
 <div class=row>
 <button class=s style=margin:0 onclick=dg()>Stan urządzenia</button>
@@ -117,14 +126,33 @@ li:hover{border-color:#00dcf0;background:#0d1c30}
 <button class=s onclick=fgt()>Zapomnij sieć Wi-Fi</button>
 </div>
 </div><script>
-let _t=null;
-function shot(){$('shot').src='/api/screen?'+Date.now();}
-function autoshot(){if($('auto').checked){shot();_t=setInterval(shot,3000);}else{clearInterval(_t);}}
-shot();
+const $=i=>document.getElementById(i);
+const NAMES=['Auto','Teraz','Godziny','5 dni','Fotowoltaika','Samoloty','Statystyki'];
+let live=true,pin=-1;
+
+function tabs(){
+ $('tabs').innerHTML=NAMES.map((n,i)=>
+  `<button class="${i-1===pin?'on':''}" onclick="pickView(${i-1})">${n}</button>`).join('');
+}
+async function pickView(i){
+ pin=i;tabs();
+ $('vmsg').textContent=i<0?'Rotacja automatyczna — dokładnie jak na urządzeniu.'
+  :('Zatrzymane na ekranie: '+NAMES[i+1]+'. Kliknij „Auto”, żeby wznowić rotację.');
+ try{const r=await(await fetch('/api/view?i='+i)).json();pin=r.pin;tabs();}catch(e){}
+}
+// kolejna klatka dopiero, gdy poprzednia dojdzie — nie zalewamy urządzenia
+function nextShot(){
+ if(!live){setTimeout(nextShot,700);return;}
+ const im=new Image();
+ im.onload=()=>{$('shot').src=im.src;setTimeout(nextShot,700);};
+ im.onerror=()=>setTimeout(nextShot,2000);
+ im.src='/api/screen?'+Date.now();
+}
+document.addEventListener('visibilitychange',()=>{
+ live=!document.hidden;$('live').textContent=live?'● na żywo':'‖ wstrzymane';});
 async function dg(){$('dbg').textContent=await(await fetch('/api/diag')).text();}
 async function lg(){$('dbg').textContent=await(await fetch('/api/log')).text();}
 async function rb(){if(confirm('Restartować?')){await fetch('/api/reboot',{method:'POST'});}}
-const $=i=>document.getElementById(i);
 async function load(){
  const r=await(await fetch('/api/state')).json();
  $('fw').textContent=r.fw;
@@ -177,7 +205,10 @@ async function fgt(){
  if(!confirm('Usunąć zapisaną sieć Wi-Fi?'))return;
  await fetch('/api/forget',{method:'POST'});location.reload();
 }
-load();
+(async()=>{
+ try{const r=await(await fetch('/api/view')).json();pin=r.pin;}catch(e){}
+ tabs();nextShot();await load();
+})();
 </script></html>)HTML";
 
 // ------------------------------------------------------------------- API -----
@@ -447,6 +478,19 @@ void apiScreen() {
   gScreenshot(c);
 }
 
+void apiView() {
+  if (gViewSet != nullptr && server.hasArg("i")) {
+    gViewSet(server.arg("i").toInt());
+  }
+  int cur = 0, pin = -1;
+  if (gViewGet != nullptr) gViewGet(cur, pin);
+
+  char buf[48];
+  snprintf(buf, sizeof(buf), "{\"cur\":%d,\"pin\":%d}", cur, pin);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", buf);
+}
+
 void apiForget() {
   settings().clearWifi();
   server.send(200, "application/json", "{\"ok\":true}");
@@ -468,12 +512,18 @@ void routes() {
   server.on("/api/diag", apiDiag);
   server.on("/api/reboot", HTTP_POST, apiReboot);
   server.on("/api/screen", apiScreen);
+  server.on("/api/view", apiView);
   server.onNotFound(sendPage);  // captive portal
   server.begin();
   started = true;
 }
 
 }  // namespace
+
+void setViewHandler(void (*setFn)(int), void (*getFn)(int&, int&)) {
+  gViewSet = setFn;
+  gViewGet = getFn;
+}
 
 void setScreenshotHandler(void (*fn)(WiFiClient&)) {
   gScreenshot = fn;

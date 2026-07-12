@@ -994,13 +994,15 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
     enterStart_ = nowMs;
   }
 
-  // --- rotacja widoków ---
+  // --- rotacja widoków (wstrzymana, gdy ekran przypięty z panelu WWW) ---
   if (!alertActive_) {
     if (transitioning_) {
       if (nowMs - transStart_ >= cfg::TRANSITION_MS) {
         transitioning_ = false;
         viewStart_ = nowMs;
       }
+    } else if (pinned_ >= 0) {
+      // ekran zablokowany — nic nie robimy
     } else if (nowMs - viewStart_ >= holdFor(view_)) {
       prevView_ = view_;
       view_ = static_cast<uint8_t>((view_ + 1) % cfg::VIEW_COUNT);
@@ -1572,6 +1574,25 @@ void WeatherUi::drawViewStats(int ox, float t) {
 // ------------------------------------- ZRZUT EKRANU DO PRZEGLĄDARKI ----------
 // BMP 320x240 24-bit, wysyłany wiersz po wierszu — w RAM-ie trzymamy tylko
 // jedną linię (960 B), a nie cały obraz (230 kB).
+
+// Podglad w przegladarce: wymuszenie konkretnego ekranu. idx < 0 wraca do rotacji.
+void WeatherUi::pinView(int idx) {
+  if (idx < 0) {
+    pinned_ = -1;
+    viewStart_ = millis();  // pelny czas na biezacym ekranie, potem rusza dalej
+    return;
+  }
+  if (idx >= cfg::VIEW_COUNT) return;
+  pinned_ = static_cast<int8_t>(idx);
+  if (idx == view_ && !transitioning_) return;  // juz na nim jestesmy
+
+  prevView_ = view_;
+  view_ = static_cast<uint8_t>(idx);
+  transitioning_ = true;
+  transStart_ = millis();
+  enterStart_ = transStart_;
+  alertActive_ = false;
+}
 
 void WeatherUi::streamScreenshot(WiFiClient& client, const PvModel& pv, bool wifiOk) {
   if (!ready_ || freed_) {
