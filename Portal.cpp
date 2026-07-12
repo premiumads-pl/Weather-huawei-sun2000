@@ -67,15 +67,14 @@ li:hover{border-color:#00dcf0;background:#0d1c30}
 .tabs button{flex:1 1 auto;width:auto;margin:0;padding:8px 6px;font-size:12px;font-weight:600;
   background:#1e3350;color:#9fb6cf}
 .tabs button.on{background:#00b9cc;color:#04121c}
-.live{position:absolute;top:8px;right:8px;padding:3px 8px;border-radius:20px;font-size:11px;
-  font-weight:600;background:rgba(4,18,28,.72);color:#28e070}
+.live{float:right;font-size:11px;font-weight:600;color:#28e070;letter-spacing:0}
 </style><div class=w>
 <h1>Pogoda Gdynia + Fotowoltaika</h1>
 <div class=sub>Firmware v<span id=fw>?</span> &middot; <span id=st>...</span></div>
 
 <div class=c>
-<h2>Ekran urządzenia</h2>
-<div class=scr><img id=shot alt="wczytuję ekran…"><div class=live id=live>● na żywo</div></div>
+<h2>Ekran urządzenia <span class=live id=live>● na żywo</span></h2>
+<div class=scr><img id=shot alt="wczytuję ekran…"></div>
 <div class=tabs id=tabs></div>
 <div class=hint id=vmsg>Klikaj, żeby przejść na dany ekran — urządzenie też się przełączy.</div>
 </div>
