@@ -22,7 +22,7 @@ constexpr size_t kMaxPng = 40000;
 // Obiekt PNG waży ~47 kB (PNGdec trzyma 32 kB słownika inflate). Jako zmienna
 // globalna zjadał tyle RAM-u NA STAŁE i pogoda nie miała już z czego sparsować
 // JSON-a. Tworzymy go więc tylko na czas dekodowania i od razu zwalniamy.
-constexpr uint32_t kMinHeapForRadar = 110000;
+constexpr uint32_t kMinHeapForRadar = 78000;
 
 PNG* png = nullptr;
 uint8_t* gPng = nullptr;

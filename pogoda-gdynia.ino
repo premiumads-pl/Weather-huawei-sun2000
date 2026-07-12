@@ -26,6 +26,7 @@
 #include "Config.h"
 #include "FlightClient.h"
 #include "FlightData.h"
+#include "Led.h"
 #include "Log.h"
 #include "Ota.h"
 #include "Portal.h"
@@ -402,6 +403,7 @@ void setup() {
     return;
   }
 
+  ledBegin();
   pvHistoryLoad(gHist);
 
   if (!settings().hasWifi()) {
@@ -424,6 +426,13 @@ void loop() {
   }
 
   const uint32_t now = millis();
+
+  // --- test diody RGB przy starcie (3 x 1,5 s) ---
+  if (const char* colorName = ledTestStep()) {
+    ui.drawLedTest(colorName);
+    delay(40);
+    return;
+  }
 
   // --- tryb konfiguracji: instrukcja na ekranie ---
   if (portal::apActive()) {
@@ -474,14 +483,16 @@ void loop() {
 
   gFlightsNeeded = ui.needsFlights(now);
 
-  // --- tryb nocny ---
+  // --- tryb nocny + dioda RGB (bilans z siecią) ---
+  bool night = false;
   const time_t t = time(nullptr);
   if (t > 1700000000) {
     struct tm tmv{};
     localtime_r(&t, &tmv);
-    const bool night = (tmv.tm_hour >= cfg::NIGHT_FROM_H) || (tmv.tm_hour < cfg::NIGHT_TO_H);
+    night = (tmv.tm_hour >= cfg::NIGHT_FROM_H) || (tmv.tm_hour < cfg::NIGHT_TO_H);
     ui.setBacklightTarget(night ? cfg::BL_NIGHT : cfg::BL_DAY);
   }
+  ledShowGrid(uiPv.data.gridPowerW, uiPv.online, night);
 
   // --- alerty ---
   const Alert a = buildAlert(uiWeather, uiPv);

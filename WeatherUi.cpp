@@ -148,12 +148,13 @@ bool WeatherUi::begin() {
   tft_.fillScreen(col::BG);
 
   spr_.setColorDepth(16);
-  if (spr_.createSprite(cfg::SCREEN_W, cfg::SCREEN_H) == nullptr) {
+  if (spr_.createSprite(cfg::SCREEN_W, SPR_H) == nullptr) {
     return false;
   }
   spr_.setSwapBytes(false);
   spr_.fillSprite(col::BG);
   spr_.pushSprite(0, 0);
+  tft_.fillRect(0, SPR_H, cfg::SCREEN_W, cfg::SCREEN_H - SPR_H, col::BG);
 
   blCurrent_ = 0;
   blTarget_ = cfg::BL_DAY;
@@ -193,7 +194,7 @@ void WeatherUi::drawBoot(const char* status, int attempt) {
   plCenter(spr_, PLF14, status, W / 2, 172, col::TEXT_DIM);
 
   // pasek postępu — animowany "knight rider"
-  const int bx = 70, bw = 180, by = 190;
+  const int bx = 70, bw = 180, by = 182;
   spr_.fillRoundRect(bx, by, bw, 6, 3, col::PV_TRACK);
   const uint32_t ph = (millis() / 12) % (bw + 60);
   const int sx = bx + static_cast<int>(ph) - 60;
@@ -206,9 +207,10 @@ void WeatherUi::drawBoot(const char* status, int attempt) {
   if (attempt > 1) {
     char b[32];
     snprintf(b, sizeof(b), "próba %d", attempt);
-    plCenter(spr_, PLF14, b, W / 2, 216, col::TEXT_MUTE);
+    plCenter(spr_, PLF14, b, W / 2, 202, col::TEXT_MUTE);
   }
   spr_.pushSprite(0, 0);
+  tft_.fillRect(0, SPR_H, W, cfg::SCREEN_H - SPR_H, col::BG);
   if (blTarget_ == 0) blTarget_ = cfg::BL_DAY;
   tickBacklight();
 }
@@ -226,12 +228,12 @@ void WeatherUi::drawFatal(const char* msg) {
 void WeatherUi::drawColorTest() {
   if (!ready_) return;
   spr_.fillSprite(TFT_BLACK);
-  spr_.fillRect(0, 0, W, 80, TFT_RED);
-  spr_.fillRect(0, 80, W, 80, TFT_GREEN);
-  spr_.fillRect(0, 160, W, 80, TFT_BLUE);
-  plStr(spr_, PLF18, "CZERWONY", 12, 48, TFT_WHITE);
-  plStr(spr_, PLF18, "ZIELONY", 12, 128, TFT_BLACK);
-  plStr(spr_, PLF18, "NIEBIESKI", 12, 208, TFT_WHITE);
+  spr_.fillRect(0, 0, W, 68, TFT_RED);
+  spr_.fillRect(0, 68, W, 68, TFT_GREEN);
+  spr_.fillRect(0, 136, W, 70, TFT_BLUE);
+  plStr(spr_, PLF18, "CZERWONY", 12, 42, TFT_WHITE);
+  plStr(spr_, PLF18, "ZIELONY", 12, 110, TFT_BLACK);
+  plStr(spr_, PLF18, "NIEBIESKI", 12, 178, TFT_WHITE);
   spr_.pushSprite(0, 0);
   blTarget_ = cfg::BL_DAY;
 }
@@ -303,79 +305,92 @@ void WeatherUi::drawProgress(uint32_t nowMs) {
 
 void WeatherUi::drawFooter(const PvModel& pv, bool wifiOk) {
   const int y = 206;
-  spr_.fillRect(0, y, W, cfg::SCREEN_H - y, col::HEADER);
-  spr_.drawFastHLine(0, y, W, col::DIVIDER);
+
+  // Stopka leży POZA buforem (bufor to y=0..205) — rysujemy ją wprost na TFT.
+  // Odświeżamy tylko, gdy dane się zmienią, inaczej migotałaby.
+  const int32_t ac = pv.online ? pv.data.powerAcW : 0;
+  const int32_t g = pv.online ? pv.data.gridPowerW : 0;
+  const int kwh = pv.online ? static_cast<int>(pv.data.energyTodayKwh * 10.f) : 0;
+
+  const uint32_t now = millis();
+  if (now - cpuTempAt_ > 10000 || cpuTempAt_ == 0) {
+    cpuTempC_ = temperatureRead();
+    cpuTempAt_ = now;
+  }
+  const int cpu = static_cast<int>(lroundf(cpuTempC_));
+
+  if (footerInit_ && ac == lastAc_ && g == lastGrid_ && kwh == lastKwh_ &&
+      cpu == lastCpu_ && pv.online == lastOnline_) {
+    return;
+  }
+  footerInit_ = true;
+  lastAc_ = ac;
+  lastGrid_ = g;
+  lastKwh_ = kwh;
+  lastCpu_ = cpu;
+  lastOnline_ = pv.online;
+
+  tft_.fillRect(0, y, W, cfg::SCREEN_H - y, col::HEADER);
+  tft_.drawFastHLine(0, y, W, col::DIVIDER);
 
   if (!pv.online) {
-    // errorMsg pusty = jeszcze nie było próby — trwa pierwsze łączenie
     const bool connecting = (pv.errorMsg[0] == '\0');
-    spr_.fillCircle(14, y + 17, 4, connecting ? col::WARN : col::ERR);
+    tft_.fillCircle(14, y + 17, 4, connecting ? col::WARN : col::ERR);
     const char* msg = connecting ? "Łączę z falownikiem..." : pv.errorMsg;
-    plStr(spr_, PLF14, wifiOk ? msg : "Brak WiFi", 26, y + 22, col::TEXT_MUTE);
+    plStr(tft_, PLF14, wifiOk ? msg : "Brak WiFi", 26, y + 22, col::TEXT_MUTE);
     drawSysBox();
     return;
   }
 
   const PvSnapshot& d = pv.data;
-  const int labelY = y + 4;     // 210
-  const int baseY = y + 28;     // 234
+  const int labelY = y + 4;
+  const int baseY = y + 28;
   char v[16], u[8];
 
-  spr_.drawFastVLine(112, y + 6, 22, col::DIVIDER);
-  spr_.drawFastVLine(206, y + 6, 22, col::DIVIDER);
+  tft_.drawFastVLine(112, y + 6, 22, col::DIVIDER);
+  tft_.drawFastVLine(206, y + 6, 22, col::DIVIDER);
 
-  // 1) produkcja
-  const int32_t ac = static_cast<int32_t>(lroundf(animAcW_));
-  spr_.fillCircle(13, baseY - 5, 5, ac > 0 ? col::PV_SOLAR : col::TEXT_MUTE);
-  gl(spr_, "PRODUKCJA", 24, labelY, col::TEXT_MUTE);
+  tft_.fillCircle(13, baseY - 5, 5, ac > 0 ? col::PV_SOLAR : col::TEXT_MUTE);
+  gl(tft_, "PRODUKCJA", 24, labelY, col::TEXT_MUTE);
   fmtPower(v, sizeof(v), u, sizeof(u), ac);
-  int x = 24 + pltxt::drawString(spr_, PLF18, v, 24, baseY, col::PV_SOLAR, col::PV_SOLAR);
-  gl(spr_, u, x + 4, baseY - 12, col::TEXT_DIM);
+  int x = 24 + pltxt::drawString(tft_, PLF18, v, 24, baseY, col::PV_SOLAR, col::PV_SOLAR);
+  gl(tft_, u, x + 4, baseY - 12, col::TEXT_DIM);
 
-  // 2) uzysk dzienny
-  gl(spr_, "DZIS", 122, labelY, col::TEXT_MUTE);
+  gl(tft_, "DZIS", 122, labelY, col::TEXT_MUTE);
   snprintf(v, sizeof(v), "%.1f", d.energyTodayKwh);
-  int x2 = 122 + pltxt::drawString(spr_, PLF18, v, 122, baseY, col::TEXT, col::TEXT);
-  gl(spr_, "kWh", x2 + 4, baseY - 12, col::TEXT_DIM);
+  int x2 = 122 + pltxt::drawString(tft_, PLF18, v, 122, baseY, col::TEXT, col::TEXT);
+  gl(tft_, "kWh", x2 + 4, baseY - 12, col::TEXT_DIM);
 
-  // 3) bilans z siecią
-  const int32_t g = static_cast<int32_t>(lroundf(animGridW_));
   const bool exporting = g >= 0;
   const uint16_t gc = exporting ? col::PV_EXPORT : col::PV_IMPORT;
-  gl(spr_, exporting ? "ODDAJE" : "POBOR", 226, labelY, col::TEXT_MUTE);
+  gl(tft_, exporting ? "ODDAJE" : "POBOR", 226, labelY, col::TEXT_MUTE);
 
   const int ax = 214, ay = baseY - 7;
   if (exporting) {
-    spr_.fillTriangle(ax, ay - 7, ax - 5, ay + 1, ax + 5, ay + 1, gc);
-    spr_.fillRect(ax - 2, ay + 1, 4, 7, gc);
+    tft_.fillTriangle(ax, ay - 7, ax - 5, ay + 1, ax + 5, ay + 1, gc);
+    tft_.fillRect(ax - 2, ay + 1, 4, 7, gc);
   } else {
-    spr_.fillTriangle(ax, ay + 8, ax - 5, ay, ax + 5, ay, gc);
-    spr_.fillRect(ax - 2, ay - 7, 4, 7, gc);
+    tft_.fillTriangle(ax, ay + 8, ax - 5, ay, ax + 5, ay, gc);
+    tft_.fillRect(ax - 2, ay - 7, 4, 7, gc);
   }
   fmtPower(v, sizeof(v), u, sizeof(u), g < 0 ? -g : g);
-  int x3 = 226 + pltxt::drawString(spr_, PLF18, v, 226, baseY, gc, gc);
-  gl(spr_, u, x3 + 4, baseY - 12, col::TEXT_DIM);
+  int x3 = 226 + pltxt::drawString(tft_, PLF18, v, 226, baseY, gc, gc);
+  gl(tft_, u, x3 + 4, baseY - 12, col::TEXT_DIM);
 
   drawSysBox();
 }
 
 // Wersja firmware'u + temperatura rdzenia ESP32-S3 (prawy dolny róg).
 void WeatherUi::drawSysBox() {
-  const uint32_t now = millis();
-  if (now - cpuTempAt_ > 2000 || cpuTempAt_ == 0) {
-    cpuTempC_ = temperatureRead();
-    cpuTempAt_ = now;
-  }
-
-  spr_.drawFastVLine(292, 212, 22, col::DIVIDER);
+  tft_.drawFastVLine(292, 212, 22, col::DIVIDER);
 
   char b[12];
   snprintf(b, sizeof(b), "v%d", FW_VERSION);
-  plRight(spr_, PLF14, b, W - 4, 221, col::TEXT_MUTE);
+  plRight(tft_, PLF14, b, W - 4, 221, col::TEXT_MUTE);
 
   const uint16_t tc = cpuTempC_ >= 75.f ? col::WARN : col::TEXT_DIM;
   snprintf(b, sizeof(b), "%.0f°", cpuTempC_);
-  plRight(spr_, PLF14, b, W - 4, 236, tc);
+  plRight(tft_, PLF14, b, W - 4, 236, tc);
 }
 
 void WeatherUi::drawContentBg() {
@@ -996,9 +1011,8 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
 
   drawHeader(w, wifiOk, nowMs);
   drawProgress(nowMs);
-  drawFooter(pv, wifiOk);
-
   spr_.pushSprite(0, 0);
+  drawFooter(pv, wifiOk);   // poza buforem, wprost na TFT
   tickBacklight();
 
   animating = animating || transitioning_ || alertActive_ || enterT < 1.f ||
@@ -1203,16 +1217,17 @@ void WeatherUi::drawSetup(const char* apSsid, const char* apPass, const char* ap
   snprintf(url, sizeof(url), "http://%s", apIp);
   plStr(spr_, PLF18, url, 26, 161, col::TEXT);
 
-  plStr(spr_, PLF14, "Tam wybierzesz swoją sieć Wi-Fi,", 14, 196, col::TEXT_MUTE);
-  plStr(spr_, PLF14, "lokalizację i adres falownika.", 14, 214, col::TEXT_MUTE);
+  plStr(spr_, PLF14, "Tam wybierzesz swoją sieć Wi-Fi,", 14, 186, col::TEXT_MUTE);
+  plStr(spr_, PLF14, "lokalizację i adres falownika.", 14, 202, col::TEXT_MUTE);
 
   // pulsujaca kropka aktywnosci
   const uint32_t ph = (millis() / 400) % 4;
   for (uint32_t i = 0; i < 3; ++i) {
-    spr_.fillCircle(292 + i * 8 - 16, 226, 2, (i == ph) ? col::ACCENT : col::PV_TRACK);
+    spr_.fillCircle(292 + i * 8 - 16, 196, 2, (i == ph) ? col::ACCENT : col::PV_TRACK);
   }
 
   spr_.pushSprite(0, 0);
+  tft_.fillRect(0, SPR_H, W, cfg::SCREEN_H - SPR_H, col::BG);
   blTarget_ = cfg::BL_DAY;
   tickBacklight();
 }
@@ -1295,7 +1310,7 @@ void WeatherUi::drawNetInfo(const char* ssid, const char* ip, int rssi, int secs
            col::TEXT_DIM);
 
   // odliczanie
-  const int bx = 40, bw = W - 80, by = 212;
+  const int bx = 40, bw = W - 80, by = 186;
   spr_.fillRoundRect(bx, by, bw, 6, 3, col::PV_TRACK);
   const float f = (total > 0) ? clampf(static_cast<float>(secsLeft) / total, 0.f, 1.f) : 0.f;
   if (f > 0.f) {
@@ -1303,9 +1318,10 @@ void WeatherUi::drawNetInfo(const char* ssid, const char* ip, int rssi, int secs
   }
   char cd[24];
   snprintf(cd, sizeof(cd), "start za %d s", secsLeft);
-  plCenter(spr_, PLF14, cd, W / 2, 236, col::TEXT_MUTE);
+  plCenter(spr_, PLF14, cd, W / 2, 204, col::TEXT_MUTE);
 
   spr_.pushSprite(0, 0);
+  tft_.fillRect(0, SPR_H, W, cfg::SCREEN_H - SPR_H, col::BG);
   blTarget_ = cfg::BL_DAY;
   tickBacklight();
 }
@@ -1328,10 +1344,11 @@ bool WeatherUi::restoreBuffer() {
     return true;
   }
   spr_.setColorDepth(16);
-  if (spr_.createSprite(cfg::SCREEN_W, cfg::SCREEN_H) == nullptr) {
+  if (spr_.createSprite(cfg::SCREEN_W, SPR_H) == nullptr) {
     Serial.println("UI: nie udalo sie odtworzyc bufora!");
     return false;
   }
+  footerInit_ = false;
   spr_.setSwapBytes(false);
   spr_.fillSprite(col::BG);
   freed_ = false;
@@ -1376,4 +1393,32 @@ void WeatherUi::drawOtaDirect(int progress, const char* msg) {
     tft_.fillRect(20, 142, W - 40, 16, col::BG);
     plCenter(tft_, PLF14, msg && msg[0] ? msg : "Pobieram...", W / 2, 155, col::TEXT_DIM);
   }
+}
+
+// ------------------------------------------------- TEST DIODY RGB ------------
+
+void WeatherUi::drawLedTest(const char* colorName) {
+  if (!ready_) return;
+  spr_.fillSprite(col::BG);
+
+  spr_.fillRect(0, 0, W, cfg::HEADER_H, col::HEADER);
+  spr_.drawFastHLine(0, cfg::HEADER_H - 1, W, col::DIVIDER);
+  plStr(spr_, PLF14, "TEST DIODY RGB", 12, 19, col::ACCENT);
+
+  uint16_t c = col::TEXT_MUTE;
+  if (strcmp(colorName, "CZERWONY") == 0) c = C565(255, 40, 40);
+  else if (strcmp(colorName, "ZIELONY") == 0) c = C565(40, 230, 90);
+  else if (strcmp(colorName, "NIEBIESKI") == 0) c = C565(60, 130, 255);
+
+  spr_.fillCircle(W / 2, 96, 40, c);
+  spr_.drawCircle(W / 2, 96, 46, col::DIVIDER);
+
+  plCenter(spr_, PLF14, "Dioda powinna teraz świecić na:", W / 2, 152, col::TEXT_DIM);
+  plCenter(spr_, PLF18, colorName, W / 2, 180, c);
+  plCenter(spr_, PLF14, "Sprawdź, czy kolory się zgadzają.", W / 2, 202, col::TEXT_MUTE);
+
+  spr_.pushSprite(0, 0);
+  tft_.fillRect(0, SPR_H, W, cfg::SCREEN_H - SPR_H, col::BG);
+  blTarget_ = cfg::BL_DAY;
+  tickBacklight();
 }

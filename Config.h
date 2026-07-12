@@ -17,6 +17,11 @@ constexpr const char* OTA_FIRMWARE_URL =
     "firmware.bin";
 constexpr uint32_t OTA_CHECK_MS = 15UL * 60UL * 1000UL;
 
+// ---------- Dioda RGB (bilans z siecią) ----------
+constexpr uint8_t LED_DAY = 90;         // jasność w dzień
+constexpr uint8_t LED_NIGHT = 12;       // w nocy — ma nie oślepiać
+constexpr int32_t LED_BALANCE_W = 300;  // +/- 300 W = "równowaga" (niebieski)
+
 // ---------- Lotnisko / loty ----------
 constexpr float EPGD_LAT = 54.3823f;
 constexpr float EPGD_LON = 18.4654f;

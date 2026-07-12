@@ -29,7 +29,8 @@ void hhmmFromEpoch(int64_t epoch, char* out, size_t len) {
 bool WeatherClient::buildUrl(char* buf, std::size_t len) const {
   snprintf(buf, len,
            "https://api.open-meteo.com/v1/forecast?"
-           "latitude=%.4f&longitude=%.4f&timezone=Europe%%2FWarsaw&forecast_days=7"
+           "latitude=%.4f&longitude=%.4f&timezone=Europe%%2FWarsaw"
+           "&forecast_days=6&forecast_hours=14"
            "&timeformat=unixtime"
            "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,"
            "wind_speed_10m,wind_direction_10m,cloud_cover,pressure_msl,precipitation,is_day,uv_index"

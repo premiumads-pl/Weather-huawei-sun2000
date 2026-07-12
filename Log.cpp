@@ -4,7 +4,7 @@
 #include <cstring>
 
 namespace {
-constexpr size_t kSize = 6144;
+constexpr size_t kSize = 3072;
 char gBuf[kSize];
 size_t gHead = 0;
 bool gWrapped = false;

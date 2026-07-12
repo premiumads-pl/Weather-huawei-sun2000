@@ -35,6 +35,7 @@ class WeatherUi {
   void drawSetup(const char* apSsid, const char* apPass, const char* apIp);
   void drawOta(int progress, const char* msg);
   void drawNetInfo(const char* ssid, const char* ip, int rssi, int secsLeft, int total);
+  void drawLedTest(const char* colorName);
 
   // Na czas OTA oddajemy 150 kB bufora — inaczej TLS + pobieranie 1,3 MB
   // nie mają z czego działać (zostawało ~17 kB heapu).
@@ -58,6 +59,18 @@ class WeatherUi {
   TFT_eSprite spr_{&tft_};
   bool ready_ = false;
   bool freed_ = false;
+
+  // Bufor obejmuje tylko y=0..205 (belka + pasek + widoki). Stopka PV idzie wprost
+  // na TFT. Oszczędza 21,7 kB RAM, a bez tego nie starcza sterty na TLS.
+  static constexpr int SPR_H = 206;
+
+  // stopka: rysujemy tylko gdy dane się zmieniły (inaczej migotałaby)
+  int32_t lastAc_ = INT32_MIN;
+  int32_t lastGrid_ = INT32_MIN;
+  int lastKwh_ = -1;
+  int lastCpu_ = -1000;
+  bool lastOnline_ = false;
+  bool footerInit_ = false;
 
   // rotacja widoków
   uint8_t view_ = 0;
