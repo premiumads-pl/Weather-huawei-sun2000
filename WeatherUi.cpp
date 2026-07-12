@@ -1666,7 +1666,9 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
     plStr(spr, PLF14, src[i].name, ox + 24, y0 + 11, off ? col::TEXT_MUTE : col::TEXT);
 
     if (off) {
-      glRight(spr, src[i].offMsg, ox + W - 10, y0 + 3, col::TEXT_MUTE);
+      // PlFont, nie GLCD: "wyłączony" i "uśpiony" mają polskie znaki, których
+      // GLCD nie zna (wychodziło "wy czony").
+      plRight(spr, PLF14, src[i].offMsg, ox + W - 10, y0 + 11, col::TEXT_MUTE);
     } else if (bad) {
       glRight(spr, src[i].err, ox + W - 10, y0 + 3, col::ERR);
     } else if (never) {
@@ -1696,7 +1698,8 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
 
   cards[0] = {"TEMPERATURA", {0}, {0}, cpuTempC_ >= 75.f ? col::ERR : col::OK};
   snprintf(cards[0].value, sizeof(cards[0].value), "%.0f°C", cpuTempC_);
-  snprintf(cards[0].sub, sizeof(cards[0].sub), "rdzeń");
+  // Bez "ń" — podpisy kart rysuje GLCD, który nie zna polskich znaków.
+  snprintf(cards[0].sub, sizeof(cards[0].sub), "procesor");
 
   // minimalna sterta jest ważniejsza niż bieżąca — to ona ostrzega przed padem
   cards[1] = {"WOLNY RAM", {0}, {0},
