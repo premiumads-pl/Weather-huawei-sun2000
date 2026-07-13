@@ -35,6 +35,21 @@ void Settings::load() {
   String mx = prefs.getString("mqpre", "pogoda-gdynia");
   mqttPort = prefs.getUShort("mqport", 1883);
   mqttEnabled = prefs.getBool("mqen", false);
+
+  // czujniki BLE — bindkey jako blob (16 B), nigdy jako tekst w logach/API
+  for (int i = 0; i < 4; ++i) {
+    char k[8];
+    snprintf(k, sizeof(k), "b%dmac", i);
+    String bm = prefs.getString(k, "");
+    snprintf(k, sizeof(k), "b%dnam", i);
+    String bn = prefs.getString(k, "");
+    strncpy(ble[i].mac, bm.c_str(), sizeof(ble[i].mac) - 1);
+    strncpy(ble[i].name, bn.c_str(), sizeof(ble[i].name) - 1);
+
+    snprintf(k, sizeof(k), "b%dkey", i);
+    ble[i].hasKey = prefs.getBytesLength(k) == 16 &&
+                    prefs.getBytes(k, ble[i].key, 16) == 16;
+  }
   prefs.end();
 
   strncpy(ssid, s.c_str(), sizeof(ssid) - 1);
@@ -69,6 +84,68 @@ void Settings::save() {
   prefs.putUShort("mqport", mqttPort);
   prefs.putBool("mqen", mqttEnabled);
   prefs.end();
+}
+
+const Settings::BleCfg* Settings::bleFind(const char* mac) const {
+  for (int i = 0; i < 4; ++i) {
+    if (ble[i].mac[0] != '\0' && strcasecmp(ble[i].mac, mac) == 0) return &ble[i];
+  }
+  return nullptr;
+}
+
+// keyHex: 32 znaki hex (bindkey z chmury Xiaomi) albo "" — czujnik z otwartym
+// firmware klucza nie potrzebuje.
+bool Settings::bleSet(const char* mac, const char* name, const char* keyHex) {
+  if (mac == nullptr || mac[0] == '\0') return false;
+
+  int slot = -1;
+  for (int i = 0; i < 4; ++i) {
+    if (strcasecmp(ble[i].mac, mac) == 0) {
+      slot = i;
+      break;
+    }
+  }
+  if (slot < 0) {
+    for (int i = 0; i < 4; ++i) {
+      if (ble[i].mac[0] == '\0') {
+        slot = i;
+        break;
+      }
+    }
+  }
+  if (slot < 0) return false;
+
+  BleCfg& c = ble[slot];
+  strncpy(c.mac, mac, sizeof(c.mac) - 1);
+  c.mac[sizeof(c.mac) - 1] = '\0';
+  strncpy(c.name, name ? name : "", sizeof(c.name) - 1);
+  c.name[sizeof(c.name) - 1] = '\0';
+
+  if (keyHex != nullptr && strlen(keyHex) == 32) {
+    for (int i = 0; i < 16; ++i) {
+      char b[3] = {keyHex[i * 2], keyHex[i * 2 + 1], '\0'};
+      c.key[i] = static_cast<uint8_t>(strtoul(b, nullptr, 16));
+    }
+    c.hasKey = true;
+  } else if (keyHex != nullptr && keyHex[0] == '\0') {
+    memset(c.key, 0, sizeof(c.key));
+    c.hasKey = false;
+  }
+
+  char k[8];
+  prefs.begin(NS_CFG, false);
+  snprintf(k, sizeof(k), "b%dmac", slot);
+  prefs.putString(k, c.mac);
+  snprintf(k, sizeof(k), "b%dnam", slot);
+  prefs.putString(k, c.name);
+  snprintf(k, sizeof(k), "b%dkey", slot);
+  if (c.hasKey) {
+    prefs.putBytes(k, c.key, 16);
+  } else {
+    prefs.remove(k);
+  }
+  prefs.end();
+  return true;
 }
 
 void Settings::clearWifi() {

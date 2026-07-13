@@ -1,11 +1,13 @@
 #include "BleSensors.h"
 
 #include "Log.h"
+#include "Settings.h"
 
 #include <Arduino.h>
 #include <BLEAdvertisedDevice.h>
 #include <BLEDevice.h>
 #include <BLEScan.h>
+#include <mbedtls/ccm.h>
 
 #include <cstring>
 
@@ -83,6 +85,127 @@ bool parse181A(const uint8_t* d, size_t len, const char* mac, int rssi) {
   return true;
 }
 
+// --- MiBeacon v5 (fabryczny firmware Xiaomi), rozglaszanie ZASZYFROWANE ---
+//
+// Uklad ramki 0xFE95 z flaga szyfrowania:
+//   [0..1] frame control (LE)   — bit 3 = zaszyfrowane, bit 4 = MAC w ramce
+//   [2..3] product id (LE)      — 0x055B = LYWSD03MMC
+//   [4]    licznik ramek
+//   [5..10] MAC (odwrocony)
+//   [11 .. len-8] szyfrogram
+//   [len-7 .. len-5] rozszerzony licznik (3 B)
+//   [len-4 .. len-1] MIC (4 B)
+//
+// Nonce = MAC(6) + productId(2) + licznik(1) + licznik rozszerzony(3) = 12 B
+// AAD = 0x11, szyfr = AES-CCM, tag 4 B. Klucz (bindkey) pochodzi z chmury Xiaomi
+// i lezy w NVS — nigdy w repo.
+bool parseMiBeacon(const uint8_t* d, size_t len, const char* mac, int rssi) {
+  if (len < 5) return false;
+
+  const uint16_t fc = static_cast<uint16_t>(d[0] | (d[1] << 8));
+  const bool encrypted = (fc & 0x0008) != 0;
+  const bool hasMac = (fc & 0x0010) != 0;
+  if (!encrypted || !hasMac || len < 19) return false;
+
+  const Settings::BleCfg* cfg = settings().bleFind(mac);
+  if (cfg == nullptr || !cfg->hasKey) {
+    // Widzimy czujnik, ale nie mamy klucza. Zapisujemy sam fakt istnienia —
+    // panel pokaze go z adnotacja "brak klucza", zeby bylo co skonfigurowac.
+    xSemaphoreTake(gMx, portMAX_DELAY);
+    Sensor* s = slotFor(mac);
+    if (s != nullptr) {
+      s->rssi = rssi;
+      s->seenAt = millis();
+      s->encrypted = true;
+      s->needsKey = true;
+    }
+    xSemaphoreGive(gMx);
+    return true;
+  }
+
+  uint8_t nonce[12];
+  memcpy(nonce, d + 5, 6);       // MAC z ramki
+  nonce[6] = d[2];               // product id LO
+  nonce[7] = d[3];               // product id HI
+  nonce[8] = d[4];               // licznik ramek
+  memcpy(nonce + 9, d + len - 7, 3);  // licznik rozszerzony
+
+  const uint8_t* ct = d + 11;
+  const size_t ctLen = len - 11 - 7;
+  const uint8_t* mic = d + len - 4;
+  if (ctLen == 0 || ctLen > 16) return false;
+
+  uint8_t plain[16] = {};
+  const uint8_t aad = 0x11;
+
+  mbedtls_ccm_context ccm;
+  mbedtls_ccm_init(&ccm);
+  int rc = mbedtls_ccm_setkey(&ccm, MBEDTLS_CIPHER_ID_AES, cfg->key, 128);
+  if (rc == 0) {
+    rc = mbedtls_ccm_auth_decrypt(&ccm, ctLen, nonce, sizeof(nonce), &aad, 1, ct, plain,
+                                  mic, 4);
+  }
+  mbedtls_ccm_free(&ccm);
+
+  if (rc != 0) {
+    LOG("BLE: %s zly klucz albo uszkodzona ramka (mbedtls %d)", mac, rc);
+    xSemaphoreTake(gMx, portMAX_DELAY);
+    Sensor* s = slotFor(mac);
+    if (s != nullptr) {
+      s->needsKey = true;
+      s->encrypted = true;
+      s->seenAt = millis();
+    }
+    xSemaphoreGive(gMx);
+    return true;
+  }
+
+  // Odszyfrowany obiekt: [typ(2, LE)][dlugosc(1)][wartosc...]
+  if (ctLen < 3) return true;
+  const uint16_t type = static_cast<uint16_t>(plain[0] | (plain[1] << 8));
+  const uint8_t vlen = plain[2];
+  const uint8_t* v = plain + 3;
+  if (3u + vlen > ctLen) return true;
+
+  xSemaphoreTake(gMx, portMAX_DELAY);
+  Sensor* s = slotFor(mac);
+  if (s != nullptr) {
+    s->encrypted = true;
+    s->needsKey = false;
+    s->rssi = rssi;
+    s->seenAt = millis();
+
+    switch (type) {
+      case 0x1004:  // temperatura, 0,1 C
+        if (vlen >= 2) {
+          s->tempC = static_cast<int16_t>(v[0] | (v[1] << 8)) / 10.f;
+          s->valid = true;
+        }
+        break;
+      case 0x1006:  // wilgotnosc, 0,1 %
+        if (vlen >= 2) {
+          s->humidity = static_cast<uint16_t>(v[0] | (v[1] << 8)) / 10.f;
+          s->valid = true;
+        }
+        break;
+      case 0x100A:  // bateria, %
+        if (vlen >= 1) s->batteryPct = v[0];
+        break;
+      case 0x100D:  // temperatura + wilgotnosc razem
+        if (vlen >= 4) {
+          s->tempC = static_cast<int16_t>(v[0] | (v[1] << 8)) / 10.f;
+          s->humidity = static_cast<uint16_t>(v[2] | (v[3] << 8)) / 10.f;
+          s->valid = true;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  xSemaphoreGive(gMx);
+  return true;
+}
+
 class Cb : public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice dev) override {
     if (!dev.haveServiceData()) return;
@@ -101,11 +224,13 @@ class Cb : public BLEAdvertisedDeviceCallbacks {
       const String macs = dev.getAddress().toString();
       const char* mac = macs.c_str();
 
+      // Otwarty format (custom firmware pvvx/ATC) — klucza nie trzeba.
       if (u16 == 0x181A && parse181A(d, len, mac, dev.getRSSI())) return;
 
-      // Nieznana ramka — zapisujemy surowo, zeby dalo sie ja rozpoznac zdalnie.
-      // MiBeacon (0xFE95) z fabrycznego firmware bywa zaszyfrowany; wtedy widac
-      // to wlasnie tutaj i wiadomo, ze trzeba bindkey.
+      // Fabryczny Xiaomi — zaszyfrowany MiBeacon, potrzebny bindkey z NVS.
+      if (u16 == 0xFE95 && parseMiBeacon(d, len, mac, dev.getRSSI())) return;
+
+      // Cokolwiek innego — surowo do logu, zeby dalo sie rozpoznac zdalnie.
       if (u16 == 0xFE95 || u16 == 0x181A) {
         char hex[64];
         hexDump(hex, sizeof(hex), d, len > 24 ? 24 : len);

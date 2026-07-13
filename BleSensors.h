@@ -25,8 +25,10 @@ struct Sensor {
   int batteryPct = 0;
   int batteryMv = 0;
   int rssi = 0;
-  uint32_t seenAt = 0;  // millis() ostatniej ramki
-  bool valid = false;
+  uint32_t seenAt = 0;   // millis() ostatniej ramki
+  bool valid = false;    // mamy odczyt
+  bool encrypted = false;
+  bool needsKey = false;  // widzimy czujnik, ale brakuje bindkeya (albo jest zly)
 };
 
 void begin();

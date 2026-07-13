@@ -29,6 +29,20 @@ struct Settings {
   char mqttPrefix[24] = "pogoda-gdynia";
   bool mqttEnabled = false;
 
+  // --- czujniki BLE (Xiaomi LYWSD03MMC) ---
+  // Fabryczny firmware szyfruje rozgłaszanie. Klucz (bindkey) wyciąga się z chmury
+  // Xiaomi i jest PRYWATNY — dlatego siedzi wyłącznie tutaj, w NVS, nigdy w repo.
+  // Czujnik z firmware pvvx/ATC nadaje otwartym tekstem i klucza nie potrzebuje.
+  struct BleCfg {
+    char mac[18] = {};   // "a4:c1:38:54:f9:a9"
+    char name[14] = {};  // "Łazienka"
+    uint8_t key[16] = {};
+    bool hasKey = false;
+  } ble[4];
+
+  const BleCfg* bleFind(const char* mac) const;
+  bool bleSet(const char* mac, const char* name, const char* keyHex);  // keyHex: 32 znaki lub ""
+
   bool hasWifi() const { return ssid[0] != '\0'; }
   bool hasInverter() const { return modbusHost[0] != '\0'; }
   bool hasMqtt() const { return mqttEnabled && mqttHost[0] != '\0'; }

@@ -14,6 +14,7 @@
 #include "MqttClient.h"
 #include "Ota.h"
 #include "OtaGuard.h"
+#include "BleSensors.h"
 #include "Settings.h"
 #include "Version.h"
 
@@ -125,6 +126,15 @@ urządzenie. Puste hasło = bez zmian; wpisz <b>-</b>, żeby je skasować.</div>
 </div>
 
 <div class=c>
+<h2>Czujniki Bluetooth</h2>
+<div class=hint>Xiaomi LYWSD03MMC. Fabryczny firmware szyfruje dane — wtedy potrzebny
+jest klucz (bindkey) z chmury Xiaomi. Klucz zostaje w pamięci urządzenia i nigdy
+nie opuszcza sieci domowej.</div>
+<ul id=bles></ul>
+<div class=hint id=bmsg></div>
+</div>
+
+<div class=c>
 <h2>Aktualizacje</h2>
 <div class=hint>Urządzenie samo sprawdza GitHub co 15 minut.</div>
 <button class=s onclick=upd()>Sprawdź teraz</button>
@@ -168,6 +178,34 @@ function nextShot(){
 }
 document.addEventListener('visibilitychange',()=>{
  live=!document.hidden;$('live').textContent=live?'● na żywo':'‖ wstrzymane';});
+// --- czujniki BLE ---
+async function bles(){
+ let r;
+ try{r=await(await fetch('/api/ble')).json();}catch(e){return}
+ if(!r.length){$('bles').innerHTML='<li>Nie wykryto czujników (nasłuch co 45 s)</li>';return}
+ $('bles').innerHTML=r.map((s,i)=>{
+  const st = s.valid ? `${s.t.toFixed(1)}°C · ${s.h.toFixed(0)}% · bat ${s.bat}%`
+       : (s.needsKey ? '<span class=err>brak klucza</span>' : 'czekam na dane');
+  return `<li style="display:block">
+   <div style="display:flex;justify-content:space-between">
+    <b>${s.name||s.mac}</b><span class=sig>${st} · ${s.rssi} dBm</span></div>
+   <div class=row style="margin-top:8px">
+    <input id=bn${i} placeholder="nazwa (np. Łazienka)" value="${s.name||''}">
+    <input id=bk${i} placeholder="${s.hasKey?'klucz zapisany':'bindkey (32 znaki hex)'}"
+     autocapitalize=off autocorrect=off>
+   </div>
+   <button class=s onclick="saveBle('${s.mac}',${i})">Zapisz</button>
+   <div class=sig style="margin-top:6px">${s.mac}</div></li>`;
+ }).join('');
+}
+async function saveBle(mac,i){
+ $('bmsg').textContent='Zapisuję…';
+ const r=await(await fetch('/api/ble',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({mac:mac,name:$('bn'+i).value,key:$('bk'+i).value.trim()})})).json();
+ $('bmsg').className='hint '+(r.ok?'ok':'err');
+ $('bmsg').textContent=r.msg;
+ bles();
+}
 async function dg(){$('dbg').textContent=await(await fetch('/api/diag')).text();}
 async function lg(){$('dbg').textContent=await(await fetch('/api/log')).text();}
 async function rb(){if(confirm('Restartować?')){await fetch('/api/reboot',{method:'POST'});}}
@@ -239,7 +277,7 @@ async function fgt(){
 }
 (async()=>{
  try{const r=await(await fetch('/api/view')).json();pin=r.pin;}catch(e){}
- tabs();nextShot();await load();
+ tabs();nextShot();await load();bles();setInterval(bles,20000);
 })();
 </script></html>)HTML";
 
@@ -614,6 +652,59 @@ void apiView() {
   server.send(200, "application/json", buf);
 }
 
+// Lista wykrytych czujnikow BLE. Klucza NIE zwracamy — tylko flage, ze jest.
+void apiBleList() {
+  JsonDocument j;
+  JsonArray arr = j.to<JsonArray>();
+
+  for (int i = 0; i < ble::count(); ++i) {
+    const ble::Sensor s = ble::get(i);
+    if (s.mac[0] == '\0') continue;
+
+    const Settings::BleCfg* cfg = settings().bleFind(s.mac);
+    JsonObject o = arr.add<JsonObject>();
+    o["mac"] = s.mac;
+    o["name"] = cfg ? cfg->name : "";
+    o["hasKey"] = cfg ? cfg->hasKey : false;
+    o["valid"] = s.valid;
+    o["needsKey"] = s.needsKey;
+    o["t"] = s.tempC;
+    o["h"] = s.humidity;
+    o["bat"] = s.batteryPct;
+    o["rssi"] = s.rssi;
+    o["age_s"] = s.seenAt ? (millis() - s.seenAt) / 1000 : -1;
+  }
+
+  String out;
+  serializeJson(j, out);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", out);
+}
+
+void apiBleSet() {
+  JsonDocument b;
+  if (deserializeJson(b, server.arg("plain")) != DeserializationError::Ok) {
+    server.send(400, "application/json", "{\"ok\":false,\"msg\":\"zly JSON\"}");
+    return;
+  }
+
+  const char* mac = b["mac"] | "";
+  const char* name = b["name"] | "";
+  const char* key = b["key"] | "";
+
+  if (key[0] != '\0' && strlen(key) != 32) {
+    server.send(200, "application/json",
+                "{\"ok\":false,\"msg\":\"Bindkey ma dokładnie 32 znaki szesnastkowe\"}");
+    return;
+  }
+
+  const bool ok = settings().bleSet(mac, name, key);
+  server.send(200, "application/json",
+              ok ? "{\"ok\":true,\"msg\":\"Zapisano. Dane pojawią się po najbliższym "
+                   "nasłuchu (do 45 s).\"}"
+                 : "{\"ok\":false,\"msg\":\"Brak wolnego miejsca (maks. 4 czujniki)\"}");
+}
+
 void apiForget() {
   settings().clearWifi();
   server.send(200, "application/json", "{\"ok\":true}");
@@ -637,6 +728,8 @@ void routes() {
   server.on("/api/reboot", HTTP_POST, apiReboot);
   server.on("/api/screen", apiScreen);
   server.on("/api/view", apiView);
+  server.on("/api/ble", HTTP_GET, apiBleList);
+  server.on("/api/ble", HTTP_POST, apiBleSet);
   server.onNotFound(sendPage);  // captive portal
   server.begin();
   started = true;
