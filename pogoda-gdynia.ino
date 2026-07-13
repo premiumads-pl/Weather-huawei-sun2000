@@ -304,6 +304,7 @@ static void netTask(void*) {
     // 45 s spokojnie wystarczy, a WiFi (panel, OTA, MQTT) tego nie odczuwa.
     if (ble::ready() && static_cast<int32_t>(now - nextBleAt) >= 0) {
       ble::scan(6);
+      mqttha::publishBle();
       nextBleAt = millis() + 90000;
     }
 

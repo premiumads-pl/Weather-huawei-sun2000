@@ -28,6 +28,7 @@ void loop();
 void publishPv(const PvModel& pv, bool ok);
 
 // Tylko po udanym pobraniu prognozy.
+void publishBle();
 void publishWeather(const WeatherModel& w);
 
 // Panel WWW / konsola zmienily konfiguracje — zerwij polaczenie i zestaw od nowa

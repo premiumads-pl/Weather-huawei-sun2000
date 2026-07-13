@@ -155,7 +155,7 @@ nie opuszcza sieci domowej.</div>
 </div>
 </div><script>
 const $=i=>document.getElementById(i);
-const NAMES=['Auto','Teraz','Godziny','5 dni','Fotowoltaika','Samoloty','Statystyki'];
+const NAMES=['Auto','Teraz','Godziny','5 dni','Fotowoltaika','Samoloty','Statystyki','W domu'];
 let live=true,pin=-1;
 
 function tabs(){

@@ -171,6 +171,7 @@ class WeatherUi {
   void drawViewDays(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
   void drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, const PvHistory& hist);
   void drawViewFlights(TFT_eSPI& spr, int ox, float t, const FlightModel& fl);
+  void drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
   void drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs, uint32_t heapNow);
   void drawAlert(TFT_eSPI& spr, float t);
   // Podtytuł (sub) niesie powód ciszy falownika — noc, nie awaria.

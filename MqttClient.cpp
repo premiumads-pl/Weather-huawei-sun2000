@@ -8,6 +8,7 @@
 #include <cstring>
 #include <new>
 
+#include "BleSensors.h"
 #include "Log.h"
 #include "Settings.h"
 #include "Version.h"
@@ -207,8 +208,48 @@ bool publishConfig(const Ent& e) {
                        static_cast<unsigned int>(n), true);
 }
 
-void sendDiscovery() {
+// Czujniki BLE nie moga siedziec w statycznej tablicy: ich nazwy pochodza z NVS
+// (uzytkownik wpisuje "Łazienka", "Schody"), a liczba zalezy od tego, ile ich
+// skonfigurowal. Budujemy wiec Ent na stosie — publishConfig i tak uzywa wskaznikow
+// od razu, jeszcze przed powrotem.
+int sendBleDiscovery() {
   int ok = 0;
+  for (int i = 0; i < 4; ++i) {
+    const Settings::BleCfg& c = settings().ble[i];
+    if (c.mac[0] == '\0') continue;
+
+    const char* room = c.name[0] ? c.name : c.mac;
+
+    struct Def {
+      const char* suffix;  // klucz + pole
+      const char* label;
+      const char* devCla;
+      const char* unit;
+      bool diag;
+    };
+    const Def defs[4] = {
+        {"t", "temperatura", "temperature", "°C", false},
+        {"h", "wilgotność", "humidity", "%", false},
+        {"b", "bateria", "battery", "%", true},
+        {"r", "sygnał", "signal_strength", "dBm", true},
+    };
+
+    for (const Def& d : defs) {
+      char key[16], field[8], name[40];
+      snprintf(key, sizeof(key), "ble%d_%s", i, d.suffix);
+      snprintf(field, sizeof(field), "s%d%s", i, d.suffix);
+      snprintf(name, sizeof(name), "%s — %s", room, d.label);
+
+      const Ent e{key, name, "ble", field, d.devCla, d.unit, "measurement", nullptr, d.diag};
+      if (publishConfig(e)) ++ok;
+      vTaskDelay(pdMS_TO_TICKS(5));
+    }
+  }
+  return ok;
+}
+
+void sendDiscovery() {
+  int ok = sendBleDiscovery();
   for (int i = 0; i < kEntCount; ++i) {
     if (publishConfig(kEnts[i])) {
       ++ok;
@@ -435,6 +476,46 @@ void loop() {
     return;  // backoff — broker moze sobie lezec, urzadzenie dziala dalej
   }
   tryConnect();
+}
+
+// Czujniki BLE — jeden JSON na wszystkie, klucze s0t/s0h/s0b/s0r ... s3r.
+// Wysylamy tylko te, ktore maja swiezy odczyt; czujnik, ktory zamilkl, po prostu
+// znika z payloadu, a HA pokaze ostatnia znana wartosc (retained).
+void publishBle() {
+  if (!settings().hasMqtt() || gCli == nullptr || !gCli->connected()) {
+    return;
+  }
+
+  char p[224];
+  int n = snprintf(p, sizeof(p), "{");
+  bool any = false;
+
+  for (int i = 0; i < ble::count() && i < 4; ++i) {
+    const ble::Sensor s = ble::get(i);
+    if (!s.valid) continue;
+
+    const Settings::BleCfg* cfg = settings().bleFind(s.mac);
+    if (cfg == nullptr) continue;  // niesknfigurowany — nie ma dla niego encji w HA
+
+    // slot musi sie zgadzac z tym z discovery (indeks w settings, nie w ble::)
+    int slot = -1;
+    for (int k = 0; k < 4; ++k) {
+      if (&settings().ble[k] == cfg) slot = k;
+    }
+    if (slot < 0) continue;
+
+    n += snprintf(p + n, sizeof(p) - n,
+                  "%s\"s%dt\":%.1f,\"s%dh\":%.1f,\"s%db\":%d,\"s%dr\":%d",
+                  any ? "," : "", slot, s.tempC, slot, s.humidity, slot, s.batteryPct,
+                  slot, s.rssi);
+    any = true;
+    if (n >= static_cast<int>(sizeof(p)) - 8) break;
+  }
+
+  n += snprintf(p + n, sizeof(p) - n, "}");
+  if (any && n > 0 && n < static_cast<int>(sizeof(p))) {
+    pubState("ble", p, n);
+  }
 }
 
 void publishPv(const PvModel& pv, bool ok) {

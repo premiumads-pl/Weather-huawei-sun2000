@@ -9,6 +9,7 @@
 #include "Config.h"
 #include "MapData.h"
 #include "PlText.h"
+#include "BleSensors.h"
 #include "Log.h"
 #include "OtaGuard.h"
 #include "RadarClient.h"
@@ -1194,6 +1195,9 @@ void WeatherUi::drawView(TFT_eSPI& spr, uint8_t view, int ox, float t, const Wea
     case 5:
       drawViewStats(spr, ox, t, nowMs, heapNow);
       break;
+    case 6:
+      drawViewHome(spr, ox, t, w);
+      break;
     default:
       break;
   }
@@ -1277,6 +1281,11 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
     } else if (nowMs - viewStart_ >= holdFor(view_)) {
       prevView_ = view_;
       view_ = static_cast<uint8_t>((view_ + 1) % cfg::VIEW_COUNT);
+      // Ekran "W DOMU" bez czujników byłby pustym kafelkiem co minutę — pomijamy go
+      // w rotacji, dopóki nikt nie skonfiguruje choć jednego.
+      if (view_ == cfg::VIEW_HOME && ble::count() == 0) {
+        view_ = 0;
+      }
       transitioning_ = true;
       transStart_ = nowMs;
       enterStart_ = nowMs;
@@ -1749,6 +1758,104 @@ void WeatherUi::drawLedTest(const char* colorName) {
 }
 
 // ---------------------------------------------- WIDOK 6: STATYSTYKI ----------
+
+// ---------------------------------------------- WIDOK 7: W DOMU (czujniki BLE) --
+// Sens tego ekranu nie polega na pokazaniu dwoch liczb — te sa w telefonie.
+// Polega na ZESTAWIENIU ich z tym, co na zewnatrz: od razu widac, czy warto
+// otworzyc okno, i gdzie robi sie duszno.
+
+void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel& w) {
+  const float e = easeOutCubic(t);
+
+  char hdr[28] = {};
+  if (w.current.valid) {
+    snprintf(hdr, sizeof(hdr), "na zewnątrz %d°C · %d%%",
+             static_cast<int>(lroundf(w.current.tempC)), w.current.humidity);
+  }
+  viewHeader(spr, ox, "W DOMU", hdr);
+
+  // Zbieramy tylko czujniki z odczytem — nieskonfigurowany obcy nadajnik
+  // (a takich w bloku sporo) nie ma czego tu szukac.
+  struct Room {
+    const char* name;
+    float tempC;
+    float hum;
+    int batt;
+    uint32_t ageS;
+  } rooms[ble::MAX_SENSORS];
+  int n = 0;
+
+  for (int i = 0; i < ble::count() && n < ble::MAX_SENSORS; ++i) {
+    const ble::Sensor s = ble::get(i);
+    if (!s.valid) continue;
+    const Settings::BleCfg* cfg = settings().bleFind(s.mac);
+    if (cfg == nullptr) continue;
+
+    rooms[n].name = cfg->name[0] ? cfg->name : s.mac;
+    rooms[n].tempC = s.tempC;
+    rooms[n].hum = s.humidity;
+    rooms[n].batt = s.batteryPct;
+    rooms[n].ageS = s.seenAt ? (millis() - s.seenAt) / 1000 : 9999;
+    ++n;
+  }
+
+  if (n == 0) {
+    drawNoData(spr, ox, "Brak czujników", "dodaj je w panelu urządzenia");
+    return;
+  }
+
+  const int gap = 8;
+  const int cw = (W - 20 - (n - 1) * gap) / n;
+  const int cy = 58, ch = 120;
+
+  for (int i = 0; i < n; ++i) {
+    const Room& r = rooms[i];
+    const int x = ox + 10 + i * (cw + gap);
+
+    const int grow = static_cast<int>(ch * clampf(e * 1.6f - i * 0.18f, 0.f, 1.f));
+    if (grow < 6) continue;
+    spr.fillRoundRect(x, cy + (ch - grow), cw, grow, 8, col::BG_CARD);
+    if (grow < ch - 2) continue;
+
+    // Czujnik milczy dluzej niz 15 minut = dane sa nieaktualne. Zamiast udawac,
+    // ze wszystko gra, przygaszamy kafelek.
+    const bool stale = r.ageS > 900;
+    const uint16_t tc = stale ? col::TEXT_MUTE : tempColor(r.tempC);
+
+    spr.fillRoundRect(x, cy, 3, ch, 1, stale ? col::TEXT_MUTE : col::ACCENT);
+    plStr(spr, PLF14, r.name, x + 10, cy + 18, stale ? col::TEXT_MUTE : col::TEXT);
+
+    char v[12];
+    snprintf(v, sizeof(v), "%.1f", r.tempC);
+    const int vw = bigStr(spr, &FreeSansBold24pt7b, v, x + 10, cy + 62, tc);
+    plStr(spr, PLF14, "°C", x + 14 + vw, cy + 44, col::TEXT_DIM);
+
+    // wilgotnosc: pasek + liczba (sam procent niewiele mowi)
+    char hs[10];
+    snprintf(hs, sizeof(hs), "%.0f%%", r.hum);
+    plStr(spr, PLF18, hs, x + 10, cy + 92, col::PV_HOUSE);
+    gl(spr, "WILGOTNOSC", x + 10, cy + 98, col::TEXT_MUTE);
+
+    const int bw = cw - 20;
+    const int hw = static_cast<int>(bw * clampf(r.hum / 100.f, 0.f, 1.f) * e);
+    spr.fillRoundRect(x + 10, cy + 108, bw, 4, 2, col::PV_TRACK);
+    spr.fillRoundRect(x + 10, cy + 108, hw, 4, 2,
+                      (r.hum > 65.f || r.hum < 30.f) ? col::WARN : col::PV_HOUSE);
+
+    // roznica wzgledem zewnatrz — po to jest ten ekran
+    if (w.current.valid && !stale) {
+      const float d = r.tempC - w.current.tempC;
+      char ds[16];
+      snprintf(ds, sizeof(ds), "%+.1f°", d);
+      glRight(spr, ds, x + cw - 10, cy + 12, d > 0 ? col::PV_IMPORT : col::PV_HOUSE);
+    }
+    if (stale) {
+      glRight(spr, "brak łączności", x + cw - 10, cy + 12, col::TEXT_MUTE);
+    } else if (r.batt > 0 && r.batt < 20) {
+      glRight(spr, "bateria!", x + cw - 10, cy + 12, col::ERR);
+    }
+  }
+}
 
 void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
                               uint32_t heapNow) {
