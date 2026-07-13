@@ -1859,12 +1859,13 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
       const float d = r.tempC - w.current.tempC;
       char ds[16];
       snprintf(ds, sizeof(ds), "%+.1f°", d);
-      glRight(spr, ds, x + cw - 10, cy + 12, d > 0 ? col::PV_IMPORT : col::PV_HOUSE);
+      // PlFont, nie GLCD — znak stopnia. Trzeci raz ta sama pulapka w tym projekcie.
+      plRight(spr, PLF14, ds, x + cw - 10, cy + 18, d > 0 ? col::PV_IMPORT : col::PV_HOUSE);
     }
     if (stale) {
-      glRight(spr, "brak łączności", x + cw - 10, cy + 12, col::TEXT_MUTE);
+      plRight(spr, PLF14, "brak łączności", x + cw - 10, cy + 18, col::TEXT_MUTE);
     } else if (r.batt > 0 && r.batt < 20) {
-      glRight(spr, "bateria!", x + cw - 10, cy + 12, col::ERR);
+      plRight(spr, PLF14, "bateria!", x + cw - 10, cy + 18, col::ERR);
     }
   }
 }
