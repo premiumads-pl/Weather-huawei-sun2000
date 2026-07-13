@@ -575,10 +575,11 @@ void WeatherUi::drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& 
   snprintf(b, sizeof(b), "%s", w.sunrise[0] ? w.sunrise : "--:--");
   plStr(spr, PLF14, b, ox + 26, by, col::TEXT_DIM);
 
-  spr.fillCircle(ox + 118, by - 4, 5, col::ACCENT_WARM);
-  spr.fillRect(ox + 112, by - 9, 13, 5, col::BG);
+  spr.fillCircle(ox + 106, by - 4, 5, col::ACCENT_WARM);
+  spr.fillRect(ox + 100, by - 9, 13, 5, col::BG);
   snprintf(b, sizeof(b), "%s", w.sunset[0] ? w.sunset : "--:--");
-  plStr(spr, PLF14, b, ox + 130, by, col::TEXT_DIM);
+  plStr(spr, PLF14, b, ox + 118, by, col::TEXT_DIM);
+  const int sunEnd = ox + 118 + pltxt::stringWidth(PLF14, b);
 
   // UV BIEŻĄCE (nie dobowe maksimum — po zachodzie ma być 0).
   // W ciągu dnia w nawiasie dopisujemy dzisiejszy szczyt.
@@ -594,23 +595,38 @@ void WeatherUi::drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& 
     snprintf(b, sizeof(b), "UV %.0f", uv);
   }
   plRight(spr, PLF14, b, ox + W - 10, by, uvc);
+  const int uvW = pltxt::stringWidth(PLF14, b);
+
   // Opad — priorytet ma RADAR (realny pomiar). Model bywa ślepy na lokalne ulewy.
+  char pb[24] = {};
+  uint16_t pc = col::RAIN;
+  float next12 = 0.f;
+
   if (w.radarValid && w.radarLevel > 0) {
-    const uint16_t rc = w.radarLevel >= 4 ? col::ERR
-                        : (w.radarLevel == 3 ? col::WARN : col::RAIN);
-    snprintf(b, sizeof(b), "RADAR: %s", radarLabel(w.radarLevel));
-    plCenter(spr, PLF14, b, ox + 218, by, rc);
+    pc = w.radarLevel >= 4 ? col::ERR : (w.radarLevel == 3 ? col::WARN : col::RAIN);
+    snprintf(pb, sizeof(pb), "RADAR: %s", radarLabel(w.radarLevel));
   } else if (c.precipMm > 0.05f) {
-    snprintf(b, sizeof(b), "deszcz %.1f mm/h", c.precipMm);
-    plCenter(spr, PLF14, b, ox + 218, by, col::RAIN);
+    snprintf(pb, sizeof(pb), "deszcz %.1f mm/h", c.precipMm);
   } else {
-    float next12 = 0.f;
     for (int i = 0; i < WX_HOURS; ++i) {
       if (w.hours[i].valid) next12 += w.hours[i].data.precipMm;
     }
     if (next12 > 0.2f) {
-      snprintf(b, sizeof(b), "opad 12h %.1f mm", next12);
-      plCenter(spr, PLF14, b, ox + 218, by, col::RAIN_DK);
+      pc = col::RAIN_DK;
+      snprintf(pb, sizeof(pb), "opad 12h %.1f mm", next12);
+    }
+  }
+
+  // Ten napis siedział na sztywnym środku i wjeżdżał w godzinę zachodu
+  // ("21:15opad 12h 0.5 mm"). Teraz dokleja się do UV od prawej, a jeśli i tak
+  // nie mieści się obok zachodu — skraca się sam, zamiast nachodzić na sąsiada.
+  if (pb[0]) {
+    const int right = ox + W - 10 - uvW - 14;
+    if (right - pltxt::stringWidth(PLF14, pb) < sunEnd + 10 && next12 > 0.2f) {
+      snprintf(pb, sizeof(pb), "opad %.1f mm", next12);
+    }
+    if (right - pltxt::stringWidth(PLF14, pb) >= sunEnd + 6) {
+      plRight(spr, PLF14, pb, right, by, pc);
     }
   }
 }
