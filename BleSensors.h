@@ -40,6 +40,7 @@ int count();
 Sensor get(int i);
 
 bool ready();
+bool scanning();  // trwa nasluch — inni maja nie brac duzych blokow
 const char* lastError();
 
 }  // namespace ble

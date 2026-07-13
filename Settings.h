@@ -35,7 +35,7 @@ struct Settings {
   // Czujnik z firmware pvvx/ATC nadaje otwartym tekstem i klucza nie potrzebuje.
   struct BleCfg {
     char mac[18] = {};   // "a4:c1:38:54:f9:a9"
-    char name[14] = {};  // "Łazienka"
+    char name[24] = {};  // "Łazienka Góra" — UTF-8, wiec 2 B na znak z ogonkiem
     uint8_t key[16] = {};
     bool hasKey = false;
   } ble[4];

@@ -282,7 +282,7 @@ static void netTask(void*) {
     // 45 s spokojnie wystarczy, a WiFi (panel, OTA, MQTT) tego nie odczuwa.
     if (ble::ready() && static_cast<int32_t>(now - nextBleAt) >= 0) {
       ble::scan(6);
-      nextBleAt = millis() + 45000;
+      nextBleAt = millis() + 90000;
     }
 
     // ---- zapis profilu produkcji do NVS ----
@@ -491,6 +491,11 @@ void setup() {
   // malego sprite'a, wiec bufora wyswietlacza w ogole nie dotyka. Czekamy tylko na
   // spokojna klatke, zeby nie zlapac ekranu w polowie przejscia miedzy widokami.
   portal::setScreenshotHandler([](WiFiClient& c) {
+    // Nie w trakcie nasluchu BLE: zrzut alokuje sprite'y, a stos Bluetooth trzyma
+    // wtedy 72 kB. Zbieg tych dwoch rzeczy zjechal sterta do 2 kB.
+    uint32_t tw = millis();
+    while (ble::scanning() && millis() - tw < 9000) delay(50);
+
     const uint32_t t0 = millis();
     while (!ui.stableFrame() && millis() - t0 < 800) delay(10);
     ui.streamScreenshot(c, uiWeather, uiPv, uiHist, uiFlights, gWifiOk);

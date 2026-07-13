@@ -17,6 +17,7 @@ namespace {
 Sensor gSensors[MAX_SENSORS];
 int gCount = 0;
 bool gReady = false;
+volatile bool gScanning = false;
 char gErr[48] = "nie uruchomiony";
 SemaphoreHandle_t gMx = nullptr;
 
@@ -264,6 +265,10 @@ void scan(int seconds) {
     return;
   }
 
+  gScanning = true;  // zrzut ekranu (zadanie web) ma teraz poczekac — inaczej
+                     // alokuje sprite'y, gdy stos BLE trzyma 72 kB, i sterta
+                     // zjezdza do 2 kB. Raz juz o wlos minelismy sie z padem.
+
   BLEDevice::init("");
 
   BLEScan* sc = BLEDevice::getScan();
@@ -278,14 +283,21 @@ void scan(int seconds) {
   // (esp_bt_controller_mem_release) i BLE nie da sie juz podniesc do restartu.
   BLEDevice::deinit(false);
 
+  // NimBLE oddaje czesc pamieci asynchronicznie, juz po powrocie z deinit.
+  // Bez tej chwili oddechu kolejny duzy blok (dekoder PNG radaru, 47 kB) trafia
+  // na jeszcze nieposprzatana sterte i sie nie miesci.
+  vTaskDelay(pdMS_TO_TICKS(600));
+  gScanning = false;
+
   const uint32_t h1 = ESP.getFreeHeap();
+  const uint32_t blk = ESP.getMaxAllocHeap();
   gErr[0] = '\0';
-  if (h1 + 8000 < h0) {  // stos nie oddal pamieci — to by sie kumulowalo
-    snprintf(gErr, sizeof(gErr), "wyciek %ld B", static_cast<long>(h0) - static_cast<long>(h1));
-    LOG("BLE UWAGA: po deinit sterta %lu -> %lu (brakuje %ld B)",
-        static_cast<unsigned long>(h0), static_cast<unsigned long>(h1),
-        static_cast<long>(h0) - static_cast<long>(h1));
-  }
+  LOG("BLE: po nasluchu sterta %lu B, najwiekszy blok %lu B",
+      static_cast<unsigned long>(h1), static_cast<unsigned long>(blk));
+}
+
+bool scanning() {
+  return gScanning;
 }
 
 int count() {

@@ -1064,22 +1064,31 @@ struct GaugeZone {
   uint16_t col;  // kolor strefy
 };
 
+// DWIE kolumny obok siebie, nie jedna. Wcześniej wypełnienie szło od dołu i
+// zamalowywało strefy — przy RAM-ie strefa niebezpieczna JEST na dole, więc nigdy
+// nie było jej widać. Teraz:
+//   lewa, wąska  = skala stref (zawsze widoczna: gdzie jest granica)
+//   prawa, szersza = poziom (ile jest teraz), w kolorze strefy
 static void zoneGauge(TFT_eSPI& spr, int x, int y, int w, int h, float v, float vmin,
                       float vmax, const GaugeZone* z, int nz, float mark, bool hasMark) {
   const float span = vmax - vmin;
-  auto pos = [&](float val) {  // wartość -> y na słupku (od dołu)
+  auto pos = [&](float val) {  // wartość -> y (od dołu)
     return y + h - static_cast<int>(clampf((val - vmin) / span, 0.f, 1.f) * h);
   };
 
-  // tło: strefy przygaszone, żeby nie krzyczały kolorem
+  const int sw = 4;             // skala stref
+  const int bx = x + sw + 2;    // słupek poziomu
+  const int bw = w - sw - 2;
+
+  // --- skala stref (pełne kolory, przygaszone) ---
   float lo = vmin;
   for (int i = 0; i < nz; ++i) {
     const int y0 = pos(z[i].upTo), y1 = pos(lo);
-    if (y1 > y0) spr.fillRect(x, y0, w, y1 - y0, lerp565(col::BG, z[i].col, 0.26f));
+    if (y1 > y0) spr.fillRect(x, y0, sw, y1 - y0, lerp565(col::BG, z[i].col, 0.55f));
     lo = z[i].upTo;
   }
 
-  // wypełnienie w kolorze strefy, w której właśnie jesteśmy
+  // --- słupek poziomu ---
   uint16_t fc = z[nz - 1].col;
   for (int i = 0; i < nz; ++i) {
     if (v <= z[i].upTo) {
@@ -1087,16 +1096,18 @@ static void zoneGauge(TFT_eSPI& spr, int x, int y, int w, int h, float v, float 
       break;
     }
   }
+  spr.fillRect(bx, y, bw, h, col::PV_TRACK);
   const int fy = pos(v);
-  if (y + h - fy > 0) spr.fillRect(x + 1, fy, w - 2, y + h - fy, fc);
+  if (y + h - fy > 0) spr.fillRect(bx, fy, bw, y + h - fy, fc);
 
-  // znacznik: minimum sterty w historii / granica z noty katalogowej
+  // znacznik: minimum sterty w historii / granica z noty katalogowej.
+  // Idzie po SKALI, nie po słupku — inaczej ginie w wypełnieniu.
   if (hasMark) {
     const int my = pos(mark);
-    if (my > y && my < y + h) spr.drawFastHLine(x - 2, my, w + 4, col::TEXT);
+    if (my > y && my < y + h) spr.drawFastHLine(x - 1, my, sw + 2, col::TEXT);
   }
 
-  spr.drawRoundRect(x, y, w, h, 2, col::GRID_HI);
+  spr.drawRect(bx, y, bw, h, col::GRID_HI);
 }
 
 // ------------------------------------------------------------------- ALERT ----
