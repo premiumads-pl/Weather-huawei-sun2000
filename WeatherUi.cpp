@@ -499,29 +499,51 @@ void WeatherUi::drawContentBg(TFT_eSPI& spr) {
   spr.fillRect(0, 0, W, VIEW_H, col::BG);
 }
 
+// ------------------------------------------------------- nagłówek sekcji ------
+// JEDEN nagłówek dla wszystkich widoków. Wcześniej każdy ekran rysował go po
+// swojemu: raz GLCD, raz PlFont, linia bazowa 38 / 42 / 46, tytuł raz turkusowy,
+// raz żółty. Efekt: ekrany wyglądały jak z trzech różnych aplikacji.
+// Zasada: chrome (tytuł) zawsze tak samo, kolorem mówią wyłącznie DANE.
+
+constexpr int HDR_Y = 46;  // wspólna linia bazowa tytułu i etykiety po prawej
+
+static void viewHeader(TFT_eSPI& spr, int ox, const char* title, const char* right = nullptr,
+                       uint16_t rightCol = col::TEXT_MUTE, uint16_t dotCol = 0) {
+  plStr(spr, PLF14, title, ox + 10, HDR_Y, col::ACCENT);
+  if (right == nullptr || right[0] == '\0') return;
+
+  const int rw = pltxt::stringWidth(PLF14, right);
+  if (dotCol != 0) spr.fillCircle(ox + W - 10 - rw - 11, HDR_Y - 5, 4, dotCol);
+  plRight(spr, PLF14, right, ox + W - 10, HDR_Y, rightCol);
+}
+
 // ------------------------------------------------------------ WIDOK 1: TERAZ --
 
 void WeatherUi::drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& w) {
   const WeatherSnapshot& c = w.current;
   const float e = easeOutCubic(t);
 
+  char hdr[24];
+  snprintf(hdr, sizeof(hdr), "dane z %s", w.updatedAt[0] ? w.updatedAt : "--:--");
+  viewHeader(spr, ox, "TERAZ", hdr);
+
   // --- wielka temperatura ---
   char big[12];
   fmtTemp(big, sizeof(big), c.tempC);
   const uint16_t tc = tempColor(c.tempC);
-  const int bw = bigStr(spr, &FreeSansBold24pt7b, big, ox + 12, 96, tc);
-  plStr(spr, PLF18, "°C", ox + 16 + bw, 70, col::TEXT_DIM);
-  gl(spr, "TEMPERATURA", ox + 13, 54, col::TEXT_MUTE);
+  const int bw = bigStr(spr, &FreeSansBold24pt7b, big, ox + 12, 102, tc);
+  plStr(spr, PLF18, "°C", ox + 16 + bw, 76, col::TEXT_DIM);
+  gl(spr, "TEMPERATURA", ox + 13, 60, col::TEXT_MUTE);
 
   char feels[32];
   snprintf(feels, sizeof(feels), "odczuwalna %d°C", static_cast<int>(lroundf(c.feelsC)));
-  plStr(spr, PLF14, feels, ox + 12, 114, col::TEXT_DIM);
+  plStr(spr, PLF14, feels, ox + 12, 118, col::TEXT_DIM);
 
   // --- ikona + opis ---
   const int icx = ox + 258;
-  const int size = 40 + static_cast<int>(24 * e);
-  wxico::draw(spr, c.weatherCode, icx, 76, size);
-  plCenter(spr, PLF14, wxico::labelForCode(c.weatherCode), icx, 114, col::TEXT);
+  const int size = 40 + static_cast<int>(22 * e);
+  wxico::draw(spr, c.weatherCode, icx, 82, size);
+  plCenter(spr, PLF14, wxico::labelForCode(c.weatherCode), icx, 118, col::TEXT);
 
   // --- 4 kafelki ---
   struct Card {
@@ -638,8 +660,7 @@ void WeatherUi::drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& 
 void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel& w) {
   const float e = easeOutCubic(t);
 
-  plStr(spr, PLF14, "NAJBLIŻSZE 12 GODZIN", ox + 10, 46, col::ACCENT);
-  glRight(spr, "TEMP / OPAD", ox + W - 10, 38, col::TEXT_MUTE);
+  viewHeader(spr, ox, "NAJBLIŻSZE 12 GODZIN", "TEMP / OPAD");
 
   // 13 punktów: teraz + 12 godzin
   float temp[13];
@@ -775,9 +796,7 @@ void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel
 void WeatherUi::drawViewDays(TFT_eSPI& spr, int ox, float t, const WeatherModel& w) {
   const float e = easeOutCubic(t);
 
-  plStr(spr, PLF14, "PROGNOZA 5 DNI", ox + 10, 46, col::ACCENT);
-  // PlFont, nie GLCD — GLCD nie zna znaku stopnia i rysował krzaczek.
-  plRight(spr, PLF14, "MAX / MIN °C", ox + W - 10, 42, col::TEXT_MUTE);
+  viewHeader(spr, ox, "PROGNOZA 5 DNI", "MAX / MIN °C");
 
   float vmin = 1e9f, vmax = -1e9f, rmax = 0.f;
   int n = 0;
@@ -847,7 +866,10 @@ void WeatherUi::drawViewDays(TFT_eSPI& spr, int ox, float t, const WeatherModel&
       spr.fillRoundRect(cx - 22, 176, rw, 4, 2, col::RAIN);
     }
 
-    plCenter(spr, PLF14, d.name, cx, 195, i == 0 ? col::ACCENT : col::TEXT);
+    // Pierwszy dzień był po prostu NIEBIESKI — kolor niósł informację "to jutro",
+    // której nikt nie miał jak odczytać. Piszemy to słowem, w tym samym kolorze
+    // co reszta. Kolor zostaje wyłącznie dla danych (temperatura, opad).
+    plCenter(spr, PLF14, i == 0 ? "JUTRO" : d.name, cx, 195, col::TEXT);
     glCenter(spr, d.date, cx, 197, col::TEXT_MUTE);
   }
 }
@@ -866,9 +888,9 @@ void WeatherUi::drawNoData(TFT_eSPI& spr, int ox, const char* msg, const char* s
 
 void WeatherUi::drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, const PvHistory& hist) {
   const float e = easeOutCubic(t);
-  plStr(spr, PLF14, "FOTOWOLTAIKA", ox + 10, 46, col::PV_SOLAR);
-
   if (!pv.online) {
+    viewHeader(spr, ox, "FOTOWOLTAIKA", pv.asleep ? "uśpiony" : "brak łączności",
+               col::TEXT_MUTE, pv.asleep ? col::TEXT_MUTE : col::ERR);
     // Noc: falownik ma prawo milczeć (Huawei wyłącza Modbus TCP po zachodzie).
     // Piszemy to wprost, zamiast straszyć awarią do rana.
     drawNoData(spr, ox, pv.errorMsg[0] ? pv.errorMsg : "Falownik nie odpowiada",
@@ -878,13 +900,10 @@ void WeatherUi::drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, co
 
   const PvSnapshot& d = pv.data;
 
-  // status
+  // status falownika — jedyny kolorowy element nagłówka, bo niesie informację
   const bool fault = pvStatusIsFault(d.statusCode);
   const uint16_t sc = fault ? col::ERR : (pvStatusIsRunning(d.statusCode) ? col::OK : col::WARN);
-  const char* sl = pvStatusLabel(d.statusCode);
-  const int slw = pltxt::stringWidth(PLF14, sl);
-  spr.fillCircle(ox + W - 16 - slw - 10, 42, 4, sc);
-  plRight(spr, PLF14, sl, ox + W - 12, 46, sc);
+  viewHeader(spr, ox, "FOTOWOLTAIKA", pvStatusLabel(d.statusCode), sc, sc);
 
   // --- wielka moc AC (animowana) ---
   const int32_t acNow = static_cast<int32_t>(lroundf(animAcW_));
@@ -1729,20 +1748,18 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
   // (np. "Samoloty" na y=103, "MQTT" na granicy paska zrzutu) rwie się w pół.
   const uint32_t now = nowMs;
 
-  plStr(spr, PLF14, "STATYSTYKI URZĄDZENIA", ox + 10, 46, col::ACCENT);
-
   char b[48];
   if (otaTrialActive()) {
     // Okres próbny: wersja jeszcze nie potwierdziła, że działa. Jeśli w ciągu
     // 3 minut nie udowodni (WiFi + dane + sterta), urządzenie samo się cofnie.
     snprintf(b, sizeof(b), "v%d · próbna", FW_VERSION);
-    plRight(spr, PLF14, b, ox + W - 10, 46, col::WARN);
+    viewHeader(spr, ox, "STATYSTYKI URZĄDZENIA", b, col::WARN);
   } else if (d.otaRemote > FW_VERSION) {
     snprintf(b, sizeof(b), "v%d → v%d", FW_VERSION, d.otaRemote);
-    plRight(spr, PLF14, b, ox + W - 10, 46, col::WARN);
+    viewHeader(spr, ox, "STATYSTYKI URZĄDZENIA", b, col::WARN);
   } else {
     snprintf(b, sizeof(b), "v%d", FW_VERSION);
-    plRight(spr, PLF14, b, ox + W - 10, 46, col::OK);
+    viewHeader(spr, ox, "STATYSTYKI URZĄDZENIA", b, col::OK);
   }
 
   // --- źródła danych: zielona kropka = działa, czerwona = błąd, szara = wyłączone ---
