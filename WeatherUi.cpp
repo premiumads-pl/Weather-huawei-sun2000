@@ -1866,8 +1866,7 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
   // ------------------------------------------------- wykres z ostatnich 24 h ---
   // Dwie osie: lewa = temperatura (skala dobrana do danych), prawa = wilgotnosc
   // (stale 20-90%, bo w domu i tak nie wychodzi poza ten zakres).
-  gl(spr, "TEMPERATURA (LINIA GRUBA)   /   WILGOTNOSC (CIENKA)", ox + 32, 138,
-     col::TEXT_MUTE);
+  gl(spr, "GRUBA = TEMPERATURA    CIENKA = WILGOTNOSC", ox + 32, 138, col::TEXT_MUTE);
 
   const int gx0 = ox + 32, gx1 = ox + W - 34;
   const int gy0 = 150, gy1 = 190;
@@ -1949,11 +1948,13 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
   }
 
   // --- osie ---
+  // PlFont, nie GLCD — znak stopnia. CZWARTY raz ta sama pulapka; komentarz zostaje
+  // jako ostrzezenie: cokolwiek ma "°", "ą", "ł" — NIE moze isc przez gl()/glRight().
   char ax[10];
   snprintf(ax, sizeof(ax), "%.0f°", tMax);
-  glRight(spr, ax, gx0 - 5, gy0 - 3, col::TEXT_MUTE);
+  plRight(spr, PLF14, ax, gx0 - 5, gy0 + 4, col::TEXT_MUTE);
   snprintf(ax, sizeof(ax), "%.0f°", tMin);
-  glRight(spr, ax, gx0 - 5, gy1 - 5, col::TEXT_MUTE);
+  plRight(spr, PLF14, ax, gx0 - 5, gy1, col::TEXT_MUTE);
 
   gl(spr, "90%", gx1 + 4, gy0 - 3, col::TEXT_MUTE);
   gl(spr, "20%", gx1 + 4, gy1 - 5, col::TEXT_MUTE);
