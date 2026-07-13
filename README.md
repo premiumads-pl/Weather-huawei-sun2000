@@ -72,7 +72,7 @@ on this page were generated — see
 
 | Part | Notes |
 |------|-------|
-| **ESP32-S3 Super Mini** | 4 MB flash, **no PSRAM** — this matters, see [Known limitations](#known-limitations) |
+| **ESP32-S3 Super Mini** | 4 MB flash, **2 MB QSPI PSRAM (ESP32-S3FH4R2 — must be enabled with `PSRAM=enabled`)** — this matters, see [Known limitations](#known-limitations) |
 | **ST7789 2.8" IPS TFT, 240×320** | driven in landscape (320×240, rotation 1) |
 | USB-C cable | for the first flash only; everything after that is OTA |
 

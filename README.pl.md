@@ -78,7 +78,7 @@ Skrypt podnosi `FW_VERSION`, kompiluje, wymusza barierę RAM (patrz
 | BL  | 14 (PWM) |
 | MISO| — |
 
-ESP32-S3 Super Mini (4 MB flash, **bez PSRAM**), ST7789 240×320 używany w
+ESP32-S3 Super Mini (4 MB flash, **2 MB PSRAM (trzeba włączyć opcją `PSRAM=enabled`)**), ST7789 240×320 używany w
 landscape 320×240, SPI 27 MHz (HSPI), TFT_eSPI.
 
 ## Budowanie

@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FQBN: esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs
+  FQBN: esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,PSRAM=enabled
   ESP32_CORE_VERSION: "3.3.10"
   ESP32_INDEX_URL: https://espressif.github.io/arduino-esp32/package_esp32_index.json
   RAM_LIMIT_BYTES: 76000
