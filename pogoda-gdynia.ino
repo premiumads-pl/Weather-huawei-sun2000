@@ -34,6 +34,9 @@
 #include "OtaGuard.h"
 #include "RoomHistory.h"
 #include "Touch.h"
+
+#include <esp_wifi.h>
+#include <esp_event.h>
 #include "Portal.h"
 #include "PvClient.h"
 #include "PvData.h"
@@ -72,6 +75,21 @@ volatile bool gFlightsNeeded = false;
 // jesli realnie biora 6-8 kB, mamy do odzyskania kilkanascie kB.
 TaskHandle_t gNetTask = nullptr;
 TaskHandle_t gWebTask = nullptr;
+
+// Roaming. 802.11r (Fast Transition) NIE jest wkompilowany w rdzen Arduino —
+// sprawdzone w symbolach: zero wpa_ft_*. Zostaje przelaczanie "recznie":
+// rozlaczenie i polaczenie z mocniejszym punktem po jego BSSID (1-3 s przerwy).
+// Ale MOMENT decyzji bierzemy juz ze sprzetu: esp_wifi_set_rssi_threshold()
+// wyzwala zdarzenie, gdy sygnal spadnie ponizej progu — nie musimy odpytywac.
+volatile bool gRoamWanted = false;
+constexpr int kRssiRoamBelow = -67;   // ponizej tego szukamy czegos lepszego
+constexpr int kRssiRoamGain = 8;      // ...i przenosimy sie tylko przy realnym zysku
+
+// Zdarzenie leci z zadania systemowego WiFi — nie wolno tu nic robic dlugo.
+// Tylko podnosimy flage; przenosinami zajmie sie netTask.
+void onRssiLow(void*, esp_event_base_t, int32_t, void*) {
+  gRoamWanted = true;
+}
 
 volatile bool gRadarWantMem = false;
 volatile bool gRadarMemReady = false;
@@ -129,6 +147,10 @@ static bool connectWifi() {
   if (WiFi.status() != WL_CONNECTED) {
     return false;
   }
+
+  // Uzbrajamy sprzetowy prog. Zdarzenie jest JEDNORAZOWE — po kazdym wyzwoleniu
+  // trzeba je uzbroic ponownie (robimy to po probie przenosin).
+  esp_wifi_set_rssi_threshold(kRssiRoamBelow);
 
   strncpy(gIpStr, WiFi.localIP().toString().c_str(), sizeof(gIpStr) - 1);
   gRssi = WiFi.RSSI();
@@ -359,12 +381,15 @@ static void netTask(void*) {
     // ESP32 sam NIE przechodzi miedzy punktami — raz zlapany trzyma do konca.
     // Gdy sygnal jest kiepski, skanujemy i przenosimy sie na wyraznie lepszy.
     // Warunek "wyraznie" (>= 8 dB) chroni przed skakaniem tam i z powrotem.
-    if (gWifiOk && static_cast<int32_t>(now - nextRoamAt) >= 0) {
+    const bool roamNow = gWifiOk && (gRoamWanted ||
+                                     static_cast<int32_t>(now - nextRoamAt) >= 0);
+    if (roamNow) {
+      gRoamWanted = false;
       nextRoamAt = millis() + 180000;
       const int cur = WiFi.RSSI();
-      if (cur < -68) {
+      if (cur < kRssiRoamBelow - 1) {
         const int found = WiFi.scanNetworks(false, false, false, 250);
-        int best = -1, bestRssi = cur + 8;
+        int best = -1, bestRssi = cur + kRssiRoamGain;
         for (int i = 0; i < found; ++i) {
           if (WiFi.SSID(i) != settings().ssid) continue;
           if (WiFi.RSSI(i) > bestRssi) {
@@ -387,8 +412,11 @@ static void netTask(void*) {
           LOG("WiFi: po przenosinach %d dBm", WiFi.RSSI());
         } else {
           WiFi.scanDelete();
+          LOG("WiFi: sygnal %d dBm, ale nic lepszego nie ma — zostajemy", cur);
         }
       }
+      // Prog jest jednorazowy: po wyzwoleniu trzeba go uzbroic od nowa.
+      esp_wifi_set_rssi_threshold(kRssiRoamBelow);
     }
 
     // ---- ile stosu naprawde zuzywaja zadania (do przyciecia 2 x 16 kB) ----
@@ -638,6 +666,8 @@ void setup() {
   // ma bronić.
   ble::begin();
   touch::begin();
+
+  esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_BSS_RSSI_LOW, &onRssiLow, nullptr);
 
   // Zrzut ekranu rysuje teraz calą klatkę (a nie tylko czyta bufor), więc stos zadania
   // web musi pomieścić cały łańcuch rysujący. 4 kB zapasu ze sterty, której i tak
