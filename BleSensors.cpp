@@ -251,11 +251,26 @@ Cb gCb;
 
 }  // namespace
 
+// Od v51 stos BLE zostaje w pamieci NA STALE. Wczesniej podnosilismy go i oddawali
+// przy kazdym nasluchu, bo 72 kB nie miescilo sie obok reszty — kosztowalo to
+// fragmentacje sterty, 6 s niedostepnego panelu i sterte spadajaca do 2 kB.
+// Po wlaczeniu PSRAM (v50) bufor ekranu wyprowadzil sie z SRAM-u i jest miejsce.
 void begin() {
   if (gMx == nullptr) gMx = xSemaphoreCreateMutex();
+
+  const uint32_t h0 = ESP.getFreeHeap();
+  BLEDevice::init("");
+
+  BLEScan* sc = BLEDevice::getScan();
+  sc->setAdvertisedDeviceCallbacks(&gCb, false);
+  sc->setActiveScan(false);  // pasywnie: nie odpytujemy, tylko sluchamy
+  sc->setInterval(100);
+  sc->setWindow(99);
+
   gReady = true;
   gErr[0] = '\0';
-  LOG("BLE: gotowy (stos podnoszony tylko na czas nasluchu)");
+  LOG("BLE: stos w pamieci na stale, sterta %lu -> %lu B",
+      static_cast<unsigned long>(h0), static_cast<unsigned long>(ESP.getFreeHeap()));
 }
 
 // Stos BLE kosztuje ~72 kB sterty. Trzymany na stale zostawial 37 kB wolnego —
@@ -265,41 +280,11 @@ void begin() {
 void scan(int seconds) {
   if (!gReady) return;
 
-  const uint32_t h0 = ESP.getFreeHeap();
-  if (h0 < kMinHeapForBle) {
-    snprintf(gErr, sizeof(gErr), "za malo sterty (%lu B)", static_cast<unsigned long>(h0));
-    return;
-  }
-
-  gScanning = true;  // zrzut ekranu (zadanie web) ma teraz poczekac — inaczej
-                     // alokuje sprite'y, gdy stos BLE trzyma 72 kB, i sterta
-                     // zjezdza do 2 kB. Raz juz o wlos minelismy sie z padem.
-
-  BLEDevice::init("");
-
+  gScanning = true;
   BLEScan* sc = BLEDevice::getScan();
-  sc->setAdvertisedDeviceCallbacks(&gCb, false);
-  sc->setActiveScan(false);  // pasywnie: nie odpytujemy, tylko sluchamy
-  sc->setInterval(100);
-  sc->setWindow(99);
   sc->start(seconds, false);
-  sc->clearResults();
-
-  // false, NIE true: przy `true` sterownik oddaje pamiec kontrolera bezpowrotnie
-  // (esp_bt_controller_mem_release) i BLE nie da sie juz podniesc do restartu.
-  BLEDevice::deinit(false);
-
-  // NimBLE oddaje czesc pamieci asynchronicznie, juz po powrocie z deinit.
-  // Bez tej chwili oddechu kolejny duzy blok (dekoder PNG radaru, 47 kB) trafia
-  // na jeszcze nieposprzatana sterte i sie nie miesci.
-  vTaskDelay(pdMS_TO_TICKS(600));
+  sc->clearResults();  // inaczej wyniki zostaja na stercie
   gScanning = false;
-
-  const uint32_t h1 = ESP.getFreeHeap();
-  const uint32_t blk = ESP.getMaxAllocHeap();
-  gErr[0] = '\0';
-  LOG("BLE: po nasluchu sterta %lu B, najwiekszy blok %lu B",
-      static_cast<unsigned long>(h1), static_cast<unsigned long>(blk));
 }
 
 bool scanning() {

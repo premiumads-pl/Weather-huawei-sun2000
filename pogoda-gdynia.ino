@@ -307,7 +307,7 @@ static void netTask(void*) {
     // WiFi. Czujnik nadaje co kilka-kilkanaście sekund, więc 6 s nasłuchu co
     // 45 s spokojnie wystarczy, a WiFi (panel, OTA, MQTT) tego nie odczuwa.
     if (ble::ready() && static_cast<int32_t>(now - nextBleAt) >= 0) {
-      ble::scan(6);
+      ble::scan(4);
       mqttha::publishBle();
 
       // Historia 24 h: przewijamy okno i dopisujemy biezace odczyty.
@@ -335,7 +335,7 @@ static void netTask(void*) {
       }
       xSemaphoreGive(gLock);
 
-      nextBleAt = millis() + 90000;
+      nextBleAt = millis() + 20000;
     }
 
     // ---- zapis profilu produkcji do NVS ----

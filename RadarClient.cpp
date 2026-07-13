@@ -23,6 +23,8 @@ constexpr size_t kMaxPng = 40000;
 // globalna zjadał tyle RAM-u NA STAŁE i pogoda nie miała już z czego sparsować
 // JSON-a. Tworzymy go więc tylko na czas dekodowania i od razu zwalniamy.
 constexpr uint32_t kMinHeapForRadar = 64000;
+bool gPngInPsram = false;   // dekoder siedzi w PSRAM -> zwalniamy inaczej
+
 
 PNG* png = nullptr;
 uint8_t* gPng = nullptr;
@@ -137,6 +139,18 @@ const char* radarLabel(uint8_t level) {
   }
 }
 
+void releasePng() {
+  if (png == nullptr) return;
+  if (gPngInPsram) {
+    png->~PNG();
+    free(png);
+  } else {
+    delete png;
+  }
+  png = nullptr;
+  gPngInPsram = false;
+}
+
 bool RadarClient::fetch(RadarSnapshot& out) {
   out.valid = false;
   out.errorMsg[0] = '\0';
@@ -212,8 +226,12 @@ bool RadarClient::fetch(RadarSnapshot& out) {
   // Od czasu rysowania w dwóch pasach bufor ekranu ma 66 kB zamiast 132 kB, więc
   // ten blok się mieści i NIE prosimy już UI o oddanie bufora (ekran nie zamiera).
   // Gdyby jednak zabrakło — po prostu odpuszczamy cykl i mówimy o tym w diagnostyce.
+  // Dekoder (46 kB) idzie do PSRAM. Do v50 walczyl o ciagly blok w SRAM-ie i
+  // przegrywal — a przez caly ten czas obok lezalo 2 MB nietknietej pamieci.
   const uint32_t largest = ESP.getMaxAllocHeap();
-  png = new (std::nothrow) PNG();
+  void* mem = psramFound() ? ps_malloc(sizeof(PNG)) : nullptr;
+  png = mem != nullptr ? new (mem) PNG() : new (std::nothrow) PNG();
+  gPngInPsram = (mem != nullptr);
   if (png == nullptr) {
     snprintf(out.errorMsg, sizeof(out.errorMsg), "Blok %lukB < 47kB",
              static_cast<unsigned long>(largest / 1024));
@@ -227,15 +245,13 @@ bool RadarClient::fetch(RadarSnapshot& out) {
 
   // --- 4. pobierz kafelek i zdekoduj ---
   if (!httpGet(url, &gPng, &gPngLen, nullptr)) {
-    delete png;
-    png = nullptr;
+    releasePng();
     strncpy(out.errorMsg, "Radar: brak kafelka", sizeof(out.errorMsg) - 1);
     return false;
   }
 
   if (png->openRAM(gPng, gPngLen, pngDraw) != PNG_SUCCESS) {
-    delete png;
-    png = nullptr;
+    releasePng();
     free(gPng);
     gPng = nullptr;
     strncpy(out.errorMsg, "Radar: zły PNG", sizeof(out.errorMsg) - 1);
@@ -243,8 +259,7 @@ bool RadarClient::fetch(RadarSnapshot& out) {
   }
   png->decode(nullptr, 0);
   png->close();
-  delete png;
-  png = nullptr;
+  releasePng();
   free(gPng);
   gPng = nullptr;
 
