@@ -504,9 +504,10 @@ void publishBle() {
     }
     if (slot < 0) continue;
 
-    n += snprintf(p + n, sizeof(p) - n,
-                  "%s\"s%dt\":%.1f,\"s%dh\":%.1f,\"s%db\":%d,\"s%dr\":%d",
-                  any ? "," : "", slot, s.tempC, slot, s.humidity, slot, s.batteryPct,
+    if (any) n += snprintf(p + n, sizeof(p) - n, ",");
+    if (s.hasTemp) n += snprintf(p + n, sizeof(p) - n, "\"s%dt\":%.1f,", slot, s.tempC);
+    if (s.hasHum) n += snprintf(p + n, sizeof(p) - n, "\"s%dh\":%.1f,", slot, s.humidity);
+    n += snprintf(p + n, sizeof(p) - n, "\"s%db\":%d,\"s%dr\":%d", slot, s.batteryPct,
                   slot, s.rssi);
     any = true;
     if (n >= static_cast<int>(sizeof(p)) - 8) break;

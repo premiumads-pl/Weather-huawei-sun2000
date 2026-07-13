@@ -80,6 +80,8 @@ bool parse181A(const uint8_t* d, size_t len, const char* mac, int rssi) {
     s->batteryMv = bm;
     s->rssi = rssi;
     s->seenAt = millis();
+    s->hasTemp = true;
+    s->hasHum = true;
     s->valid = true;
   }
   xSemaphoreGive(gMx);
@@ -180,12 +182,14 @@ bool parseMiBeacon(const uint8_t* d, size_t len, const char* mac, int rssi) {
       case 0x1004:  // temperatura, 0,1 C
         if (vlen >= 2) {
           s->tempC = static_cast<int16_t>(v[0] | (v[1] << 8)) / 10.f;
+          s->hasTemp = true;
           s->valid = true;
         }
         break;
       case 0x1006:  // wilgotnosc, 0,1 %
         if (vlen >= 2) {
           s->humidity = static_cast<uint16_t>(v[0] | (v[1] << 8)) / 10.f;
+          s->hasHum = true;
           s->valid = true;
         }
         break;
@@ -196,6 +200,8 @@ bool parseMiBeacon(const uint8_t* d, size_t len, const char* mac, int rssi) {
         if (vlen >= 4) {
           s->tempC = static_cast<int16_t>(v[0] | (v[1] << 8)) / 10.f;
           s->humidity = static_cast<uint16_t>(v[2] | (v[3] << 8)) / 10.f;
+          s->hasTemp = true;
+          s->hasHum = true;
           s->valid = true;
         }
         break;

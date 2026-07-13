@@ -1780,6 +1780,8 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     const char* name;
     float tempC;
     float hum;
+    bool hasTemp;
+    bool hasHum;
     int batt;
     uint32_t ageS;
   } rooms[ble::MAX_SENSORS];
@@ -1794,6 +1796,8 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     rooms[n].name = cfg->name[0] ? cfg->name : s.mac;
     rooms[n].tempC = s.tempC;
     rooms[n].hum = s.humidity;
+    rooms[n].hasTemp = s.hasTemp;
+    rooms[n].hasHum = s.hasHum;
     rooms[n].batt = s.batteryPct;
     rooms[n].ageS = s.seenAt ? (millis() - s.seenAt) / 1000 : 9999;
     ++n;
@@ -1825,25 +1829,33 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     spr.fillRoundRect(x, cy, 3, ch, 1, stale ? col::TEXT_MUTE : col::ACCENT);
     plStr(spr, PLF14, r.name, x + 10, cy + 18, stale ? col::TEXT_MUTE : col::TEXT);
 
+    // Dopoki nie doszla ramka z temperatura, piszemy kreske — nie zero.
     char v[12];
-    snprintf(v, sizeof(v), "%.1f", r.tempC);
-    const int vw = bigStr(spr, &FreeSansBold24pt7b, v, x + 10, cy + 62, tc);
+    snprintf(v, sizeof(v), r.hasTemp ? "%.1f" : "--", r.tempC);
+    const int vw = bigStr(spr, &FreeSansBold24pt7b, v, x + 10, cy + 62,
+                          r.hasTemp ? tc : col::TEXT_MUTE);
     plStr(spr, PLF14, "°C", x + 14 + vw, cy + 44, col::TEXT_DIM);
 
     // wilgotnosc: pasek + liczba (sam procent niewiele mowi)
     char hs[10];
-    snprintf(hs, sizeof(hs), "%.0f%%", r.hum);
-    plStr(spr, PLF18, hs, x + 10, cy + 92, col::PV_HOUSE);
+    if (r.hasHum) {
+      snprintf(hs, sizeof(hs), "%.0f%%", r.hum);
+    } else {
+      snprintf(hs, sizeof(hs), "--");
+    }
+    plStr(spr, PLF18, hs, x + 10, cy + 92, r.hasHum ? col::PV_HOUSE : col::TEXT_MUTE);
     gl(spr, "WILGOTNOSC", x + 10, cy + 98, col::TEXT_MUTE);
 
     const int bw = cw - 20;
-    const int hw = static_cast<int>(bw * clampf(r.hum / 100.f, 0.f, 1.f) * e);
+    const int hw = r.hasHum ? static_cast<int>(bw * clampf(r.hum / 100.f, 0.f, 1.f) * e) : 0;
     spr.fillRoundRect(x + 10, cy + 108, bw, 4, 2, col::PV_TRACK);
-    spr.fillRoundRect(x + 10, cy + 108, hw, 4, 2,
-                      (r.hum > 65.f || r.hum < 30.f) ? col::WARN : col::PV_HOUSE);
+    if (hw > 0) {
+      spr.fillRoundRect(x + 10, cy + 108, hw, 4, 2,
+                        (r.hum > 65.f || r.hum < 30.f) ? col::WARN : col::PV_HOUSE);
+    }
 
     // roznica wzgledem zewnatrz — po to jest ten ekran
-    if (w.current.valid && !stale) {
+    if (w.current.valid && !stale && r.hasTemp) {
       const float d = r.tempC - w.current.tempC;
       char ds[16];
       snprintf(ds, sizeof(ds), "%+.1f°", d);

@@ -26,7 +26,11 @@ struct Sensor {
   int batteryMv = 0;
   int rssi = 0;
   uint32_t seenAt = 0;   // millis() ostatniej ramki
-  bool valid = false;    // mamy odczyt
+  bool valid = false;    // mamy JAKIKOLWIEK odczyt
+  // Czujnik nadaje temperature i wilgotnosc w OSOBNYCH ramkach. Bez tych flag
+  // rysowalismy 0.0 C, dopoki nie doszla ramka z temperatura — czyli klamalismy.
+  bool hasTemp = false;
+  bool hasHum = false;
   bool encrypted = false;
   bool needsKey = false;  // widzimy czujnik, ale brakuje bindkeya (albo jest zly)
 };
