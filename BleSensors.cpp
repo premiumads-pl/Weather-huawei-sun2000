@@ -18,6 +18,10 @@ bool gReady = false;
 char gErr[48] = "nie uruchomiony";
 SemaphoreHandle_t gMx = nullptr;
 
+// Stos BLE bierze ~72 kB. Nie podnosimy go, jesli sterta jest juz napieta —
+// lepiej odpuscic nasluch niz wywrocic TLS albo dekoder radaru.
+constexpr uint32_t kMinHeapForBle = 100000;
+
 // Xiaomi LYWSD03MMC ma adresy z puli A4:C1:38:xx:xx:xx. Firmware pvvx potrafi
 // adres losowac, wiec NIE filtrujemy po adresie — filtrujemy po formacie ramki.
 
@@ -117,18 +121,25 @@ Cb gCb;
 
 void begin() {
   if (gMx == nullptr) gMx = xSemaphoreCreateMutex();
-
-  const uint32_t before = ESP.getFreeHeap();
-  BLEDevice::init("");
   gReady = true;
-  snprintf(gErr, sizeof(gErr), "%s", "");
-  LOG("BLE: start, sterta %lu -> %lu (koszt %ld B)", static_cast<unsigned long>(before),
-      static_cast<unsigned long>(ESP.getFreeHeap()),
-      static_cast<long>(before) - static_cast<long>(ESP.getFreeHeap()));
+  gErr[0] = '\0';
+  LOG("BLE: gotowy (stos podnoszony tylko na czas nasluchu)");
 }
 
+// Stos BLE kosztuje ~72 kB sterty. Trzymany na stale zostawial 37 kB wolnego —
+// za malo na TLS (pogoda, samoloty, OTA) i OtaGuard slusznie cofnal taka wersje
+// (v38). Skoro sluchamy 6 s na 45 s, stos podnosimy TYLKO na czas nasluchu
+// i zaraz go oddajemy. Miedzy skanami sterta jest nietknieta.
 void scan(int seconds) {
   if (!gReady) return;
+
+  const uint32_t h0 = ESP.getFreeHeap();
+  if (h0 < kMinHeapForBle) {
+    snprintf(gErr, sizeof(gErr), "za malo sterty (%lu B)", static_cast<unsigned long>(h0));
+    return;
+  }
+
+  BLEDevice::init("");
 
   BLEScan* sc = BLEDevice::getScan();
   sc->setAdvertisedDeviceCallbacks(&gCb, false);
@@ -136,7 +147,20 @@ void scan(int seconds) {
   sc->setInterval(100);
   sc->setWindow(99);
   sc->start(seconds, false);
-  sc->clearResults();  // inaczej wyniki zostaja na stercie
+  sc->clearResults();
+
+  // false, NIE true: przy `true` sterownik oddaje pamiec kontrolera bezpowrotnie
+  // (esp_bt_controller_mem_release) i BLE nie da sie juz podniesc do restartu.
+  BLEDevice::deinit(false);
+
+  const uint32_t h1 = ESP.getFreeHeap();
+  gErr[0] = '\0';
+  if (h1 + 8000 < h0) {  // stos nie oddal pamieci — to by sie kumulowalo
+    snprintf(gErr, sizeof(gErr), "wyciek %ld B", static_cast<long>(h0) - static_cast<long>(h1));
+    LOG("BLE UWAGA: po deinit sterta %lu -> %lu (brakuje %ld B)",
+        static_cast<unsigned long>(h0), static_cast<unsigned long>(h1),
+        static_cast<long>(h0) - static_cast<long>(h1));
+  }
 }
 
 int count() {
