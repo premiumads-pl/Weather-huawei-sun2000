@@ -26,22 +26,31 @@ struct PvModel {
   bool asleep = false;
 };
 
-// Profil produkcji z dnia bieżącego: 1 próbka co 10 minut (144 sloty).
+// Profil dnia bieżącego: 1 próbka co 10 minut (144 sloty).
+// Dwie serie, żeby wykres pokazywał nie tylko ile wyprodukowaliśmy, ale też ile
+// z tego zużyliśmy na miejscu i kiedy musieliśmy dobrać z sieci.
 struct PvHistory {
   static constexpr int SLOTS = 144;
-  uint16_t watts[SLOTS] = {};
+  uint16_t watts[SLOTS] = {};  // produkcja PV [W]
+  uint16_t load[SLOTS] = {};   // pobór domu [W]
   bool filled[SLOTS] = {};
   int day = -1;  // tm_yday, do resetu o północy
 
   void reset(int yday) {
     for (int i = 0; i < SLOTS; ++i) {
       watts[i] = 0;
+      load[i] = 0;
       filled[i] = false;
     }
     day = yday;
   }
 
-  void push(int yday, int hour, int minute, int32_t w) {
+  static uint16_t clampW(int32_t w) {
+    if (w < 0) return 0;
+    return static_cast<uint16_t>(w > 65535 ? 65535 : w);
+  }
+
+  void push(int yday, int hour, int minute, int32_t w, int32_t loadW) {
     if (yday != day) {
       reset(yday);
     }
@@ -49,17 +58,19 @@ struct PvHistory {
     if (slot < 0 || slot >= SLOTS) {
       return;
     }
-    const uint16_t v = (w < 0) ? 0 : static_cast<uint16_t>(w > 65535 ? 65535 : w);
-    watts[slot] = v;
+    watts[slot] = clampW(w);
+    load[slot] = clampW(loadW);
     filled[slot] = true;
   }
 
+  // Szczyt z OBU serii — pobór potrafi przewyższyć produkcję (dobieramy z sieci),
+  // a wtedy czerwony słupek musi się zmieścić w tej samej skali co żółty.
   uint16_t peak() const {
     uint16_t m = 0;
     for (int i = 0; i < SLOTS; ++i) {
-      if (filled[i] && watts[i] > m) {
-        m = watts[i];
-      }
+      if (!filled[i]) continue;
+      if (watts[i] > m) m = watts[i];
+      if (load[i] > m) m = load[i];
     }
     return m;
   }

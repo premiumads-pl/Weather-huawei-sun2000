@@ -91,9 +91,14 @@ void pvHistoryLoad(PvHistory& h) {
   const size_t have = prefs.getBytesLength("w");
   if (day >= 0 && have == need) {
     prefs.getBytes("w", h.watts, need);
+    // Pobór doszedł później niż produkcja — starszy zapis go nie ma. Wtedy po
+    // prostu zostaje wyzerowany i wykres dorysuje zużycie od tej chwili.
+    if (prefs.getBytesLength("l") == sizeof(h.load)) {
+      prefs.getBytes("l", h.load, sizeof(h.load));
+    }
     h.day = day;
     for (int i = 0; i < PvHistory::SLOTS; ++i) {
-      h.filled[i] = h.watts[i] > 0;
+      h.filled[i] = h.watts[i] > 0 || h.load[i] > 0;
     }
     Serial.printf("PV: wczytano profil dnia %d z NVS\n", day);
   } else {
@@ -106,6 +111,7 @@ void pvHistorySave(const PvHistory& h) {
   prefs.begin(NS_PV, false);
   prefs.putInt("day", h.day);
   prefs.putBytes("w", h.watts, sizeof(h.watts));
+  prefs.putBytes("l", h.load, sizeof(h.load));
   prefs.end();
 }
 

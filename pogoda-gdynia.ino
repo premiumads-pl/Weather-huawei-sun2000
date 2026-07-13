@@ -211,7 +211,8 @@ static void netTask(void*) {
           struct tm tmv{};
           localtime_r(&t, &tmv);
           const int prevDay = gHist.day;
-          gHist.push(tmv.tm_yday, tmv.tm_hour, tmv.tm_min, tmp.data.powerAcW);
+          gHist.push(tmv.tm_yday, tmv.tm_hour, tmv.tm_min, tmp.data.powerAcW,
+                     tmp.data.houseLoadW);
           if (prevDay != gHist.day) {
             // nowy dzień — profil wyczyszczony, zapisz od razu
             nextStoreAt = 0;

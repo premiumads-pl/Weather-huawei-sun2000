@@ -85,6 +85,21 @@ constexpr bool PROFILE_FRAME = false;
 constexpr int VIEW_COUNT = 6;   // TERAZ / GODZINY / 5 DNI / PV / SAMOLOTY / STATYSTYKI
 constexpr int VIEW_FLIGHTS = 4;
 constexpr int VIEW_STATS = 5;   // ekran serwisowy
+
+// --- progi zdrowia urządzenia (wskaźniki na ekranie statystyk) ---
+// Temperatura: czujnik w ESP32-S3 mierzy strukturę (die), nie otoczenie.
+// Nota katalogowa: zalecane otoczenie do +85 °C, maksymalna temperatura złącza
+// (Tj) 125 °C — i to jest koniec skali, nie punkt pracy.
+constexpr float CPU_T_MIN = 20.f;   // początek skali
+constexpr float CPU_T_OK = 70.f;    // do tego miejsca: spokojnie (zielony)
+constexpr float CPU_T_WARN = 90.f;  // powyżej: gorąco (żółty -> czerwony)
+constexpr float CPU_T_SPEC = 85.f;  // granica z noty katalogowej — kreska na skali
+constexpr float CPU_T_MAX = 125.f;  // Tj max — koniec skali
+
+// Wolna sterta: poniżej DANGER radar nie ma jak zdekodować PNG, a TLS się dławi.
+constexpr uint32_t HEAP_DANGER = 25000;
+constexpr uint32_t HEAP_WARN = 45000;
+constexpr uint32_t HEAP_FULL = 160000;  // pełna skala wskaźnika
 constexpr uint32_t VIEW_HOLD_FLIGHTS_MS = 15000;
 constexpr uint32_t VIEW_HOLD_STATS_MS = 6000;   // serwisowy — krótko
 

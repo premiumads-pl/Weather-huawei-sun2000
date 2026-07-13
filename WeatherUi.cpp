@@ -900,8 +900,13 @@ void WeatherUi::drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, co
   snprintf(peak, sizeof(peak), "z %.1f kWp", pvScaleW_ / 1000.f);
   glCenter(spr, peak, gx, gy + 9, col::TEXT_MUTE);
 
-  // --- sparkline: profil produkcji dziś ---
-  gl(spr, "PRODUKCJA DZIS", ox + 12, 122, col::TEXT_MUTE);
+  // --- profil dnia: produkcja + zużycie w jednej skali ---
+  // Kolory są DOKŁADNIE te, którymi świeci dioda RGB — jeden kod barw w całym
+  // urządzeniu, więc wykres czyta się bez legendy:
+  //   zielony   = nadwyżka oddana do sieci      (dioda zielona)
+  //   niebieski = zużycie pokryte z własnej PV  (dioda niebieska — równowaga)
+  //   czerwony  = prąd dobrany z sieci          (dioda czerwona)
+  gl(spr, "PRODUKCJA / ZUZYCIE", ox + 12, 122, col::TEXT_MUTE);
   char tot[24];
   snprintf(tot, sizeof(tot), "RAZEM %.0f kWh", d.energyTotalKwh);
   glRight(spr, tot, ox + W - 12, 122, col::TEXT_MUTE);
@@ -911,13 +916,41 @@ void WeatherUi::drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, co
   const int s0 = 30, s1 = 137;  // 05:00 .. 22:50
   uint16_t hpk = hist.peak();
   if (hpk < 500) hpk = 500;
+  const int base = sy + sh - 1;
+  const float scale = static_cast<float>(sh - 3) * e / static_cast<float>(hpk);
+
   for (int s = s0; s <= s1; ++s) {
-    if (!hist.filled[s] || hist.watts[s] == 0) continue;
+    if (!hist.filled[s]) continue;
+    const uint16_t prod = hist.watts[s];
+    const uint16_t used = hist.load[s];
+    if (prod == 0 && used == 0) continue;
+
     const int x = sx + ((s - s0) * (sw - 2)) / (s1 - s0);
-    int h = static_cast<int>((static_cast<float>(hist.watts[s]) / hpk) * (sh - 3) * e);
-    if (h < 1) h = 1;
-    spr.drawFastVLine(x, sy + sh - 1 - h, h, col::PV_SOLAR);
-    spr.drawFastVLine(x + 1, sy + sh - 1 - h, h, col::PV_SOLAR_DK);
+    const int hp = static_cast<int>(prod * scale);
+    const int hu = static_cast<int>(used * scale);
+
+    if (hu >= hp) {
+      // Zużycie przewyższa produkcję. Dół słupka (to, co pokryła PV) jest niebieski,
+      // a czego zabrakło — sterczy nad nim na czerwono. To ten "pik" z sieci.
+      if (hp > 0) {
+        spr.drawFastVLine(x, base - hp, hp, col::PV_HOUSE);
+        spr.drawFastVLine(x + 1, base - hp, hp, col::PV_HOUSE);
+      }
+      const int deficit = hu - hp;
+      if (deficit > 0) {
+        spr.drawFastVLine(x, base - hu, deficit, col::PV_IMPORT);
+        spr.drawFastVLine(x + 1, base - hu, deficit, col::PV_IMPORT);
+      }
+    } else {
+      // Produkcja pokrywa dom: na dole niebieskie zużycie własne, nad nim zielona
+      // nadwyżka, która poszła do sieci.
+      spr.drawFastVLine(x, base - hp, hp - hu, col::PV_EXPORT);
+      spr.drawFastVLine(x + 1, base - hp, hp - hu, col::PV_EXPORT);
+      if (hu > 0) {
+        spr.drawFastVLine(x, base - hu, hu, col::PV_HOUSE);
+        spr.drawFastVLine(x + 1, base - hu, hu, col::PV_HOUSE);
+      }
+    }
   }
   // znaczniki godzin 8 / 12 / 16 / 20
   for (int hh = 8; hh <= 20; hh += 4) {
@@ -966,8 +999,66 @@ void WeatherUi::drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, co
     plStr(spr, PLF14, cards[i].label, x + 8, cy0 + 14, col::TEXT_DIM);
     const int vw = pltxt::drawString(spr, PLF18, cards[i].value, x + 8, cy0 + 37,
                                      cards[i].color, cards[i].color);
-    gl(spr, cards[i].unit, x + 11 + vw, cy0 + 30, col::TEXT_MUTE);
+
+    // "°C" ma znak spoza ASCII, którego GLCD nie zna — rysował krzaczek. Jednostki
+    // z polskimi/typograficznymi znakami idą przez PlFont, reszta (kW, kWh) zostaje
+    // na GLCD, bo jest węższa i mieści się obok dużej liczby.
+    bool ascii = true;
+    for (const char* p = cards[i].unit; *p; ++p) {
+      if (static_cast<unsigned char>(*p) > 127) ascii = false;
+    }
+    if (ascii) {
+      gl(spr, cards[i].unit, x + 11 + vw, cy0 + 30, col::TEXT_MUTE);
+    } else {
+      plStr(spr, PLF14, cards[i].unit, x + 11 + vw, cy0 + 37, col::TEXT_MUTE);
+    }
   }
+}
+
+// ------------------------------------------------------- wskaźnik ze strefami --
+// Pionowy słupek, w którym TŁO niesie tyle samo informacji co wypełnienie:
+// przygaszone pasy pokazują, gdzie kończy się strefa bezpieczna, a gdzie zaczyna
+// niebezpieczna. Dzięki temu widać nie tylko "ile jest", ale też "ile jeszcze można".
+// Sama liczba (53 °C, 112 kB) nic nie mówi, jeśli nie wiadomo, co jest granicą.
+
+struct GaugeZone {
+  float upTo;    // górna granica strefy (w jednostkach wartości)
+  uint16_t col;  // kolor strefy
+};
+
+static void zoneGauge(TFT_eSPI& spr, int x, int y, int w, int h, float v, float vmin,
+                      float vmax, const GaugeZone* z, int nz, float mark, bool hasMark) {
+  const float span = vmax - vmin;
+  auto pos = [&](float val) {  // wartość -> y na słupku (od dołu)
+    return y + h - static_cast<int>(clampf((val - vmin) / span, 0.f, 1.f) * h);
+  };
+
+  // tło: strefy przygaszone, żeby nie krzyczały kolorem
+  float lo = vmin;
+  for (int i = 0; i < nz; ++i) {
+    const int y0 = pos(z[i].upTo), y1 = pos(lo);
+    if (y1 > y0) spr.fillRect(x, y0, w, y1 - y0, lerp565(col::BG, z[i].col, 0.26f));
+    lo = z[i].upTo;
+  }
+
+  // wypełnienie w kolorze strefy, w której właśnie jesteśmy
+  uint16_t fc = z[nz - 1].col;
+  for (int i = 0; i < nz; ++i) {
+    if (v <= z[i].upTo) {
+      fc = z[i].col;
+      break;
+    }
+  }
+  const int fy = pos(v);
+  if (y + h - fy > 0) spr.fillRect(x + 1, fy, w - 2, y + h - fy, fc);
+
+  // znacznik: minimum sterty w historii / granica z noty katalogowej
+  if (hasMark) {
+    const int my = pos(mark);
+    if (my > y && my < y + h) spr.drawFastHLine(x - 2, my, w + 4, col::TEXT);
+  }
+
+  spr.drawRoundRect(x, y, w, h, 2, col::GRID_HI);
 }
 
 // ------------------------------------------------------------------- ALERT ----
@@ -1696,14 +1787,19 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
     uint16_t color;
   } cards[3];
 
-  cards[0] = {"TEMPERATURA", {0}, {0}, cpuTempC_ >= 75.f ? col::ERR : col::OK};
+  cards[0] = {"TEMPERATURA", {0}, {0},
+              cpuTempC_ >= cfg::CPU_T_WARN
+                  ? col::ERR
+                  : (cpuTempC_ >= cfg::CPU_T_OK ? col::WARN : col::OK)};
   snprintf(cards[0].value, sizeof(cards[0].value), "%.0f°C", cpuTempC_);
   // Bez "ń" — podpisy kart rysuje GLCD, który nie zna polskich znaków.
   snprintf(cards[0].sub, sizeof(cards[0].sub), "procesor");
 
   // minimalna sterta jest ważniejsza niż bieżąca — to ona ostrzega przed padem
   cards[1] = {"WOLNY RAM", {0}, {0},
-              minHeap < 25000 ? col::ERR : (minHeap < 45000 ? col::WARN : col::OK)};
+              minHeap < cfg::HEAP_DANGER
+                  ? col::ERR
+                  : (minHeap < cfg::HEAP_WARN ? col::WARN : col::OK)};
   snprintf(cards[1].value, sizeof(cards[1].value), "%lu kB",
            static_cast<unsigned long>(heap / 1024));
   snprintf(cards[1].sub, sizeof(cards[1].sub), "min %lu kB",
@@ -1736,6 +1832,26 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
     gl(spr, cards[i].label, x + 9, cy0 + 4, col::TEXT_MUTE);
     plStr(spr, PLF18, cards[i].value, x + 9, cy0 + 30, cards[i].color);
     gl(spr, cards[i].sub, x + 9, cy0 + 34, col::TEXT_MUTE);
+
+    // wskaźnik po prawej stronie kafelka (temperatura / sterta)
+    const int gx = x + 82, gy = cy0 + 7, gw = 11, gh = 30;
+    if (i == 0) {
+      // Strefy wg noty katalogowej ESP32-S3. Biała kreska = 85 °C, czyli granica
+      // zalecanej pracy — koniec skali to Tj max 125 °C, a nie "czerwono".
+      const GaugeZone z[3] = {
+          {cfg::CPU_T_OK, col::OK}, {cfg::CPU_T_WARN, col::WARN}, {cfg::CPU_T_MAX, col::ERR}};
+      zoneGauge(spr, gx, gy, gw, gh, cpuTempC_, cfg::CPU_T_MIN, cfg::CPU_T_MAX, z, 3,
+                cfg::CPU_T_SPEC, true);
+    } else if (i == 1) {
+      // Tu odwrotnie niż przy temperaturze: mało = źle. Czerwony pas na DOLE to
+      // strefa, w której radar nie zdekoduje PNG, a TLS zaczyna się dławić.
+      // Biała kreska = minimum, jakie sterta osiągnęła od startu (najgorszy moment).
+      const GaugeZone z[3] = {{static_cast<float>(cfg::HEAP_DANGER), col::ERR},
+                              {static_cast<float>(cfg::HEAP_WARN), col::WARN},
+                              {static_cast<float>(cfg::HEAP_FULL), col::OK}};
+      zoneGauge(spr, gx, gy, gw, gh, static_cast<float>(heap), 0.f,
+                static_cast<float>(cfg::HEAP_FULL), z, 3, static_cast<float>(minHeap), true);
+    }
   }
 
   // --- sieć: siła sygnału + adres panelu ---
