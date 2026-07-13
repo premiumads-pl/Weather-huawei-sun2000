@@ -880,7 +880,7 @@ void WeatherUi::drawNoData(TFT_eSPI& spr, int ox, const char* msg, const char* s
   spr.fillRoundRect(ox + 40, CY + 50, W - 80, 60, 8, col::BG_CARD);
   if (sub && sub[0]) {
     plCenter(spr, PLF14, msg, ox + W / 2, CY + 78, col::TEXT_DIM);
-    glCenter(spr, sub, ox + W / 2, CY + 84, col::TEXT_MUTE);
+    plCenter(spr, PLF14, sub, ox + W / 2, CY + 96, col::TEXT_MUTE);
   } else {
     plCenter(spr, PLF14, msg, ox + W / 2, CY + 86, col::TEXT_DIM);
   }
@@ -1816,9 +1816,12 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
   }
 
   // ------------------------------------------------------------- kafelki ------
+  // Karta ma 150 px szerokosci — nie zmiesci sie w niej wiecej niz: nazwa,
+  // wilgotnosc w rogu, wielka temperatura i JEDNO zdanie o roznicy. Wczesniej
+  // upchalem tu tez podpisy i wszystko na siebie nachodzilo.
   const int gap = 8;
   const int cw = (W - 20 - (n - 1) * gap) / n;
-  const int cy = 54, ch = 74;
+  const int cy = 52, ch = 80;
 
   for (int i = 0; i < n; ++i) {
     const Room& r = rooms[i];
@@ -1832,40 +1835,42 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
 
     const bool stale = r.ageS > 900;  // 15 minut ciszy = dane nieaktualne
     spr.fillRoundRect(x, cy, 3, ch, 1, stale ? col::TEXT_MUTE : rc);
-    plStr(spr, PLF14, r.name, x + 10, cy + 17, stale ? col::TEXT_MUTE : col::TEXT);
+    plStr(spr, PLF14, r.name, x + 10, cy + 18, stale ? col::TEXT_MUTE : col::TEXT);
 
-    // temperatura — dopoki nie doszla ramka, kreska zamiast zera
-    char v[12];
-    snprintf(v, sizeof(v), r.hasTemp ? "%.1f" : "--", r.tempC);
-    const int vw = bigStr(spr, &FreeSansBold24pt7b, v, x + 10, cy + 62,
-                          r.hasTemp && !stale ? tempColor(r.tempC) : col::TEXT_MUTE);
-    plStr(spr, PLF14, "°C", x + 14 + vw, cy + 44, col::TEXT_DIM);
-
-    // wilgotnosc po prawej
+    // wilgotnosc — prawy gorny rog, zeby nie wchodzila w duza liczbe
     char hs[10];
     snprintf(hs, sizeof(hs), r.hasHum ? "%.0f%%" : "--", r.hum);
     const uint16_t hc = !r.hasHum ? col::TEXT_MUTE
                         : (r.hum > 65.f || r.hum < 30.f) ? col::WARN : col::PV_HOUSE;
-    plRight(spr, PLF18, hs, x + cw - 10, cy + 62, hc);
-    glRight(spr, "WILGOTNOSC", x + cw - 10, cy + 46, col::TEXT_MUTE);
+    plRight(spr, PLF18, hs, x + cw - 10, cy + 20, hc);
 
-    // Roznica wzgledem dworu — z PODPISEM. Sama liczba "+5.2°" nic nie mowila.
+    // temperatura — kreska, dopoki nie doszla ramka (nie zero!)
+    char v[12];
+    snprintf(v, sizeof(v), r.hasTemp ? "%.1f" : "--", r.tempC);
+    const int vw = bigStr(spr, &FreeSansBold24pt7b, v, x + 10, cy + 58,
+                          r.hasTemp && !stale ? tempColor(r.tempC) : col::TEXT_MUTE);
+    plStr(spr, PLF14, "°C", x + 14 + vw, cy + 40, col::TEXT_DIM);
+
+    // Roznica wzgledem dworu — PELNYM ZDANIEM. Samo "+8.2°" nikomu nic nie mowilo.
     if (stale) {
-      plRight(spr, PLF14, "brak łączności", x + cw - 10, cy + 17, col::TEXT_MUTE);
+      plStr(spr, PLF14, "brak łączności", x + 10, cy + 74, col::TEXT_MUTE);
     } else if (haveOut && r.hasTemp) {
       const float d = r.tempC - w.current.tempC;
-      char ds[24];
-      snprintf(ds, sizeof(ds), "%+.1f° od dworu", d);
-      plRight(spr, PLF14, ds, x + cw - 10, cy + 17,
-              d > 0 ? col::PV_IMPORT : col::PV_HOUSE);
+      char ds[28];
+      snprintf(ds, sizeof(ds), d >= 0 ? "cieplej o %.1f°" : "chłodniej o %.1f°",
+               d >= 0 ? d : -d);
+      plStr(spr, PLF14, ds, x + 10, cy + 74, d > 0 ? col::PV_IMPORT : col::PV_HOUSE);
     }
   }
 
   // ------------------------------------------------- wykres z ostatnich 24 h ---
   // Dwie osie: lewa = temperatura (skala dobrana do danych), prawa = wilgotnosc
   // (stale 20-90%, bo w domu i tak nie wychodzi poza ten zakres).
+  gl(spr, "TEMPERATURA (LINIA GRUBA)   /   WILGOTNOSC (CIENKA)", ox + 32, 138,
+     col::TEXT_MUTE);
+
   const int gx0 = ox + 32, gx1 = ox + W - 34;
-  const int gy0 = 140, gy1 = 188;
+  const int gy0 = 150, gy1 = 190;
   const float hMin = 20.f, hMax = 90.f;
 
   float tMin = 1e9f, tMax = -1e9f;
@@ -1953,11 +1958,9 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
   gl(spr, "90%", gx1 + 4, gy0 - 3, col::TEXT_MUTE);
   gl(spr, "20%", gx1 + 4, gy1 - 5, col::TEXT_MUTE);
 
-  gl(spr, "-24h", gx0 - 2, gy1 + 6, col::TEXT_MUTE);
-  glCenter(spr, "-12h", xAt(RoomHistory::SLOTS - 1 - 72), gy1 + 6, col::TEXT_MUTE);
-  glRight(spr, "teraz", gx1 + 2, gy1 + 6, col::TEXT_MUTE);
-  gl(spr, "linia gruba = temperatura, cienka = wilgotnosc", ox + 78, gy1 + 6,
-     col::TEXT_MUTE);
+  gl(spr, "-24h", gx0 - 2, gy1 + 5, col::TEXT_MUTE);
+  glCenter(spr, "-12h", xAt(RoomHistory::SLOTS - 1 - 72), gy1 + 5, col::TEXT_MUTE);
+  glRight(spr, "teraz", gx1 + 2, gy1 + 5, col::TEXT_MUTE);
 }
 
 void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
