@@ -575,11 +575,13 @@ void WeatherUi::drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& 
   snprintf(b, sizeof(b), "%s", w.sunrise[0] ? w.sunrise : "--:--");
   plStr(spr, PLF14, b, ox + 26, by, col::TEXT_DIM);
 
-  spr.fillCircle(ox + 106, by - 4, 5, col::ACCENT_WARM);
-  spr.fillRect(ox + 100, by - 9, 13, 5, col::BG);
+  // Zachód dosunięty do wschodu — cała wolna przestrzeń zostaje po prawej, dla
+  // opadu i UV. Wcześniej "opad 12h ..." wjeżdżał wprost na godzinę zachodu.
+  spr.fillCircle(ox + 86, by - 4, 5, col::ACCENT_WARM);
+  spr.fillRect(ox + 80, by - 9, 13, 5, col::BG);
   snprintf(b, sizeof(b), "%s", w.sunset[0] ? w.sunset : "--:--");
-  plStr(spr, PLF14, b, ox + 118, by, col::TEXT_DIM);
-  const int sunEnd = ox + 118 + pltxt::stringWidth(PLF14, b);
+  plStr(spr, PLF14, b, ox + 98, by, col::TEXT_DIM);
+  const int sunEnd = ox + 98 + pltxt::stringWidth(PLF14, b);
 
   // UV BIEŻĄCE (nie dobowe maksimum — po zachodzie ma być 0).
   // W ciągu dnia w nawiasie dopisujemy dzisiejszy szczyt.
@@ -774,7 +776,8 @@ void WeatherUi::drawViewDays(TFT_eSPI& spr, int ox, float t, const WeatherModel&
   const float e = easeOutCubic(t);
 
   plStr(spr, PLF14, "PROGNOZA 5 DNI", ox + 10, 46, col::ACCENT);
-  glRight(spr, "MAX / MIN °C", ox + W - 10, 38, col::TEXT_MUTE);
+  // PlFont, nie GLCD — GLCD nie zna znaku stopnia i rysował krzaczek.
+  plRight(spr, PLF14, "MAX / MIN °C", ox + W - 10, 42, col::TEXT_MUTE);
 
   float vmin = 1e9f, vmax = -1e9f, rmax = 0.f;
   int n = 0;

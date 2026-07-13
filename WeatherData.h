@@ -17,7 +17,8 @@ struct WeatherSnapshot {
   float pressureHpa = 0.f;
   float precipMm = 0.f;
   int precipProb = 0;
-  float uvIndex = 0.f;
+  float uvIndex = 0.f;  // po korekcie o zachmurzenie — to pokazujemy
+  float uvRaw = 0.f;    // surowo z Open-Meteo (praktycznie wartość bezchmurna)
   bool isDay = true;
   bool valid = false;
 };

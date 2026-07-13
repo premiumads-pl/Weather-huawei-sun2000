@@ -78,7 +78,21 @@ bool WeatherClient::parsePayload(const char* json, std::size_t len, WeatherModel
   out.current.weatherCode = cur["weather_code"].as<int>();
   out.current.pressureHpa = cur["pressure_msl"].as<float>();
   out.current.precipMm = cur["precipitation"].as<float>();
-  out.current.uvIndex = cur["uv_index"].as<float>();
+  // UV: Open-Meteo deklaruje, że uwzględnia chmury, ale w praktyce tego nie robi.
+  // Zmierzone dla Gdyni 13.07, godz. 12:15 — zachmurzenie 99%:
+  //     uv_index = 6.05, uv_index_clear_sky = 6.25   (różnica 3%!)
+  //     shortwave = 282 W/m2, direct = 31 W/m2       (przy czystym niebie ~800)
+  // Czyli dostajemy w praktyce UV dla bezchmurnego nieba. Pod ciężką pokrywą UV
+  // spada do ok. 20-30% tej wartości, więc korygujemy standardowym współczynnikiem
+  // zachmurzenia (CMF = 1 - 0.75 * CC^3.4; UV przenika chmury lepiej niż światło
+  // widzialne, stąd tylko 0.75, a nie więcej).
+  const float rawUv = cur["uv_index"].as<float>();
+  float cc = static_cast<float>(out.current.cloudCover) / 100.f;
+  if (cc < 0.f) cc = 0.f;
+  if (cc > 1.f) cc = 1.f;
+  const float cmf = 1.f - 0.75f * powf(cc, 3.4f);
+  out.current.uvIndex = rawUv * cmf;
+  out.current.uvRaw = rawUv;  // surowa wartość z API — do diagnostyki
   out.current.isDay = cur["is_day"].as<int>() != 0;
   out.current.valid = true;
 
