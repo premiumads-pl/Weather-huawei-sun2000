@@ -505,6 +505,17 @@ void setup() {
   delay(200);
   LOG("=== Pogoda + PV — firmware v%d ===\n", FW_VERSION);
 
+  // PSRAM: do v49 kompilowalismy z PSRAM=disabled, wiec psramInit() nigdy sie nie
+  // wykonywal i diagnostyka pokazywala "psram: 0". To nie byl dowod braku pamieci,
+  // tylko dowod, ze o nia nie pytalismy. Teraz pytamy.
+  if (psramFound()) {
+    LOG("PSRAM: JEST — %lu kB (wolne %lu kB)",
+        static_cast<unsigned long>(ESP.getPsramSize() / 1024),
+        static_cast<unsigned long>(ESP.getFreePsram() / 1024));
+  } else {
+    LOG("PSRAM: brak (uklad bez PSRAM albo init sie nie powiodl)");
+  }
+
   settings().load();
 
   // Zanim cokolwiek zaalokujemy: sprawdź, czy to świeża wersja po OTA (okres
