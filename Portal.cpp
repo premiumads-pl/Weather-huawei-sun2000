@@ -598,6 +598,15 @@ void apiDiag() {
   f["total"] = d.flightsTotal;
   f["err"] = d.flightErr;
 
+  JsonObject mem = j["mem"].to<JsonObject>();
+  mem["sram_free"] = ESP.getFreeHeap();
+  mem["sram_min"] = d.minHeap == 0xFFFFFFFF ? 0 : d.minHeap;
+  mem["sram_block"] = ESP.getMaxAllocHeap();
+  mem["psram_size"] = ESP.getPsramSize();
+  mem["psram_free"] = ESP.getFreePsram();
+  mem["stack_net_spare"] = d.stackNet;
+  mem["stack_web_spare"] = d.stackWeb;
+
   JsonObject o = j["ota"].to<JsonObject>();
   o["remote"] = d.otaRemote;
   o["msg"] = d.otaMsg;

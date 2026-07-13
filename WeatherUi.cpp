@@ -2057,14 +2057,20 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
   snprintf(cards[0].sub, sizeof(cards[0].sub), "procesor");
 
   // minimalna sterta jest ważniejsza niż bieżąca — to ona ostrzega przed padem
-  cards[1] = {"WOLNY RAM", {0}, {0},
+  cards[1] = {"WOLNY SRAM", {0}, {0},
               minHeap < cfg::HEAP_DANGER
                   ? col::ERR
                   : (minHeap < cfg::HEAP_WARN ? col::WARN : col::OK)};
   snprintf(cards[1].value, sizeof(cards[1].value), "%lu kB",
            static_cast<unsigned long>(heap / 1024));
-  snprintf(cards[1].sub, sizeof(cards[1].sub), "min %lu kB",
-           static_cast<unsigned long>(minHeap / 1024));
+  // Pod spodem PSRAM — od v50 to on dzwiga bufor ekranu i dekoder radaru.
+  if (ESP.getPsramSize() > 0) {
+    snprintf(cards[1].sub, sizeof(cards[1].sub), "PSRAM %lu kB",
+             static_cast<unsigned long>(ESP.getFreePsram() / 1024));
+  } else {
+    snprintf(cards[1].sub, sizeof(cards[1].sub), "min %lu kB",
+             static_cast<unsigned long>(minHeap / 1024));
+  }
 
   // Powód ostatniego resetu wprost na ekranie — dotąd nie było wiadomo, czy
   // urządzenie się wywala, czy po prostu ktoś wyjął wtyczkę.

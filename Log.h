@@ -34,6 +34,8 @@ struct Diag {
   uint32_t otaOkAt = 0;
   uint32_t wifiConnects = 0;
   uint32_t minHeap = 0xFFFFFFFF;
+  uint32_t stackNet = 0;   // zapas stosu netTask (B)
+  uint32_t stackWeb = 0;   // zapas stosu webTask (B)
   uint32_t radarSkips = 0;   // ile razy radar odpuścił z braku pamięci
 
   // --- OTA: okres próbny i rollback (patrz OtaGuard.h) ---

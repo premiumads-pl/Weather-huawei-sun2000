@@ -33,6 +33,7 @@
 #include "BleSensors.h"
 #include "OtaGuard.h"
 #include "RoomHistory.h"
+#include "Touch.h"
 #include "Portal.h"
 #include "PvClient.h"
 #include "PvData.h"
@@ -66,6 +67,12 @@ volatile bool gFlightsNeeded = false;
 // Brakuje 2,6 kB — wiec na czas dekodowania PNG oddajemy bufor. Ekran zamiera na
 // chwile raz na 5 minut; to lepsze niz radar, ktory nie dziala nigdy.
 // Bufor musi zwolnic rdzen 1 (to on rysuje), stad ta wymiana sygnalow.
+// Uchwyty zadan — potrzebne, zeby zmierzyc, ile stosu naprawde zuzywaja.
+// Oba maja po 16 kB w SRAM (stosow FreeRTOS nie da sie trzymac w PSRAM), wiec
+// jesli realnie biora 6-8 kB, mamy do odzyskania kilkanascie kB.
+TaskHandle_t gNetTask = nullptr;
+TaskHandle_t gWebTask = nullptr;
+
 volatile bool gRadarWantMem = false;
 volatile bool gRadarMemReady = false;
 volatile int gWifiAttempt = 0;
@@ -338,6 +345,14 @@ static void netTask(void*) {
       nextBleAt = millis() + 20000;
     }
 
+    // ---- ile stosu naprawde zuzywaja zadania (do przyciecia 2 x 16 kB) ----
+    if (gNetTask != nullptr) {
+      diag().stackNet = uxTaskGetStackHighWaterMark(gNetTask) * sizeof(StackType_t);
+    }
+    if (gWebTask != nullptr) {
+      diag().stackWeb = uxTaskGetStackHighWaterMark(gWebTask) * sizeof(StackType_t);
+    }
+
     // ---- zapis profilu produkcji do NVS ----
     if (static_cast<int32_t>(now - nextStoreAt) >= 0) {
       xSemaphoreTake(gLock, portMAX_DELAY);
@@ -576,12 +591,13 @@ void setup() {
   // OtaGuard i tak cofnie tę wersję: to jest właśnie ten scenariusz, przed którym
   // ma bronić.
   ble::begin();
+  touch::begin();
 
   // Zrzut ekranu rysuje teraz calą klatkę (a nie tylko czyta bufor), więc stos zadania
   // web musi pomieścić cały łańcuch rysujący. 4 kB zapasu ze sterty, której i tak
   // przybyło 66 kB.
-  xTaskCreatePinnedToCore(webTask, "web", 16384, nullptr, 2, nullptr, 0);
-  xTaskCreatePinnedToCore(netTask, "net", 16384, nullptr, 3, nullptr, 0);
+  xTaskCreatePinnedToCore(webTask, "web", 16384, nullptr, 2, &gWebTask, 0);
+  xTaskCreatePinnedToCore(netTask, "net", 16384, nullptr, 3, &gNetTask, 0);
 }
 
 // ------------------------------------------------------------------- loop ----
@@ -606,6 +622,14 @@ void loop() {
   gRadarMemReady = false;  // render() sam odtworzy bufor przy najbliższej klatce
 
   const uint32_t now = millis();
+
+  // --- dotyk GPIO7: odliczanie bieżącego ekranu od początku ---
+  if (touch::pressed()) {
+    ui.restartHold();
+    LOG("Dotyk: odliczanie ekranu od nowa (odczyt %lu, baza %lu)",
+        static_cast<unsigned long>(touch::raw()),
+        static_cast<unsigned long>(touch::baseline()));
+  }
 
   // --- test diody RGB przy starcie (3 x 1,5 s) ---
   if (const char* colorName = ledTestStep()) {

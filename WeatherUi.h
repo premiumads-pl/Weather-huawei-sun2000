@@ -65,6 +65,10 @@ class WeatherUi {
   // Podglad w przegladarce: przypiecie ekranu (idx < 0 = rotacja automatyczna).
   void pinView(int idx);
 
+  // Dotyk GPIO7: odliczanie bieżącego ekranu startuje od nowa. Nie zatrzymuje
+  // rotacji na stałe — po prostu przedłuża to, na co patrzysz.
+  void restartHold() { viewStart_ = millis(); }
+
   // Historia 24 h z czujnikow BLE. Wskaznik, a nie kopia — struktura ma 1,7 kB,
   // a przewlekanie jej przez render/paintFrame/drawView tylko po to, zeby doszla
   // do jednego widoku, zasmiecaloby cztery sygnatury.
@@ -96,8 +100,11 @@ class WeatherUi {
   // który TFT_eSPI honoruje we wszystkich prymitywach (drawPixel, fillRect,
   // drawFastH/VLine, drawLine, drawChar, readPixel — wszystkie są wirtualne).
   static constexpr int VIEW_H = 206;   // wirtualna wysokość obszaru rysowania (y=0..205)
-  static constexpr int BAND_H = 103;   // fizyczna wysokość sprite'a = jeden pas
-  static constexpr int BAND_N = VIEW_H / BAND_H;  // 2 pasy
+  // Dwa pasy istniały tylko po to, żeby bufor miał 66 kB zamiast 132 kB — a to
+  // było potrzebne tylko dlatego, że nie wiedzieliśmy o 2 MB PSRAM (v50).
+  // Teraz bufor mieszka w PSRAM, więc rysujemy JEDEN raz zamiast dwa: pół roboty.
+  static constexpr int BAND_H = VIEW_H;
+  static constexpr int BAND_N = 1;
 
   // Zrzut ekranu rysujemy w wąskich paskach do własnego sprite'a (240 = 10 x 24),
   // żeby nie ruszać bufora wyświetlacza i nie zamrażać obrazu.
