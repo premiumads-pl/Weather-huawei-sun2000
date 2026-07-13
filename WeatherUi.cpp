@@ -2065,8 +2065,9 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
            static_cast<unsigned long>(heap / 1024));
   // Pod spodem PSRAM — od v50 to on dzwiga bufor ekranu i dekoder radaru.
   if (ESP.getPsramSize() > 0) {
-    snprintf(cards[1].sub, sizeof(cards[1].sub), "PSRAM %lu kB",
-             static_cast<unsigned long>(ESP.getFreePsram() / 1024));
+    // "PSRAM 1893 kB" wchodzilo pod wskaznik — skracamy do megabajtow.
+    snprintf(cards[1].sub, sizeof(cards[1].sub), "PSRAM %.1f MB",
+             ESP.getFreePsram() / 1048576.f);
   } else {
     snprintf(cards[1].sub, sizeof(cards[1].sub), "min %lu kB",
              static_cast<unsigned long>(minHeap / 1024));
