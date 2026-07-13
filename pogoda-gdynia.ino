@@ -57,6 +57,14 @@ FlightModel gFlights{};
 volatile bool gWifiOk = false;
 volatile bool gBooting = true;
 volatile bool gFlightsNeeded = false;
+
+// Radar potrzebuje 47 kB w JEDNYM kawalku. Sterty jest 113 kB, ale bufor ekranu
+// (66 kB) siedzi w srodku i dzieli ja tak, ze najwiekszy spojny blok ma 43 kB.
+// Brakuje 2,6 kB — wiec na czas dekodowania PNG oddajemy bufor. Ekran zamiera na
+// chwile raz na 5 minut; to lepsze niz radar, ktory nie dziala nigdy.
+// Bufor musi zwolnic rdzen 1 (to on rysuje), stad ta wymiana sygnalow.
+volatile bool gRadarWantMem = false;
+volatile bool gRadarMemReady = false;
 volatile int gWifiAttempt = 0;
 char gBootMsg[48] = "Łączenie z WiFi...";
 
@@ -257,8 +265,22 @@ static void netTask(void*) {
 
     // ---- radar opadowy (realny pomiar; model bywa ślepy na lokalne ulewy) ----
     if (static_cast<int32_t>(millis() - nextRadarAt) >= 0) {
+      // Za ciasno na dekoder PNG? Poproś rdzeń 1 o oddanie bufora ekranu.
+      const bool needMem = ESP.getMaxAllocHeap() < 48000;
+      if (needMem) {
+        gRadarWantMem = true;
+        const uint32_t t0 = millis();
+        while (!gRadarMemReady && millis() - t0 < 3000) vTaskDelay(pdMS_TO_TICKS(20));
+      }
+
       RadarSnapshot rs{};
-      if (radarClient.fetch(rs)) {
+      const bool radarOk = radarClient.fetch(rs);
+
+      if (needMem) {
+        gRadarWantMem = false;  // rdzeń 1 odtworzy bufor przy najbliższej klatce
+      }
+
+      if (radarOk) {
         xSemaphoreTake(gLock, portMAX_DELAY);
         gWeather.radarLevel = rs.level;
         gWeather.radarAgeSec = rs.ageSec;
@@ -524,6 +546,19 @@ void loop() {
     delay(1000);
     return;
   }
+
+  // --- radar prosi o pamięć: oddajemy bufor i nie rysujemy, dopóki nie skończy ---
+  // releaseBuffer(false) = bez czyszczenia ekranu, więc panel zostaje z ostatnią
+  // klatką zamiast mrugnąć na czarno.
+  if (gRadarWantMem) {
+    if (!gRadarMemReady) {
+      ui.releaseBuffer(false);
+      gRadarMemReady = true;
+    }
+    delay(30);
+    return;
+  }
+  gRadarMemReady = false;  // render() sam odtworzy bufor przy najbliższej klatce
 
   const uint32_t now = millis();
 
