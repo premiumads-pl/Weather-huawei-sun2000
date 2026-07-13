@@ -607,6 +607,12 @@ void apiDiag() {
   mem["stack_net_spare"] = d.stackNet;
   mem["stack_web_spare"] = d.stackWeb;
 
+  JsonObject wf = j["wifi"].to<JsonObject>();
+  wf["rssi"] = WiFi.RSSI();
+  wf["bssid"] = WiFi.BSSIDstr();
+  wf["channel"] = WiFi.channel();
+  wf["roams"] = d.wifiRoams;
+
   JsonObject o = j["ota"].to<JsonObject>();
   o["remote"] = d.otaRemote;
   o["msg"] = d.otaMsg;

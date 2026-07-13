@@ -109,6 +109,15 @@ static bool connectWifi() {
   }
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
+
+  // Domyslnie ESP32 laczy sie z PIERWSZYM punktem, ktory odpowie na dana nazwe
+  // (WIFI_FAST_SCAN) — a nie z najmocniejszym. Przy dwoch punktach o tej samej
+  // nazwie potrafilo to zlapac ten dalszy: w logach mielismy raz -49 dBm, raz
+  // -78 dBm w tym samym miejscu. Kazemy przeskanowac WSZYSTKIE kanaly i wybrac
+  // najsilniejszy sygnal. Kosztuje to ~1 s dluzszego laczenia przy starcie.
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+
   WiFi.begin(settings().ssid, settings().pass);
   ++gWifiAttempt;
   setBootMsg("Łączenie z WiFi...");
@@ -154,6 +163,7 @@ static void netTask(void*) {
   uint32_t nextRadarAt = 0;
   uint32_t nextBleAt = 20000;  // po WiFi i pierwszej pogodzie
   uint32_t nextRoomSaveAt = 0;
+  uint32_t nextRoamAt = 120000;   // pierwszy przeglad po 2 min od startu
   bool firstWeather = false;
 
   for (;;) {
@@ -343,6 +353,42 @@ static void netTask(void*) {
       xSemaphoreGive(gLock);
 
       nextBleAt = millis() + 20000;
+    }
+
+    // ---- roaming: czy nie wisimy na slabszym punkcie dostepowym? ----
+    // ESP32 sam NIE przechodzi miedzy punktami — raz zlapany trzyma do konca.
+    // Gdy sygnal jest kiepski, skanujemy i przenosimy sie na wyraznie lepszy.
+    // Warunek "wyraznie" (>= 8 dB) chroni przed skakaniem tam i z powrotem.
+    if (gWifiOk && static_cast<int32_t>(now - nextRoamAt) >= 0) {
+      nextRoamAt = millis() + 180000;
+      const int cur = WiFi.RSSI();
+      if (cur < -68) {
+        const int found = WiFi.scanNetworks(false, false, false, 250);
+        int best = -1, bestRssi = cur + 8;
+        for (int i = 0; i < found; ++i) {
+          if (WiFi.SSID(i) != settings().ssid) continue;
+          if (WiFi.RSSI(i) > bestRssi) {
+            bestRssi = WiFi.RSSI(i);
+            best = i;
+          }
+        }
+        if (best >= 0) {
+          LOG("WiFi: przenosze sie na mocniejszy punkt (%d -> %d dBm)", cur, bestRssi);
+          uint8_t bssid[6];
+          memcpy(bssid, WiFi.BSSID(best), 6);
+          const int32_t ch = WiFi.channel(best);
+          WiFi.scanDelete();
+          WiFi.disconnect();
+          WiFi.begin(settings().ssid, settings().pass, ch, bssid);
+          for (int i = 0; i < 60 && WiFi.status() != WL_CONNECTED; ++i) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+          }
+          diag().wifiRoams++;
+          LOG("WiFi: po przenosinach %d dBm", WiFi.RSSI());
+        } else {
+          WiFi.scanDelete();
+        }
+      }
     }
 
     // ---- ile stosu naprawde zuzywaja zadania (do przyciecia 2 x 16 kB) ----
