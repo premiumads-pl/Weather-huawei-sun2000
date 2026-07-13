@@ -30,6 +30,7 @@
 #include "Log.h"
 #include "MqttClient.h"
 #include "Ota.h"
+#include "BleSensors.h"
 #include "OtaGuard.h"
 #include "Portal.h"
 #include "PvClient.h"
@@ -133,6 +134,7 @@ static void netTask(void*) {
   uint32_t nextOtaAt = 45000;   // pierwsze sprawdzenie po 45 s od startu
   uint32_t nextStoreAt = 0;
   uint32_t nextRadarAt = 0;
+  uint32_t nextBleAt = 20000;  // po WiFi i pierwszej pogodzie
   bool firstWeather = false;
 
   for (;;) {
@@ -272,6 +274,15 @@ static void netTask(void*) {
         LOG("Radar BLAD: %s\n", rs.errorMsg);
         nextRadarAt = millis() + 60000;
       }
+    }
+
+    // ---- nasłuch czujników BLE (Xiaomi) ----
+    // Skanujemy z przerwami, a nie ciągle: radio 2,4 GHz jest jedno i dzieli je
+    // WiFi. Czujnik nadaje co kilka-kilkanaście sekund, więc 6 s nasłuchu co
+    // 45 s spokojnie wystarczy, a WiFi (panel, OTA, MQTT) tego nie odczuwa.
+    if (ble::ready() && static_cast<int32_t>(now - nextBleAt) >= 0) {
+      ble::scan(6);
+      nextBleAt = millis() + 45000;
     }
 
     // ---- zapis profilu produkcji do NVS ----
@@ -487,6 +498,12 @@ void setup() {
 
   portal::setViewHandler([](int i) { ui.pinView(i); },
                          [](int& cur, int& pin) { ui.viewState(cur, pin); });
+
+  // BLE dopiero TERAZ — bufor ekranu (66 kB) jest już zaalokowany, więc stos
+  // Bluetooth bierze z tego, co zostało, a nie odwrotnie. Gdyby zabrakło sterty,
+  // OtaGuard i tak cofnie tę wersję: to jest właśnie ten scenariusz, przed którym
+  // ma bronić.
+  ble::begin();
 
   // Zrzut ekranu rysuje teraz calą klatkę (a nie tylko czyta bufor), więc stos zadania
   // web musi pomieścić cały łańcuch rysujący. 4 kB zapasu ze sterty, której i tak
