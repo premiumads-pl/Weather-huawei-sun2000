@@ -663,8 +663,11 @@ void apiBleList() {
 
     const Settings::BleCfg* cfg = settings().bleFind(s.mac);
     JsonObject o = arr.add<JsonObject>();
-    o["mac"] = s.mac;
-    o["name"] = cfg ? cfg->name : "";
+    // UWAGA: String(), nie s.mac. ArduinoJson dla `const char*` zapamietuje sam
+    // WSKAZNIK, a `s` to kopia na stosie, ktora ginie po tej iteracji — wszystkie
+    // wpisy pokazywaly wtedy ten sam, martwy adres (dwa czujniki, jeden MAC).
+    o["mac"] = String(s.mac);
+    o["name"] = String(cfg ? cfg->name : "");
     o["hasKey"] = cfg ? cfg->hasKey : false;
     o["valid"] = s.valid;
     o["needsKey"] = s.needsKey;
