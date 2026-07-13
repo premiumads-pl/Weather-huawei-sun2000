@@ -1,4 +1,5 @@
 #include "WeatherUi.h"
+#include "RoomHistory.h"
 
 #include <Arduino.h>
 #include <cmath>
@@ -1187,16 +1188,16 @@ void WeatherUi::drawView(TFT_eSPI& spr, uint8_t view, int ox, float t, const Wea
       else drawNoData(spr, ox, "Pobieram prognozę...");
       break;
     case 3:
-      drawViewPv(spr, ox, t, pv, hist);
+      drawViewHome(spr, ox, t, w);
       break;
     case 4:
-      drawViewFlights(spr, ox, t, fl);
+      drawViewPv(spr, ox, t, pv, hist);
       break;
     case 5:
-      drawViewStats(spr, ox, t, nowMs, heapNow);
+      drawViewFlights(spr, ox, t, fl);
       break;
     case 6:
-      drawViewHome(spr, ox, t, w);
+      drawViewStats(spr, ox, t, nowMs, heapNow);
       break;
     default:
       break;
@@ -1284,7 +1285,7 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
       // Ekran "W DOMU" bez czujników byłby pustym kafelkiem co minutę — pomijamy go
       // w rotacji, dopóki nikt nie skonfiguruje choć jednego.
       if (view_ == cfg::VIEW_HOME && ble::count() == 0) {
-        view_ = 0;
+        view_ = static_cast<uint8_t>(cfg::VIEW_PV);  // przeskakujemy dalej, nie na poczatek
       }
       transitioning_ = true;
       transStart_ = nowMs;
@@ -1766,40 +1767,46 @@ void WeatherUi::drawLedTest(const char* colorName) {
 
 void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel& w) {
   const float e = easeOutCubic(t);
+  static const RoomHistory kEmpty{};
+  const RoomHistory& rh = rooms_ ? *rooms_ : kEmpty;
+  const bool haveOut = w.current.valid;
 
   char hdr[28] = {};
-  if (w.current.valid) {
+  if (haveOut) {
     snprintf(hdr, sizeof(hdr), "na zewnątrz %d°C · %d%%",
              static_cast<int>(lroundf(w.current.tempC)), w.current.humidity);
   }
   viewHeader(spr, ox, "W DOMU", hdr);
 
-  // Zbieramy tylko czujniki z odczytem — nieskonfigurowany obcy nadajnik
-  // (a takich w bloku sporo) nie ma czego tu szukac.
+  // Kolor pokoju = jego kolor na wykresie. Bez tego wykres z dwiema liniami
+  // wymagalby legendy, na ktora nie ma tu miejsca.
+  const uint16_t roomCol[4] = {col::ACCENT, col::PV_SOLAR, col::PV_EXPORT, col::PV_IMPORT};
+
   struct Room {
     const char* name;
     float tempC;
     float hum;
     bool hasTemp;
     bool hasHum;
-    int batt;
+    int slot;  // indeks w Settings — po nim idzie historia i kolor
     uint32_t ageS;
-  } rooms[ble::MAX_SENSORS];
+  } rooms[4];
   int n = 0;
 
-  for (int i = 0; i < ble::count() && n < ble::MAX_SENSORS; ++i) {
+  for (int i = 0; i < ble::count() && n < 4; ++i) {
     const ble::Sensor s = ble::get(i);
     if (!s.valid) continue;
     const Settings::BleCfg* cfg = settings().bleFind(s.mac);
     if (cfg == nullptr) continue;
 
-    rooms[n].name = cfg->name[0] ? cfg->name : s.mac;
-    rooms[n].tempC = s.tempC;
-    rooms[n].hum = s.humidity;
-    rooms[n].hasTemp = s.hasTemp;
-    rooms[n].hasHum = s.hasHum;
-    rooms[n].batt = s.batteryPct;
-    rooms[n].ageS = s.seenAt ? (millis() - s.seenAt) / 1000 : 9999;
+    int slot = -1;
+    for (int k = 0; k < 4; ++k) {
+      if (&settings().ble[k] == cfg) slot = k;
+    }
+    if (slot < 0) continue;
+
+    rooms[n] = {cfg->name[0] ? cfg->name : s.mac, s.tempC, s.humidity, s.hasTemp,
+                s.hasHum, slot, s.seenAt ? (millis() - s.seenAt) / 1000 : 9999};
     ++n;
   }
 
@@ -1808,66 +1815,149 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     return;
   }
 
+  // ------------------------------------------------------------- kafelki ------
   const int gap = 8;
   const int cw = (W - 20 - (n - 1) * gap) / n;
-  const int cy = 58, ch = 120;
+  const int cy = 54, ch = 74;
 
   for (int i = 0; i < n; ++i) {
     const Room& r = rooms[i];
     const int x = ox + 10 + i * (cw + gap);
+    const uint16_t rc = roomCol[r.slot];
 
     const int grow = static_cast<int>(ch * clampf(e * 1.6f - i * 0.18f, 0.f, 1.f));
     if (grow < 6) continue;
     spr.fillRoundRect(x, cy + (ch - grow), cw, grow, 8, col::BG_CARD);
     if (grow < ch - 2) continue;
 
-    // Czujnik milczy dluzej niz 15 minut = dane sa nieaktualne. Zamiast udawac,
-    // ze wszystko gra, przygaszamy kafelek.
-    const bool stale = r.ageS > 900;
-    const uint16_t tc = stale ? col::TEXT_MUTE : tempColor(r.tempC);
+    const bool stale = r.ageS > 900;  // 15 minut ciszy = dane nieaktualne
+    spr.fillRoundRect(x, cy, 3, ch, 1, stale ? col::TEXT_MUTE : rc);
+    plStr(spr, PLF14, r.name, x + 10, cy + 17, stale ? col::TEXT_MUTE : col::TEXT);
 
-    spr.fillRoundRect(x, cy, 3, ch, 1, stale ? col::TEXT_MUTE : col::ACCENT);
-    plStr(spr, PLF14, r.name, x + 10, cy + 18, stale ? col::TEXT_MUTE : col::TEXT);
-
-    // Dopoki nie doszla ramka z temperatura, piszemy kreske — nie zero.
+    // temperatura — dopoki nie doszla ramka, kreska zamiast zera
     char v[12];
     snprintf(v, sizeof(v), r.hasTemp ? "%.1f" : "--", r.tempC);
     const int vw = bigStr(spr, &FreeSansBold24pt7b, v, x + 10, cy + 62,
-                          r.hasTemp ? tc : col::TEXT_MUTE);
+                          r.hasTemp && !stale ? tempColor(r.tempC) : col::TEXT_MUTE);
     plStr(spr, PLF14, "°C", x + 14 + vw, cy + 44, col::TEXT_DIM);
 
-    // wilgotnosc: pasek + liczba (sam procent niewiele mowi)
+    // wilgotnosc po prawej
     char hs[10];
-    if (r.hasHum) {
-      snprintf(hs, sizeof(hs), "%.0f%%", r.hum);
-    } else {
-      snprintf(hs, sizeof(hs), "--");
-    }
-    plStr(spr, PLF18, hs, x + 10, cy + 92, r.hasHum ? col::PV_HOUSE : col::TEXT_MUTE);
-    gl(spr, "WILGOTNOSC", x + 10, cy + 98, col::TEXT_MUTE);
+    snprintf(hs, sizeof(hs), r.hasHum ? "%.0f%%" : "--", r.hum);
+    const uint16_t hc = !r.hasHum ? col::TEXT_MUTE
+                        : (r.hum > 65.f || r.hum < 30.f) ? col::WARN : col::PV_HOUSE;
+    plRight(spr, PLF18, hs, x + cw - 10, cy + 62, hc);
+    glRight(spr, "WILGOTNOSC", x + cw - 10, cy + 46, col::TEXT_MUTE);
 
-    const int bw = cw - 20;
-    const int hw = r.hasHum ? static_cast<int>(bw * clampf(r.hum / 100.f, 0.f, 1.f) * e) : 0;
-    spr.fillRoundRect(x + 10, cy + 108, bw, 4, 2, col::PV_TRACK);
-    if (hw > 0) {
-      spr.fillRoundRect(x + 10, cy + 108, hw, 4, 2,
-                        (r.hum > 65.f || r.hum < 30.f) ? col::WARN : col::PV_HOUSE);
-    }
-
-    // roznica wzgledem zewnatrz — po to jest ten ekran
-    if (w.current.valid && !stale && r.hasTemp) {
-      const float d = r.tempC - w.current.tempC;
-      char ds[16];
-      snprintf(ds, sizeof(ds), "%+.1f°", d);
-      // PlFont, nie GLCD — znak stopnia. Trzeci raz ta sama pulapka w tym projekcie.
-      plRight(spr, PLF14, ds, x + cw - 10, cy + 18, d > 0 ? col::PV_IMPORT : col::PV_HOUSE);
-    }
+    // Roznica wzgledem dworu — z PODPISEM. Sama liczba "+5.2°" nic nie mowila.
     if (stale) {
-      plRight(spr, PLF14, "brak łączności", x + cw - 10, cy + 18, col::TEXT_MUTE);
-    } else if (r.batt > 0 && r.batt < 20) {
-      plRight(spr, PLF14, "bateria!", x + cw - 10, cy + 18, col::ERR);
+      plRight(spr, PLF14, "brak łączności", x + cw - 10, cy + 17, col::TEXT_MUTE);
+    } else if (haveOut && r.hasTemp) {
+      const float d = r.tempC - w.current.tempC;
+      char ds[24];
+      snprintf(ds, sizeof(ds), "%+.1f° od dworu", d);
+      plRight(spr, PLF14, ds, x + cw - 10, cy + 17,
+              d > 0 ? col::PV_IMPORT : col::PV_HOUSE);
     }
   }
+
+  // ------------------------------------------------- wykres z ostatnich 24 h ---
+  // Dwie osie: lewa = temperatura (skala dobrana do danych), prawa = wilgotnosc
+  // (stale 20-90%, bo w domu i tak nie wychodzi poza ten zakres).
+  const int gx0 = ox + 32, gx1 = ox + W - 34;
+  const int gy0 = 140, gy1 = 188;
+  const float hMin = 20.f, hMax = 90.f;
+
+  float tMin = 1e9f, tMax = -1e9f;
+  bool any = false;
+  for (int i = 0; i < n; ++i) {
+    for (int k = 0; k < RoomHistory::SLOTS; ++k) {
+      const int16_t v = rh.t10[rooms[i].slot][rh.idx(k)];
+      if (v == RoomHistory::NO_T) continue;
+      const float f = v / 10.f;
+      if (f < tMin) tMin = f;
+      if (f > tMax) tMax = f;
+      any = true;
+    }
+  }
+
+  spr.fillRoundRect(gx0 - 2, gy0 - 4, gx1 - gx0 + 4, gy1 - gy0 + 8, 3, col::CHART_SPARK_BG);
+
+  if (!any) {
+    glCenter(spr, "ZBIERAM HISTORIE...", (gx0 + gx1) / 2, gy0 + 20, col::TEXT_MUTE);
+    return;
+  }
+  if (tMax - tMin < 2.f) {  // plaska historia — nie rozciagamy szumu na caly wykres
+    const float mid = (tMin + tMax) / 2.f;
+    tMin = mid - 1.f;
+    tMax = mid + 1.f;
+  }
+
+  auto yT = [&](float v) {
+    return gy1 - static_cast<int>(clampf((v - tMin) / (tMax - tMin), 0.f, 1.f) *
+                                  (gy1 - gy0));
+  };
+  auto yH = [&](float v) {
+    return gy1 - static_cast<int>(clampf((v - hMin) / (hMax - hMin), 0.f, 1.f) *
+                                  (gy1 - gy0));
+  };
+  auto xAt = [&](int k) {
+    return gx0 + (k * (gx1 - gx0)) / (RoomHistory::SLOTS - 1);
+  };
+
+  // siatka co 6 h
+  for (int hh = 6; hh <= 18; hh += 6) {
+    const int x = xAt(RoomHistory::SLOTS - 1 - hh * 6);
+    spr.drawFastVLine(x, gy0, gy1 - gy0, col::GRID);
+  }
+
+  // --- linie ---
+  for (int i = 0; i < n; ++i) {
+    const int r = rooms[i].slot;
+    const uint16_t rc = roomCol[r];
+    const uint16_t hc = lerp565(col::BG, rc, 0.45f);  // wilgotnosc — ta sama barwa, przygaszona
+
+    int px = -1, pyT = 0, pyH = 0;
+    for (int k = 0; k < RoomHistory::SLOTS; ++k) {
+      const int id = rh.idx(k);
+      const int16_t tv = rh.t10[r][id];
+      const uint8_t hv = rh.hum[r][id];
+      if (tv == RoomHistory::NO_T && hv == RoomHistory::NO_H) {
+        px = -1;  // dziura w danych (urzadzenie nie dzialalo) — nie laczymy przez nia
+        continue;
+      }
+      const int x = xAt(k);
+      const int cyT = tv != RoomHistory::NO_T ? yT(tv / 10.f) : -1;
+      const int cyH = hv != RoomHistory::NO_H ? yH(hv) : -1;
+
+      if (px >= 0) {
+        if (cyH >= 0 && pyH > 0) spr.drawLine(px, pyH, x, cyH, hc);
+        if (cyT >= 0 && pyT > 0) {
+          spr.drawLine(px, pyT, x, cyT, rc);
+          spr.drawLine(px, pyT + 1, x, cyT + 1, rc);  // 2 px — temperatura jest wazniejsza
+        }
+      }
+      px = x;
+      if (cyT >= 0) pyT = cyT;
+      if (cyH >= 0) pyH = cyH;
+    }
+  }
+
+  // --- osie ---
+  char ax[10];
+  snprintf(ax, sizeof(ax), "%.0f°", tMax);
+  glRight(spr, ax, gx0 - 5, gy0 - 3, col::TEXT_MUTE);
+  snprintf(ax, sizeof(ax), "%.0f°", tMin);
+  glRight(spr, ax, gx0 - 5, gy1 - 5, col::TEXT_MUTE);
+
+  gl(spr, "90%", gx1 + 4, gy0 - 3, col::TEXT_MUTE);
+  gl(spr, "20%", gx1 + 4, gy1 - 5, col::TEXT_MUTE);
+
+  gl(spr, "-24h", gx0 - 2, gy1 + 6, col::TEXT_MUTE);
+  glCenter(spr, "-12h", xAt(RoomHistory::SLOTS - 1 - 72), gy1 + 6, col::TEXT_MUTE);
+  glRight(spr, "teraz", gx1 + 2, gy1 + 6, col::TEXT_MUTE);
+  gl(spr, "linia gruba = temperatura, cienka = wilgotnosc", ox + 78, gy1 + 6,
+     col::TEXT_MUTE);
 }
 
 void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,

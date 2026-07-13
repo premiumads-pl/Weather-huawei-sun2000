@@ -64,6 +64,11 @@ class WeatherUi {
 
   // Podglad w przegladarce: przypiecie ekranu (idx < 0 = rotacja automatyczna).
   void pinView(int idx);
+
+  // Historia 24 h z czujnikow BLE. Wskaznik, a nie kopia — struktura ma 1,7 kB,
+  // a przewlekanie jej przez render/paintFrame/drawView tylko po to, zeby doszla
+  // do jednego widoku, zasmiecaloby cztery sygnatury.
+  void setRoomHistory(const struct RoomHistory* rh) { rooms_ = rh; }
   void viewState(int& cur, int& pin) const {
     cur = view_;
     pin = pinned_;
@@ -130,6 +135,7 @@ class WeatherUi {
 
   // rotacja widoków
   uint8_t view_ = 0;
+  const struct RoomHistory* rooms_ = nullptr;
   int8_t pinned_ = -1;  // >=0: ekran zablokowany z panelu WWW
   uint8_t prevView_ = 0;
   uint32_t viewStart_ = 0;

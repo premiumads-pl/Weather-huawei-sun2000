@@ -32,6 +32,7 @@
 #include "Ota.h"
 #include "BleSensors.h"
 #include "OtaGuard.h"
+#include "RoomHistory.h"
 #include "Portal.h"
 #include "PvClient.h"
 #include "PvData.h"
@@ -53,6 +54,8 @@ SemaphoreHandle_t gLock = nullptr;
 WeatherModel gWeather{};
 PvModel gPv{};
 PvHistory gHist{};
+RoomHistory gRooms{};
+RoomHistory uiRooms{};
 FlightModel gFlights{};
 volatile bool gWifiOk = false;
 volatile bool gBooting = true;
@@ -143,6 +146,7 @@ static void netTask(void*) {
   uint32_t nextStoreAt = 0;
   uint32_t nextRadarAt = 0;
   uint32_t nextBleAt = 20000;  // po WiFi i pierwszej pogodzie
+  uint32_t nextRoomSaveAt = 0;
   bool firstWeather = false;
 
   for (;;) {
@@ -305,6 +309,32 @@ static void netTask(void*) {
     if (ble::ready() && static_cast<int32_t>(now - nextBleAt) >= 0) {
       ble::scan(6);
       mqttha::publishBle();
+
+      // Historia 24 h: przewijamy okno i dopisujemy biezace odczyty.
+      const time_t tt = time(nullptr);
+      xSemaphoreTake(gLock, portMAX_DELAY);
+      if (gRooms.advance(static_cast<uint32_t>(tt))) {
+        for (int i = 0; i < ble::count(); ++i) {
+          const ble::Sensor bs = ble::get(i);
+          if (!bs.valid) continue;
+          const Settings::BleCfg* bc = settings().bleFind(bs.mac);
+          if (bc == nullptr) continue;
+          for (int k = 0; k < 4; ++k) {
+            if (&settings().ble[k] == bc) {
+              gRooms.push(k, bs.hasTemp, bs.tempC, bs.hasHum, bs.humidity);
+            }
+          }
+        }
+        if (static_cast<int32_t>(millis() - nextRoomSaveAt) >= 0) {
+          RoomHistory snap = gRooms;
+          xSemaphoreGive(gLock);
+          roomHistorySave(snap);          // NVS poza mutexem — zapis trwa
+          nextRoomSaveAt = millis() + 600000;
+          xSemaphoreTake(gLock, portMAX_DELAY);
+        }
+      }
+      xSemaphoreGive(gLock);
+
       nextBleAt = millis() + 90000;
     }
 
@@ -501,6 +531,9 @@ void setup() {
 
   ledBegin();
   pvHistoryLoad(gHist);
+  roomHistoryLoad(gRooms);
+  uiRooms = gRooms;
+  ui.setRoomHistory(&uiRooms);
 
   if (!settings().hasWifi()) {
     portal::beginAp();
@@ -614,6 +647,7 @@ void loop() {
   uiWeather = gWeather;
   uiPv = gPv;
   uiHist = gHist;
+  uiRooms = gRooms;
   uiFlights = gFlights;
   xSemaphoreGive(gLock);
 

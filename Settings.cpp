@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "PvData.h"
+#include "RoomHistory.h"
 
 namespace {
 Preferences prefs;
@@ -121,13 +122,15 @@ bool Settings::bleSet(const char* mac, const char* name, const char* keyHex) {
   strncpy(c.name, name ? name : "", sizeof(c.name) - 1);
   c.name[sizeof(c.name) - 1] = '\0';
 
+  // Puste pole = BEZ ZMIAN (tak samo jak hasło MQTT). Wcześniej pusty klucz kasował
+  // zapisany — czyli sama zmiana nazwy wywalała bindkey. Skasować można wpisując "-".
   if (keyHex != nullptr && strlen(keyHex) == 32) {
     for (int i = 0; i < 16; ++i) {
       char b[3] = {keyHex[i * 2], keyHex[i * 2 + 1], '\0'};
       c.key[i] = static_cast<uint8_t>(strtoul(b, nullptr, 16));
     }
     c.hasKey = true;
-  } else if (keyHex != nullptr && keyHex[0] == '\0') {
+  } else if (keyHex != nullptr && strcmp(keyHex, "-") == 0) {
     memset(c.key, 0, sizeof(c.key));
     c.hasKey = false;
   }
@@ -195,5 +198,29 @@ void pvHistorySave(const PvHistory& h) {
 void pvHistoryClear() {
   prefs.begin(NS_PV, false);
   prefs.clear();
+  prefs.end();
+}
+
+// ---------------------------------------- historia czujnikow BLE (24 h) -------
+// Blob ma ~1,7 kB i leci do NVS co 10 minut — tak samo jak profil PV.
+// Zapisujemy CALY bufor razem z numerem slotu; bez niego po restarcie nie dalo by
+// sie stwierdzic, ktore probki sa jeszcze wazne.
+
+void roomHistoryLoad(RoomHistory& h) {
+  prefs.begin(NS_PV, true);
+  const size_t need = sizeof(RoomHistory);
+  if (prefs.getBytesLength("rh") == need) {
+    prefs.getBytes("rh", &h, need);
+    Serial.printf("BLE: wczytano historie 24 h (slot %lu)\n",
+                  static_cast<unsigned long>(h.lastSlot));
+  } else {
+    h.reset();
+  }
+  prefs.end();
+}
+
+void roomHistorySave(const RoomHistory& h) {
+  prefs.begin(NS_PV, false);
+  prefs.putBytes("rh", &h, sizeof(RoomHistory));
   prefs.end();
 }

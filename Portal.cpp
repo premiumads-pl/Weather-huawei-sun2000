@@ -155,7 +155,7 @@ nie opuszcza sieci domowej.</div>
 </div>
 </div><script>
 const $=i=>document.getElementById(i);
-const NAMES=['Auto','Teraz','Godziny','5 dni','Fotowoltaika','Samoloty','Statystyki','W domu'];
+const NAMES=['Auto','Teraz','Godziny','5 dni','W domu','Fotowoltaika','Samoloty','Statystyki'];
 let live=true,pin=-1;
 
 function tabs(){
@@ -695,7 +695,7 @@ void apiBleSet() {
   const char* name = b["name"] | "";
   const char* key = b["key"] | "";
 
-  if (key[0] != '\0' && strlen(key) != 32) {
+  if (key[0] != '\0' && strcmp(key, "-") != 0 && strlen(key) != 32) {
     server.send(200, "application/json",
                 "{\"ok\":false,\"msg\":\"Bindkey ma dokładnie 32 znaki szesnastkowe\"}");
     return;

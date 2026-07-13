@@ -58,3 +58,7 @@ Settings& settings();
 void pvHistoryLoad(struct PvHistory& h);
 void pvHistorySave(const struct PvHistory& h);
 void pvHistoryClear();
+
+// --- historia czujnikow BLE (24 h, ruchome okno; przezywa zanik zasilania) ---
+void roomHistoryLoad(struct RoomHistory& h);
+void roomHistorySave(const struct RoomHistory& h);
