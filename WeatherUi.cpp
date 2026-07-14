@@ -995,7 +995,10 @@ void WeatherUi::drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, co
   char sub[40];
   snprintf(sub, sizeof(sub), "DC %ld W   |   %.0f V", static_cast<long>(d.powerDcW),
            d.pvVoltageV);
-  gl(spr, sub, ox + 13, 108, col::TEXT_DIM);
+  // 104, nie 108: gl() kotwiczy tekst GORA (TL_DATUM), wiec zajmuje 104..112.
+  // Nizej jest "PRODUKCJA / ZUŻYCIE" w PlFont14 (13 px wysokosci) — przy 108
+  // te dwa napisy na siebie wchodzily.
+  gl(spr, sub, ox + 13, 104, col::TEXT_DIM);
 
   // --- wskaźnik (arc) ---
   // Skala = DOKLADNIE moc wpisana w panelu. Wczesniej pvScaleW_ bylo zapadka: roslo,
@@ -1030,7 +1033,7 @@ void WeatherUi::drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, co
   //   zielony   = nadwyżka oddana do sieci      (dioda zielona)
   //   niebieski = zużycie pokryte z własnej PV  (dioda niebieska — równowaga)
   //   czerwony  = prąd dobrany z sieci          (dioda czerwona)
-  plStr(spr, PLF14, "PRODUKCJA / ZUŻYCIE", ox + 12, 126, col::TEXT_MUTE);
+  plStr(spr, PLF14, "PRODUKCJA / ZUŻYCIE", ox + 12, 128, col::TEXT_MUTE);
   char tot[24];
   snprintf(tot, sizeof(tot), "RAZEM %.0f kWh", d.energyTotalKwh);
   glRight(spr, tot, ox + W - 12, 122, col::TEXT_MUTE);
