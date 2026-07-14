@@ -164,7 +164,6 @@ class WeatherUi {
   float animAcW_ = 0.f;
   float animLoadW_ = 0.f;
   float animGridW_ = 0.f;
-  float pvScaleW_ = 0.f;
 
   // podświetlenie
   uint8_t blCurrent_ = 0;

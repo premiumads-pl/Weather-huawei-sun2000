@@ -3622,6 +3622,47 @@ inline void draw(TFT_eSPI& s, int code, int cx, int cy, int size, bool night = f
   blit(s, CLOUD, cx, cy + size / 12, size * 5 / 6);
 }
 
+// PELNY opis wg kodu WMO. Open-Meteo rozroznia 28 stanow pogody — "słaby deszcz"
+// od "ulewy", "mzawke" od "marznacej mzawki" — a my sprowadzalismy to wszystko do
+// osmiu slow ("Deszcz", "Mżawka"...). Kod byl, informacja byla, tylko ja wyrzucalismy.
+// Teksty dobrane tak, zeby po zlamaniu przy spacji kazda linia miescila sie
+// w 116 px czcionki PlFont14 (zmierzone: najdluzsze slowo "Zachmurzenie" = 91 px).
+inline const char* labelForCode(int code, bool night);   // definicja nizej
+
+inline const char* descForCode(int code, bool night) {
+  switch (code) {
+    case 0:  return night ? "Czyste niebo" : "Bezchmurnie";
+    case 1:  return "Prawie bezchmurnie";
+    case 2:  return "Częściowe zachmurzenie";
+    case 3:  return "Zachmurzenie całkowite";
+    case 45: return "Mgła";
+    case 48: return "Mgła i szron";
+    case 51: return "Słaba mżawka";
+    case 53: return "Mżawka";
+    case 55: return "Gęsta mżawka";
+    case 56: return "Marznąca mżawka";
+    case 57: return "Gęsta marznąca mżawka";
+    case 61: return "Słaby deszcz";
+    case 63: return "Deszcz";
+    case 65: return "Silny deszcz";
+    case 66: return "Marznący deszcz";
+    case 67: return "Silny marznący deszcz";
+    case 71: return "Słabe opady śniegu";
+    case 73: return "Opady śniegu";
+    case 75: return "Intensywny śnieg";
+    case 77: return "Krupa śnieżna";
+    case 80: return "Przelotny deszcz";
+    case 81: return "Przelotne opady";
+    case 82: return "Ulewne opady";
+    case 85: return "Przelotny śnieg";
+    case 86: return "Silne opady śniegu";
+    case 95: return "Burza";
+    case 96: return "Burza z gradem";
+    case 99: return "Burza z silnym gradem";
+    default: return labelForCode(code, night);
+  }
+}
+
 // Podpis tez klamal: o polnocy pisal "Słonecznie".
 inline const char* labelForCode(int code, bool night) {
   if (!night) return labelForCode(code);

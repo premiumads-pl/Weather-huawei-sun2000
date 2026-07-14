@@ -532,6 +532,54 @@ static void viewHeader(TFT_eSPI& spr, int ox, const char* title, const char* rig
   plRight(spr, PLF14, right, ox + W - 10, HDR_Y, rightCol);
 }
 
+// ----------------------------------------------------- opis pogody pod ikona --
+// Do 2 linii, lamane przy spacji tak, zeby linie byly mozliwie rowne.
+// Dlaczego 2, a nie 1: "Częściowe zachmurzenie" ma 161 px, a pod ikona (srodek
+// x=258) miesci sie najwyzej 116 px do krawedzi ekranu. Kazde POJEDYNCZE slowo
+// sie miesci (najdluzsze, "Zachmurzenie", ma 91 px), wiec lamanie przy spacji
+// zawsze wystarcza — sprawdzone dla wszystkich 28 kodow WMO.
+constexpr int kDescMaxW = 116;
+
+static void drawWeatherDesc(TFT_eSPI& spr, int cx, const char* text, const char* extra,
+                            uint16_t color, uint16_t extraColor) {
+  char a[48] = {}, b[48] = {};
+
+  if (pltxt::stringWidth(PLF14, text) <= kDescMaxW) {
+    snprintf(a, sizeof(a), "%s", text);
+  } else {
+    int bestDiff = INT32_MAX;
+    for (const char* p = strchr(text, ' '); p != nullptr; p = strchr(p + 1, ' ')) {
+      char la[48] = {};
+      const size_t n = static_cast<size_t>(p - text);
+      if (n == 0 || n >= sizeof(la)) continue;
+      memcpy(la, text, n);
+      const int wa = pltxt::stringWidth(PLF14, la);
+      const int wb = pltxt::stringWidth(PLF14, p + 1);
+      if (wa > kDescMaxW || wb > kDescMaxW) continue;
+      const int diff = wa > wb ? wa - wb : wb - wa;
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        snprintf(a, sizeof(a), "%s", la);
+        snprintf(b, sizeof(b), "%s", p + 1);
+      }
+    }
+    if (a[0] == '\0') snprintf(a, sizeof(a), "%s", text);   // awaryjnie: bez lamania
+  }
+
+  // Jedna linia opisu + faza ksiezyca pod spodem (noc, czyste niebo).
+  if (b[0] == '\0' && extra != nullptr) {
+    plCenter(spr, PLF14, a, cx, 111, color);
+    plCenter(spr, PLF14, extra, cx, 125, extraColor);
+    return;
+  }
+  if (b[0] == '\0') {
+    plCenter(spr, PLF14, a, cx, 118, color);
+    return;
+  }
+  plCenter(spr, PLF14, a, cx, 111, color);
+  plCenter(spr, PLF14, b, cx, 125, color);
+}
+
 // ------------------------------------------------------------ WIDOK 1: TERAZ --
 
 void WeatherUi::drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& w) {
@@ -557,18 +605,19 @@ void WeatherUi::drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& 
   // --- ikona + opis (swiadome pory doby) ---
   // Do v72 o polnocy swiecilo tu slonce z podpisem "Słonecznie". Teraz po zachodzie
   // pojawia sie ksiezyc w AKTUALNEJ FAZIE — takiej, jaka realnie widac nad Gdynia.
+  // Ikona zeszla z 62 na 54 px, zeby zrobic miejsce na DWIE linie opisu. Sam obrazek
+  // i tak nie niesie tyle informacji co "Częściowe zachmurzenie" zamiast "Częściowo".
   const int icx = ox + 258;
-  const int size = 40 + static_cast<int>(22 * e);
+  const int size = 40 + static_cast<int>(14 * e);
   const bool night = !c.isDay;
   const float mp = moon::phase(time(nullptr));
 
-  wxico::draw(spr, c.weatherCode, icx, 82, size, night, mp);
-  plCenter(spr, PLF14, wxico::labelForCode(c.weatherCode, night), icx, 118, col::TEXT);
+  wxico::draw(spr, c.weatherCode, icx, 72, size, night, mp);
 
-  // W nocy przy czystym niebie podpisujemy faze — sam sierp nic nie mowi.
-  if (night && wxico::iconForCode(c.weatherCode) == wxico::SUN) {
-    glCenter(spr, moon::name(mp), icx, 122, col::TEXT_MUTE);
-  }
+  // W nocy przy czystym niebie druga linia to faza ksiezyca — sam sierp nic nie mowi.
+  const bool clearNight = night && wxico::iconForCode(c.weatherCode) == wxico::SUN;
+  drawWeatherDesc(spr, icx, wxico::descForCode(c.weatherCode, night),
+                  clearNight ? moon::name(mp) : nullptr, col::TEXT, col::TEXT_MUTE);
 
   // --- 4 kafelki ---
   struct Card {
@@ -591,7 +640,7 @@ void WeatherUi::drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& 
   cards[3] = {"Chmury", {0}, "%", nullptr, col::CLOUD};
   snprintf(cards[3].value, sizeof(cards[3].value), "%d", c.cloudCover);
 
-  const int cy0 = 122;
+  const int cy0 = 131;   // nizej niz 122: druga linia opisu siega y=128
   const int chh = 52;
   for (int i = 0; i < 4; ++i) {
     const int x = ox + 6 + i * 78;
@@ -949,11 +998,14 @@ void WeatherUi::drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, co
   gl(spr, sub, ox + 13, 108, col::TEXT_DIM);
 
   // --- wskaźnik (arc) ---
-  if (pvScaleW_ < static_cast<float>(settings().pvPeakW)) pvScaleW_ = static_cast<float>(settings().pvPeakW);
-  if (static_cast<float>(d.powerAcW) > pvScaleW_) pvScaleW_ = static_cast<float>(d.powerAcW) * 1.05f;
+  // Skala = DOKLADNIE moc wpisana w panelu. Wczesniej pvScaleW_ bylo zapadka: roslo,
+  // gdy produkcja przekroczyla deklarowana moc (AC * 1.05), i NIGDY nie wracalo —
+  // nawet po zmianie ustawienia. Uzytkownik wpisywal 6.0 kWp, a ekran uparcie
+  // pokazywal "z 7.0 kWp" (bo 6667 W * 1.05 = 7000) i nie dalo sie tego zrozumiec.
+  const float peakW = settings().pvPeakW > 0 ? static_cast<float>(settings().pvPeakW) : 6000.f;
 
   const int gx = ox + 266, gy = 88, gr = 34, gir = 26;
-  const float frac = clampf(animAcW_ / pvScaleW_, 0.f, 1.f) * e;
+  const float frac = clampf(animAcW_ / peakW, 0.f, 1.f) * e;
   glCenter(spr, "OBCIAZENIE", gx, 48, col::TEXT_MUTE);
   smoothArc(spr, gx, gy, gr, gir, 30, 330, col::PV_TRACK, col::BG);
   if (frac > 0.005f) {
@@ -961,11 +1013,15 @@ void WeatherUi::drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, co
     const uint16_t ac = lerp565(col::PV_SOLAR, col::PV_EXPORT, clampf(frac, 0.f, 1.f));
     smoothArc(spr, gx, gy, gr, gir, 30, end, ac, col::BG);
   }
+  // Procentu NIE przycinamy do 100: produkcja powyzej mocy nominalnej zdarza sie
+  // realnie (zimne, sloneczne dni) i jest ciekawa informacja, a nie bledem. Luk
+  // dobija do konca, ale liczba mowi prawde.
+  const int pctVal = static_cast<int>(lroundf(animAcW_ / peakW * 100.f * e));
   char pct[8];
-  snprintf(pct, sizeof(pct), "%d%%", static_cast<int>(lroundf(frac * 100.f)));
-  plCenter(spr, PLF18, pct, gx, gy + 3, col::TEXT);
+  snprintf(pct, sizeof(pct), "%d%%", pctVal);
+  plCenter(spr, PLF18, pct, gx, gy + 3, pctVal > 100 ? col::PV_EXPORT : col::TEXT);
   char peak[14];
-  snprintf(peak, sizeof(peak), "z %.1f kWp", pvScaleW_ / 1000.f);
+  snprintf(peak, sizeof(peak), "z %.1f kWp", peakW / 1000.f);
   glCenter(spr, peak, gx, gy + 9, col::TEXT_MUTE);
 
   // --- profil dnia: produkcja + zużycie w jednej skali ---
