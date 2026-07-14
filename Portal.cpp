@@ -15,6 +15,7 @@
 #include "Ota.h"
 #include "OtaGuard.h"
 #include "BleSensors.h"
+#include "RadarMap.h"
 #include "Settings.h"
 #include "Version.h"
 
@@ -135,6 +136,17 @@ nie opuszcza sieci domowej.</div>
 </div>
 
 <div class=c>
+<h2>Radar opadów</h2>
+<div class=hint>Ekran radaru pojawia się w rotacji tylko wtedy, gdy realnie pada.
+Symulacja pokazuje sztuczny front — do obejrzenia, jak wygląda wizualizacja.</div>
+<div class=row>
+<button class=s style=margin:0 onclick="demo(1)">Włącz symulację</button>
+<button class=s style=margin:0 onclick="demo(0)">Wyłącz</button>
+</div>
+<div class=hint id=dmsg></div>
+</div>
+
+<div class=c>
 <h2>Aktualizacje</h2>
 <div class=hint>Urządzenie samo sprawdza GitHub co 15 minut.</div>
 <button class=s onclick=upd()>Sprawdź teraz</button>
@@ -205,6 +217,12 @@ async function saveBle(mac,i){
  $('bmsg').className='hint '+(r.ok?'ok':'err');
  $('bmsg').textContent=r.msg;
  bles();
+}
+async function demo(on){
+ $('dmsg').textContent='...';
+ const r=await(await fetch('/api/radardemo?on='+on)).json();
+ $('dmsg').className='hint ok';$('dmsg').textContent=r.msg;
+ if(on) pickView(2);
 }
 async function dg(){$('dbg').textContent=await(await fetch('/api/diag')).text();}
 async function lg(){$('dbg').textContent=await(await fetch('/api/log')).text();}
@@ -734,6 +752,16 @@ void apiBleSet() {
                  : "{\"ok\":false,\"msg\":\"Brak wolnego miejsca (maks. 4 czujniki)\"}");
 }
 
+// Symulacja opadu — sztuczny front do obejrzenia wizualizacji, gdy nie pada.
+void apiRadarDemo() {
+  const bool on = server.hasArg("on") && server.arg("on") == "1";
+  radarmap::setDemo(on);
+  server.send(200, "application/json",
+              on ? "{\"ok\":true,\"msg\":\"Symulacja włączona — ekran radaru pokazuje "
+                   "sztuczny front. Wyłącz, żeby wrócić do prawdziwych danych.\"}"
+                 : "{\"ok\":true,\"msg\":\"Symulacja wyłączona.\"}");
+}
+
 void apiForget() {
   settings().clearWifi();
   server.send(200, "application/json", "{\"ok\":true}");
@@ -759,6 +787,7 @@ void routes() {
   server.on("/api/view", apiView);
   server.on("/api/ble", HTTP_GET, apiBleList);
   server.on("/api/ble", HTTP_POST, apiBleSet);
+  server.on("/api/radardemo", apiRadarDemo);
   server.onNotFound(sendPage);  // captive portal
   server.begin();
   started = true;

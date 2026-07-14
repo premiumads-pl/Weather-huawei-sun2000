@@ -69,6 +69,11 @@ class WeatherUi {
   // rotacji na stałe — po prostu przedłuża to, na co patrzysz.
   void restartHold() { viewStart_ = millis(); }
 
+  // Podwójne dotknięcie: krok wstecz. Pomija ekrany, które i tak są wyłączone
+  // z rotacji (radar bez opadu, "w domu" bez czujników) — inaczej cofnięcie
+  // trafiałoby w pustą kartę.
+  void prevView();
+
   // Historia 24 h z czujnikow BLE. Wskaznik, a nie kopia — struktura ma 1,7 kB,
   // a przewlekanie jej przez render/paintFrame/drawView tylko po to, zeby doszla
   // do jednego widoku, zasmiecaloby cztery sygnatury.

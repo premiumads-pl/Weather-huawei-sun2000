@@ -714,12 +714,18 @@ void loop() {
 
   const uint32_t now = millis();
 
-  // --- dotyk GPIO7: odliczanie bieżącego ekranu od początku ---
-  if (touch::pressed()) {
-    ui.restartHold();
-    LOG("Dotyk: odliczanie ekranu od nowa (odczyt %lu, baza %lu)",
-        static_cast<unsigned long>(touch::raw()),
-        static_cast<unsigned long>(touch::baseline()));
+  // --- dotyk GPIO7 ---
+  switch (touch::poll()) {
+    case touch::Tap::SINGLE:
+      ui.restartHold();
+      LOG("Dotyk: odliczanie ekranu od nowa");
+      break;
+    case touch::Tap::DOUBLE:
+      ui.prevView();
+      LOG("Dotyk x2: poprzedni ekran");
+      break;
+    default:
+      break;
   }
 
   // --- test diody RGB przy starcie (3 x 1,5 s) ---

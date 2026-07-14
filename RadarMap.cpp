@@ -24,6 +24,8 @@ uint8_t* gTile = nullptr;    // 256x256 poziomow, bufor roboczy jednego kafelka
 Frame gMeta[FRAMES];
 int gCount = 0;
 uint32_t gUpdatedAt = 0;
+bool gDemo = false;
+bool gRain = false;
 char gErr[48] = "brak danych";
 SemaphoreHandle_t gMx = nullptr;
 
@@ -41,10 +43,10 @@ float mercY(float latDeg) {
 void computeGeometry() {
   const float n = static_cast<float>(1 << kZoom);
 
-  const float gx0 = (gmap::LON_MIN + 180.f) / 360.f * n;
-  const float gx1 = (gmap::LON_MAX + 180.f) / 360.f * n;
-  const float gy0 = mercY(gmap::LAT_MAX) * n;   // gora mapy = mniejszy y
-  const float gy1 = mercY(gmap::LAT_MIN) * n;
+  const float gx0 = (gmapw::LON_MIN + 180.f) / 360.f * n;
+  const float gx1 = (gmapw::LON_MAX + 180.f) / 360.f * n;
+  const float gy0 = mercY(gmapw::LAT_MAX) * n;   // gora mapy = mniejszy y
+  const float gy1 = mercY(gmapw::LAT_MIN) * n;
 
   gTileX = static_cast<int>(gx0);
   gTileY = static_cast<int>(gy0);
@@ -186,7 +188,7 @@ bool begin() {
 }
 
 bool fetch() {
-  if (gTile == nullptr) return false;
+  if (gTile == nullptr || gDemo) return false;   // w symulacji nie nadpisujemy klatek
 
   String js;
   if (!httpGet("http://api.rainviewer.com/public/weather-maps.json", nullptr, nullptr, &js)) {
@@ -285,11 +287,23 @@ bool fetch() {
     return false;
   }
 
+  // Czy w ogole cokolwiek pada? Ekran bez opadu to pusta mapa — nie ma go po co
+  // pokazywac. Liczymy piksele z opadem, a nie sam fakt "niezerowy" — pojedyncze
+  // artefakty na krawedzi kafelka nie moga wlaczac ekranu.
+  int wet = 0;
+  for (int i = 0; i < FRAMES; ++i) {
+    if (!gMeta[i].valid) continue;
+    for (int k = 0; k < W * H; k += 7) {   // co 7. piksel wystarczy
+      if (gFrames[i][k] > 0) ++wet;
+    }
+  }
+  gRain = wet > 60;   // ~420 pikseli opadu w calej animacji
+
   gCount = FRAMES;
   gUpdatedAt = millis();
   gErr[0] = '\0';
-  LOG("Radar mapa: %d/%d klatek, ostatnia %+ld min", ok, FRAMES,
-      static_cast<long>(gMeta[FRAMES - 1].offsetMin));
+  LOG("Radar mapa: %d/%d klatek, ostatnia %+ld min, opad: %s (%d)", ok, FRAMES,
+      static_cast<long>(gMeta[FRAMES - 1].offsetMin), gRain ? "JEST" : "brak", wet);
   return true;
 }
 
@@ -315,6 +329,64 @@ uint32_t updatedAt() {
 
 const char* lastError() {
   return gErr;
+}
+
+bool hasRain() {
+  return gRain;
+}
+
+bool demo() {
+  return gDemo;
+}
+
+// Sztuczny front: pas deszczu przesuwajacy sie z zachodu na wschod, z jadrem
+// ulewy w srodku. Kazda klatka to inne polozenie — dokladnie tak, jak wygladalby
+// prawdziwy front. Sluzy do obejrzenia wizualizacji, gdy nie pada.
+void setDemo(bool on) {
+  gDemo = on;
+  if (!on) {
+    gCount = 0;
+    gRain = false;
+    gUpdatedAt = 0;
+    return;
+  }
+  if (gFrames[0] == nullptr) return;
+
+  const time_t nowT = time(nullptr);
+  xSemaphoreTake(gMx, portMAX_DELAY);
+
+  for (int i = 0; i < FRAMES; ++i) {
+    // srodek frontu wedruje przez cala mape w ciagu 7 klatek
+    const float cx = -60.f + (W + 120.f) * (i / static_cast<float>(FRAMES - 1));
+
+    for (int y = 0; y < H; ++y) {
+      for (int x = 0; x < W; ++x) {
+        // ukosny front (jak na Baltyku) + falowanie krawedzi
+        const float fx = x + (y - H / 2) * 0.35f;
+        const float d = fabsf(fx - cx - sinf(y * 0.06f + i) * 12.f);
+
+        uint8_t lv = 0;
+        if (d < 14.f) lv = 5;
+        else if (d < 24.f) lv = 4;
+        else if (d < 34.f) lv = 3;
+        else if (d < 48.f) lv = 2;
+        else if (d < 62.f) lv = 1;
+
+        // dziury w opadzie — inaczej wyglada jak pomalowany pas
+        if (lv > 1 && ((x * 7 + y * 13 + i * 31) % 11) == 0) --lv;
+        gFrames[i][y * W + x] = lv;
+      }
+    }
+    gMeta[i].epoch = nowT > 1700000000 ? nowT - (FRAMES - 1 - i) * 20 * 60 : 0;
+    gMeta[i].offsetMin = -(FRAMES - 1 - i) * 20;
+    gMeta[i].valid = true;
+  }
+  xSemaphoreGive(gMx);
+
+  gCount = FRAMES;
+  gRain = true;
+  gUpdatedAt = millis();
+  LOG("Radar mapa: SYMULACJA wlaczona (sztuczny front W->E)");
 }
 
 }  // namespace radarmap

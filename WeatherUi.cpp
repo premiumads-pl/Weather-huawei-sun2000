@@ -9,6 +9,7 @@
 #include "Colors.h"
 #include "Config.h"
 #include "MapData.h"
+#include "MapDataWide.h"
 #include "RadarMap.h"
 #include "PlText.h"
 #include "BleSensors.h"
@@ -379,6 +380,16 @@ void WeatherUi::drawProgress(TFT_eSPI& spr, uint32_t nowMs) {
   for (int i = 0; i < cfg::VIEW_COUNT; ++i) {
     const int x = i * segW;
     const int wSeg = (i == cfg::VIEW_COUNT - 1) ? (W - x) : (segW - 3);
+
+    // Ekran pominiety w rotacji (radar bez opadu, "w domu" bez czujnikow) dostaje
+    // wlasny, przygaszony kolor — widac, ze istnieje, ale nie ma czego pokazac.
+    const bool skipped = (i == cfg::VIEW_RADAR && !radarmap::hasRain()) ||
+                         (i == cfg::VIEW_HOME && ble::count() == 0);
+    if (skipped) {
+      spr.fillRect(x, cfg::PROG_Y, wSeg, cfg::PROG_H, lerp565(col::BG, col::RAIN, 0.30f));
+      continue;
+    }
+
     spr.fillRect(x, cfg::PROG_Y, wSeg, cfg::PROG_H, col::PV_TRACK);
     if (i < view_) {
       spr.fillRect(x, cfg::PROG_Y, wSeg, cfg::PROG_H, col::GRID_HI);
@@ -1292,6 +1303,12 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
       if (view_ == cfg::VIEW_HOME && ble::count() == 0) {
         view_ = static_cast<uint8_t>(cfg::VIEW_PV);  // przeskakujemy dalej, nie na poczatek
       }
+      // Radar bez opadu = pusta mapa. Pokazywanie jej co minutę nie ma sensu —
+      // pomijamy ekran, ale pasek postępu i tak go zaznaczy (innym kolorem),
+      // żeby było widać, że taki ekran istnieje i po prostu nie ma co pokazywać.
+      if (view_ == cfg::VIEW_RADAR && !radarmap::hasRain()) {
+        view_ = static_cast<uint8_t>(cfg::VIEW_DAYS);
+      }
       transitioning_ = true;
       transStart_ = nowMs;
       enterStart_ = nowMs;
@@ -1793,17 +1810,19 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
 
   const radarmap::Frame& fr = radarmap::frame(fi);
 
-  // --- mapa (ten sam raster co ekran samolotow, wysrodkowany) ---
-  const int mx = ox + (W - gmap::MAP_W) / 2;
+  // --- mapa na PELNA szerokosc (osobny raster gmapw, 320 px) ---
+  // Ekran samolotow dzieli miejsce z lista lotow i musi miec 224 px. Radar nie ma
+  // czego dzielic, wiec dostaje caly ekran — inaczej mapa byla przycieta z bokow.
+  const int mx = ox;
   const int my = CY;
 
-  spr.fillRect(mx, my, gmap::MAP_W, gmap::MAP_H, col::MAP_SEA);
-  for (int row = 0; row < gmap::MAP_H; ++row) {
-    const uint16_t a = pgm_read_word(&gmap::LAND_ROW_OFF[row]);
-    const uint16_t b = pgm_read_word(&gmap::LAND_ROW_OFF[row + 1]);
+  spr.fillRect(mx, my, gmapw::MAP_W, gmapw::MAP_H, col::MAP_SEA);
+  for (int row = 0; row < gmapw::MAP_H; ++row) {
+    const uint16_t a = pgm_read_word(&gmapw::LAND_ROW_OFF[row]);
+    const uint16_t b = pgm_read_word(&gmapw::LAND_ROW_OFF[row + 1]);
     for (uint16_t k = a; k < b; ++k) {
-      const uint8_t x0 = pgm_read_byte(&gmap::LAND_SPANS[k][0]);
-      const uint8_t x1 = pgm_read_byte(&gmap::LAND_SPANS[k][1]);
+      const uint16_t x0 = pgm_read_word(&gmapw::LAND_SPANS[k][0]);
+      const uint16_t x1 = pgm_read_word(&gmapw::LAND_SPANS[k][1]);
       spr.drawFastHLine(mx + x0, my + row, x1 - x0 + 1, col::MAP_LAND);
     }
   }
@@ -1820,17 +1839,17 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
       col::ERR,                                  // ulewa
   };
 
-  const int rows = static_cast<int>(gmap::MAP_H * e);   // animacja wejscia: opad "wchodzi"
+  const int rows = static_cast<int>(gmapw::MAP_H * e);   // animacja wejscia: opad "wchodzi"
   for (int y = 0; y < rows; ++y) {
     int x = 0;
-    while (x < gmap::MAP_W) {
+    while (x < gmapw::MAP_W) {
       const uint8_t lv = radarmap::levelAt(fi, x, y);
       if (lv == 0) {
         ++x;
         continue;
       }
       int x2 = x + 1;
-      while (x2 < gmap::MAP_W && radarmap::levelAt(fi, x2, y) == lv) ++x2;
+      while (x2 < gmapw::MAP_W && radarmap::levelAt(fi, x2, y) == lv) ++x2;
       spr.drawFastHLine(mx + x, my + y, x2 - x, kPal[lv > 5 ? 5 : lv]);
       x = x2;
     }
@@ -1840,10 +1859,10 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
   int gx = 0, gy = 0;
   {
     const float lat = settings().lat, lon = settings().lon;
-    gx = mx + static_cast<int>((lon - gmap::LON_MIN) / (gmap::LON_MAX - gmap::LON_MIN) *
-                               gmap::MAP_W);
-    gy = my + static_cast<int>((gmap::LAT_MAX - lat) / (gmap::LAT_MAX - gmap::LAT_MIN) *
-                               gmap::MAP_H);
+    gx = mx + static_cast<int>((lon - gmapw::LON_MIN) / (gmapw::LON_MAX - gmapw::LON_MIN) *
+                               gmapw::MAP_W);
+    gy = my + static_cast<int>((gmapw::LAT_MAX - lat) / (gmapw::LAT_MAX - gmapw::LAT_MIN) *
+                               gmapw::MAP_H);
   }
   spr.drawCircle(gx, gy, 4, col::BG);
   spr.drawCircle(gx, gy, 3, col::ACCENT);
@@ -1864,7 +1883,7 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
   viewHeader(spr, ox, "RADAR OPADÓW", hdr);
 
   // --- os czasu (na dole, na mapie) ---
-  const int ty = CY + gmap::MAP_H - 20;
+  const int ty = CY + gmapw::MAP_H - 20;
   spr.fillRect(ox, ty, W, 20, col::BG);
 
   const int ax0 = ox + 40, ax1 = ox + W - 46;
@@ -2289,6 +2308,28 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
 // przycinany "za darmo" przez viewport.
 
 // Podglad w przegladarce: wymuszenie konkretnego ekranu. idx < 0 wraca do rotacji.
+void WeatherUi::prevView() {
+  int v = view_;
+  for (int i = 0; i < cfg::VIEW_COUNT; ++i) {
+    v = (v - 1 + cfg::VIEW_COUNT) % cfg::VIEW_COUNT;
+    const bool skipped = (v == cfg::VIEW_RADAR && !radarmap::hasRain()) ||
+                         (v == cfg::VIEW_HOME && ble::count() == 0);
+    if (!skipped) break;
+  }
+  if (v == view_) {
+    viewStart_ = millis();
+    return;
+  }
+  prevView_ = view_;
+  view_ = static_cast<uint8_t>(v);
+  transitioning_ = true;
+  transStart_ = millis();
+  enterStart_ = transStart_;
+  viewStart_ = transStart_;
+  pinned_ = -1;
+  alertActive_ = false;
+}
+
 void WeatherUi::pinView(int idx) {
   if (idx < 0) {
     pinned_ = -1;

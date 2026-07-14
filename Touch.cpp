@@ -9,7 +9,8 @@ namespace {
 
 constexpr uint8_t kPin = 7;          // GPIO7 = TOUCH7 (wolny: TFT ma 8-12 i 14)
 constexpr float kRise = 1.25f;       // dotkniecie = odczyt o 25% powyzej bazy
-constexpr uint32_t kHoldOffMs = 400; // debounce — jedno dotkniecie to jedno zdarzenie
+constexpr uint32_t kHoldOffMs = 250;  // debounce — jedno dotkniecie to jedno zdarzenie
+constexpr uint32_t kDoubleMs = 550;  // okno na drugie dotkniecie (palec, nie mysz)
 constexpr float kDrift = 0.002f;     // jak szybko baza goni otoczenie (tylko gdy nie dotykamy)
 
 uint32_t gBase = 0;
@@ -41,17 +42,31 @@ void begin() {
   }
 }
 
-bool pressed() {
-  if (!gReady) return false;
+Tap poll() {
+  if (!gReady) return Tap::NONE;
 
   gRaw = touchRead(kPin);
   const uint32_t thr = static_cast<uint32_t>(gBase * kRise);
   const bool down = gRaw > thr;
+  const uint32_t now = millis();
 
-  bool event = false;
-  if (down && !gDown && millis() - gLastEvent > kHoldOffMs) {
-    event = true;
-    gLastEvent = millis();
+  static bool pending = false;      // czekamy, czy nie bedzie drugiego dotkniecia
+  static uint32_t pendingAt = 0;
+
+  Tap out = Tap::NONE;
+
+  if (down && !gDown && now - gLastEvent > kHoldOffMs) {
+    gLastEvent = now;
+    if (pending && now - pendingAt <= kDoubleMs) {
+      pending = false;
+      out = Tap::DOUBLE;
+    } else {
+      pending = true;
+      pendingAt = now;
+    }
+  } else if (pending && now - pendingAt > kDoubleMs) {
+    pending = false;
+    out = Tap::SINGLE;   // drugie nie przyszlo — to jednak bylo pojedyncze
   }
   gDown = down;
 
@@ -60,7 +75,7 @@ bool pressed() {
   if (!down) {
     gBase = static_cast<uint32_t>(gBase * (1.f - kDrift) + gRaw * kDrift);
   }
-  return event;
+  return out;
 }
 
 uint32_t raw() {

@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "MapData.h"
+#include "MapDataWide.h"
 
 // Animowana mapa opadow nad Zatoka Gdanska — 2 godziny wstecz, co 20 minut.
 //
@@ -20,8 +20,8 @@
 namespace radarmap {
 
 constexpr int FRAMES = 7;                  // -120, -100, -80, -60, -40, -20, 0 min
-constexpr int W = gmap::MAP_W;
-constexpr int H = gmap::MAP_H;
+constexpr int W = gmapw::MAP_W;
+constexpr int H = gmapw::MAP_H;
 
 struct Frame {
   uint32_t epoch = 0;       // czas klatki
@@ -37,5 +37,14 @@ const Frame& frame(int i);
 uint8_t levelAt(int i, int x, int y);    // 0 = brak opadu, 1..5 rosnaco
 uint32_t updatedAt();                    // millis() ostatniego udanego pobrania
 const char* lastError();
+
+// Czy w KTOREJKOLWIEK klatce jest opad. Ekran radaru bez deszczu to pusta mapa,
+// wiec rotacja go wtedy pomija — a pasek postepu zaznacza go innym kolorem.
+bool hasRain();
+
+// Symulacja: sztuczny front przechodzacy z zachodu na wschod. Do obejrzenia,
+// jak wyglada wizualizacja, gdy akurat nie pada. Wlaczana z panelu.
+void setDemo(bool on);
+bool demo();
 
 }  // namespace radarmap

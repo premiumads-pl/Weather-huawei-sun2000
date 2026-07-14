@@ -15,8 +15,14 @@ namespace touch {
 
 void begin();
 
-// Wolane co klatke. Zwraca true DOKLADNIE RAZ na dotkniecie (zbocze narastajace).
-bool pressed();
+enum class Tap { NONE, SINGLE, DOUBLE };
+
+// Wolane co klatke.
+//   SINGLE — jedno dotkniecie: odliczanie biezacego ekranu od nowa
+//   DOUBLE — dwa szybkie: cofamy sie o ekran
+// UWAGA: pojedyncze dotkniecie jest zglaszane z OPOZNIENIEM kDoubleMs — inaczej
+// nie dalo by sie odroznic go od pierwszej polowy podwojnego.
+Tap poll();
 
 // Do diagnostyki: surowy odczyt i aktualna linia bazowa.
 uint32_t raw();
