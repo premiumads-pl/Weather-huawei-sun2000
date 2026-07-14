@@ -2,4 +2,4 @@
 
 // Numer wersji firmware'u. Podnoszony automatycznie przez tools/release.sh.
 // Urządzenie porównuje go z "version" z GitHub Releases.
-#define FW_VERSION 67
+#define FW_VERSION 68

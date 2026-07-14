@@ -1855,6 +1855,21 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
     }
   }
 
+  // --- KONTUR LADU NA WIERZCHU ---
+  // Bez tego opad zamalowuje wybrzeze i mapa staje sie kolorowa plama, z ktorej
+  // nie da sie odczytac, GDZIE pada. Rysujemy tylko krawedzie pasow ladu (lewa
+  // i prawa), wiec kosztuje to dwa piksele na pas, a nie caly ląd.
+  for (int row = 0; row < gmapw::MAP_H; ++row) {
+    const uint16_t a = pgm_read_word(&gmapw::LAND_ROW_OFF[row]);
+    const uint16_t b = pgm_read_word(&gmapw::LAND_ROW_OFF[row + 1]);
+    for (uint16_t k = a; k < b; ++k) {
+      const uint16_t x0 = pgm_read_word(&gmapw::LAND_SPANS[k][0]);
+      const uint16_t x1 = pgm_read_word(&gmapw::LAND_SPANS[k][1]);
+      spr.drawPixel(mx + x0, my + row, col::MAP_COAST);
+      spr.drawPixel(mx + x1, my + row, col::MAP_COAST);
+    }
+  }
+
   // --- Gdynia ---
   int gx = 0, gy = 0;
   {
