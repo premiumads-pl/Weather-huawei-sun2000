@@ -19,7 +19,7 @@ struct WeatherSnapshot {
   int precipProb = 0;
   float uvIndex = 0.f;  // po korekcie o zachmurzenie — to pokazujemy
   float uvRaw = 0.f;    // surowo z Open-Meteo (praktycznie wartość bezchmurna)
-  bool isDay = true;
+  bool isDay = true;   // z API (current) albo hourly is_day — decyduje o ikonie
   bool valid = false;
 };
 

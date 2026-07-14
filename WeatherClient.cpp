@@ -35,7 +35,7 @@ bool WeatherClient::buildUrl(char* buf, std::size_t len) const {
            "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,"
            "wind_speed_10m,wind_direction_10m,cloud_cover,pressure_msl,precipitation,is_day,uv_index"
            "&hourly=temperature_2m,weather_code,precipitation,precipitation_probability,"
-           "wind_speed_10m"
+           "wind_speed_10m,is_day"
            "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,"
            "uv_index_max,wind_speed_10m_max,sunrise,sunset",
            settings().lat, settings().lon);
@@ -53,6 +53,7 @@ bool WeatherClient::parsePayload(const char* json, std::size_t len, WeatherModel
   fh["precipitation"] = true;
   fh["precipitation_probability"] = true;
   fh["wind_speed_10m"] = true;
+  fh["is_day"] = true;   // bez tego ekran "GODZINY" rysowal slonce o polnocy
   filter["daily"] = true;
 
   JsonDocument doc;
@@ -132,6 +133,7 @@ bool WeatherClient::parsePayload(const char* json, std::size_t len, WeatherModel
     slot.data.weatherCode = hourly["weather_code"][idx].as<int>();
     slot.data.precipMm = hourly["precipitation"][idx].as<float>();
     slot.data.precipProb = hourly["precipitation_probability"][idx].as<int>();
+    slot.data.isDay = hourly["is_day"][idx].as<int>() != 0;
     slot.data.windKmh = hourly["wind_speed_10m"][idx].as<float>();
     slot.data.valid = true;
     slot.valid = true;

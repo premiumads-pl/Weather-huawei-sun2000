@@ -9,6 +9,7 @@
 #include "Colors.h"
 #include "Config.h"
 #include "MapData.h"
+#include "Moon.h"
 #include "MapDataWide.h"
 #include "RadarMap.h"
 #include "PlText.h"
@@ -553,11 +554,21 @@ void WeatherUi::drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& 
   snprintf(feels, sizeof(feels), "odczuwalna %d°C", static_cast<int>(lroundf(c.feelsC)));
   plStr(spr, PLF14, feels, ox + 12, 118, col::TEXT_DIM);
 
-  // --- ikona + opis ---
+  // --- ikona + opis (swiadome pory doby) ---
+  // Do v72 o polnocy swiecilo tu slonce z podpisem "Słonecznie". Teraz po zachodzie
+  // pojawia sie ksiezyc w AKTUALNEJ FAZIE — takiej, jaka realnie widac nad Gdynia.
   const int icx = ox + 258;
   const int size = 40 + static_cast<int>(22 * e);
-  wxico::draw(spr, c.weatherCode, icx, 82, size);
-  plCenter(spr, PLF14, wxico::labelForCode(c.weatherCode), icx, 118, col::TEXT);
+  const bool night = !c.isDay;
+  const float mp = moon::phase(time(nullptr));
+
+  wxico::draw(spr, c.weatherCode, icx, 82, size, night, mp);
+  plCenter(spr, PLF14, wxico::labelForCode(c.weatherCode, night), icx, 118, col::TEXT);
+
+  // W nocy przy czystym niebie podpisujemy faze — sam sierp nic nie mowi.
+  if (night && wxico::iconForCode(c.weatherCode) == wxico::SUN) {
+    glCenter(spr, moon::name(mp), icx, 122, col::TEXT_MUTE);
+  }
 
   // --- 4 kafelki ---
   struct Card {
@@ -682,10 +693,12 @@ void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel
   int code[13];
   int hourLbl[13];
   bool ok[13];
+  bool day[13];   // is_day z API — bez tego o 22:00 swiecilo slonce
 
   temp[0] = w.current.tempC;
   rain[0] = w.current.precipMm;
   code[0] = w.current.weatherCode;
+  day[0] = w.current.isDay;
   ok[0] = true;
   {
     time_t now = time(nullptr);
@@ -699,8 +712,11 @@ void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel
     temp[i + 1] = s.data.tempC;
     rain[i + 1] = s.data.precipMm;
     code[i + 1] = s.data.weatherCode;
+    day[i + 1] = s.data.isDay;
     hourLbl[i + 1] = s.hourOfDay;
   }
+
+  const float mp = moon::phase(time(nullptr));
 
   float vmin = 1e9f, vmax = -1e9f, rmax = 0.f;
   for (int i = 0; i < 13; ++i) {
@@ -801,7 +817,7 @@ void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel
     char h[8];
     snprintf(h, sizeof(h), "%02d", hourLbl[i]);
     glCenter(spr, h, x, 160, i == 0 ? col::ACCENT : col::TEXT_DIM);
-    wxico::draw(spr, code[i], x, 186, 24);
+    wxico::draw(spr, code[i], x, 186, 24, !day[i], mp);
   }
 }
 

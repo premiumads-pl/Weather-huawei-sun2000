@@ -7,6 +7,8 @@
 // Rysowanie: usrednianie boxem do docelowego rozmiaru + blending alfa z tlem,
 // dzieki czemu skalowanie w dol nie robi 'schodkow'.
 
+#include "Moon.h"
+
 namespace wxico {
 
 constexpr int SRC = 64;
@@ -3525,7 +3527,7 @@ inline const char* labelForCode(int code) {
 // Cel to TFT_eSPI& (a nie TFT_eSprite&), bo rysowanie idzie przez wirtualne
 // drawPixel/readPixel — dziala tak samo na sprite'cie pasa, na pasku zrzutu ekranu
 // i na samym TFT. Wspolrzedne sa GLOBALNE; przesuniecie i przyciecie robi viewport.
-inline void draw(TFT_eSPI& s, int code, int cx, int cy, int size) {
+inline void blit(TFT_eSPI& s, IconId id, int cx, int cy, int size) {
   if (size < 4) return;
 
   const int x0 = cx - size / 2;
@@ -3537,7 +3539,6 @@ inline void draw(TFT_eSPI& s, int code, int cx, int cy, int size) {
     return;
   }
 
-  const IconId id = iconForCode(code);
   const uint16_t* rgb = rgbFor(id);
   const uint8_t* alp = alphaFor(id);
 
@@ -3590,6 +3591,44 @@ inline void draw(TFT_eSPI& s, int code, int cx, int cy, int size) {
       const uint16_t ob = static_cast<uint16_t>((sb * a + db * (255 - a)) / 255);
       s.drawPixel(px, py, static_cast<uint16_t>((orr << 11) | (og << 5) | ob));
     }
+  }
+}
+
+
+// Rysowanie ikony ze swiadomoscia PORY DOBY.
+//
+// Do v72 o polnocy swiecilo slonce — bo bitmapa "SUN" nie wie, ze jest noc.
+// Teraz przy nocy podmieniamy tarcze sloneczna na ksiezyc w AKTUALNEJ FAZIE
+// (liczonej z kalendarza), a przy zachmurzeniu czesciowym wsuwamy go za chmure.
+// Pozostale ikony (chmura, deszcz, snieg, mgla, burza) nie zawieraja slonca,
+// wiec dzialaja bez zmian o kazdej porze.
+inline void draw(TFT_eSPI& s, int code, int cx, int cy, int size, bool night = false,
+                 float moonPhase = 0.5f) {
+  const IconId id = iconForCode(code);
+
+  if (!night || (id != SUN && id != PARTLY)) {
+    blit(s, id, cx, cy, size);
+    return;
+  }
+
+  if (id == SUN) {
+    moon::draw(s, cx, cy, size * 9 / 25, moonPhase);
+    return;
+  }
+
+  // PARTLY: ksiezyc wyzej i w prawo, chmura na wierzchu — tak jak slonce
+  // wygląda za chmura w wersji dziennej.
+  moon::draw(s, cx + size / 6, cy - size / 6, size * 6 / 25, moonPhase);
+  blit(s, CLOUD, cx, cy + size / 12, size * 5 / 6);
+}
+
+// Podpis tez klamal: o polnocy pisal "Słonecznie".
+inline const char* labelForCode(int code, bool night) {
+  if (!night) return labelForCode(code);
+  switch (iconForCode(code)) {
+    case SUN: return "Bezchmurnie";
+    case PARTLY: return "Częściowo";
+    default: return labelForCode(code);
   }
 }
 
