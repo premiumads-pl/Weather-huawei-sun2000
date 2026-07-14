@@ -76,7 +76,7 @@ constexpr uint32_t ENTER_ANIM_MS = 550;
 constexpr uint32_t ALERT_SHOW_MS = 6500;
 constexpr uint32_t ALERT_COOLDOWN_MS = 10UL * 60UL * 1000UL;
 constexpr uint32_t FRAME_ACTIVE_MS = 33;
-constexpr uint32_t FRAME_IDLE_MS = 70;
+constexpr uint32_t FRAME_IDLE_MS = 50;   // 20 fps na statycznym ekranie (pasek odliczania)
 
 // Pomiar czasu klatki (rysowanie / wypchnięcie na SPI) + stan sterty, co 2 s na
 // Serial. Przydatne po zmianie na dwa pasy — domyślnie wyłączone, bo to tylko log.
