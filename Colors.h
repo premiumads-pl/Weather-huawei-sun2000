@@ -59,6 +59,9 @@ constexpr uint16_t ALERT_BG = C565(52, 22, 14);
 constexpr uint16_t MAP_SEA = C565(7, 17, 36);
 constexpr uint16_t MAP_LAND = C565(24, 46, 40);
 constexpr uint16_t MAP_COAST = C565(72, 132, 118);
+// Kontur na ekranie RADARU — musi byc czytelny NA czerwonym opadzie, wiec jasny.
+// Ciemny (MAP_COAST) ginie pod warstwa deszczu i mapa staje sie kolorowa plama.
+constexpr uint16_t MAP_COAST_HI = C565(205, 240, 220);
 constexpr uint16_t MAP_LABEL = C565(96, 130, 150);
 constexpr uint16_t FLY_ARRIVE = C565(40, 230, 110);   // laduje w Gdansku
 constexpr uint16_t FLY_DEPART = C565(255, 165, 40);   // startuje z Gdanska

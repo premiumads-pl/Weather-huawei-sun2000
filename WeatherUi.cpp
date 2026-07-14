@@ -1865,8 +1865,8 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
     for (uint16_t k = a; k < b; ++k) {
       const uint16_t x0 = pgm_read_word(&gmapw::LAND_SPANS[k][0]);
       const uint16_t x1 = pgm_read_word(&gmapw::LAND_SPANS[k][1]);
-      spr.drawPixel(mx + x0, my + row, col::MAP_COAST);
-      spr.drawPixel(mx + x1, my + row, col::MAP_COAST);
+      spr.drawPixel(mx + x0, my + row, col::MAP_COAST_HI);
+      spr.drawPixel(mx + x1, my + row, col::MAP_COAST_HI);
     }
   }
 
