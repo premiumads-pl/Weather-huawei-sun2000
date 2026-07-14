@@ -1305,20 +1305,24 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
   // w górnym pasie inną liczbę niż w dolnym (patrz komentarz przy paintFrame).
   const uint32_t heapNow = ESP.getFreeHeap();
 
+  // Pomiar klatki idzie do diagnostyki, a nie na Serial — urzadzenie wisi na
+  // scianie i portu szeregowego nikt nie zobaczy. Koszt: dwa micros() na klatke.
   uint32_t tPaint = 0, tPush = 0;
   for (int b = 0; b < BAND_N; ++b) {
     const int top = b * BAND_H;
-    const uint32_t t0 = cfg::PROFILE_FRAME ? micros() : 0;
+    const uint32_t t0 = micros();
     setBand(spr_, top, VIEW_H);
     paintFrame(spr_, w, pv, hist, fl, wifiOk, nowMs, heapNow);
-    const uint32_t t1 = cfg::PROFILE_FRAME ? micros() : 0;
+    const uint32_t t1 = micros();
     spr_.pushSprite(0, top);
-    if (cfg::PROFILE_FRAME) {
-      tPaint += t1 - t0;
-      tPush += micros() - t1;
-    }
+    tPaint += t1 - t0;
+    tPush += micros() - t1;
   }
   spr_.resetViewport();
+
+  // srednia krocząca — pojedyncza klatka potrafi zlapac przerwanie WiFi
+  diag().frameDrawUs = (diag().frameDrawUs * 7 + tPaint) / 8;
+  diag().framePushUs = (diag().framePushUs * 7 + tPush) / 8;
 
   drawFooter(pv, wifiOk);   // poza buforem, wprost na TFT
   tickBacklight();

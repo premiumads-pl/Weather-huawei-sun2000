@@ -613,6 +613,15 @@ void apiDiag() {
   wf["channel"] = WiFi.channel();
   wf["roams"] = d.wifiRoams;
 
+  JsonObject gfx = j["gfx"].to<JsonObject>();
+  gfx["draw_us"] = d.frameDrawUs;
+  gfx["push_us"] = d.framePushUs;
+  gfx["frame_ms"] = (d.frameDrawUs + d.framePushUs) / 1000.0;
+  gfx["max_fps"] = d.frameDrawUs + d.framePushUs > 0
+                       ? 1000000.0 / (d.frameDrawUs + d.framePushUs)
+                       : 0;
+  gfx["spi_hz"] = 27000000;   // z User_Setup.h
+
   JsonObject o = j["ota"].to<JsonObject>();
   o["remote"] = d.otaRemote;
   o["msg"] = d.otaMsg;
