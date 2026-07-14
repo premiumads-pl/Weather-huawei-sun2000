@@ -799,17 +799,25 @@ void loop() {
   // 99 ms (10 fps). Podniesienie SPI z 27 na 80 MHz scielo rysowanie do 32 ms,
   // ale pauza i tak doklejala swoje 33 — z 31 klatek, ktore sprzet potrafi,
   // polowa szla do kosza. Teraz czekamy tylko RESZTE okresu.
+  // Cel liczymy od POPRZEDNIEGO CELU, nie od "teraz". Inaczej — a tak wlasnie
+  // zrobilem za pierwszym razem — po kazdym renderowaniu jestesmy "spoznieni"
+  // wzgledem samych siebie, resetujemy baze i czekamy pelny okres. Czyli znowu
+  // "rysowanie + 70 ms" (zmierzone: 110 ms / 9 fps) zamiast rownych 70 ms.
   static uint32_t nextFrameAt = 0;
   const uint32_t period = animating ? cfg::FRAME_ACTIVE_MS : cfg::FRAME_IDLE_MS;
-  const uint32_t tNow = millis();
 
-  if (static_cast<int32_t>(tNow - nextFrameAt) > 0) {
-    nextFrameAt = tNow;   // spoznilismy sie (dlugi zrzut, OTA) — nie gonimy strat
-  }
+  if (nextFrameAt == 0) nextFrameAt = millis();
   nextFrameAt += period;
 
-  const int32_t left = static_cast<int32_t>(nextFrameAt - millis());
-  delay(left > 1 ? left : 1);   // zawsze oddajemy procesor, choc na 1 ms
+  int32_t left = static_cast<int32_t>(nextFrameAt - millis());
+  if (left < 1) {
+    // Rysowanie nie wyrobilo sie w okresie. Jesli zostalismy w tyle o wiecej niz
+    // caly okres (zrzut ekranu, OTA), kasujemy dlug — inaczej gonilibysmy strate
+    // serią klatek bez pauzy i zaglodzili pozostale zadania.
+    if (left < -static_cast<int32_t>(period)) nextFrameAt = millis();
+    left = 1;
+  }
+  delay(left);
 
   // rzeczywisty okres klatki (srednia kroczaca) — zeby bylo widac, czy cel 30 fps
   // jest naprawdę osiągany, a nie tylko deklarowany
