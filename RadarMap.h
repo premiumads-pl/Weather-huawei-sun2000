@@ -47,4 +47,8 @@ bool hasRain();
 void setDemo(bool on);
 bool demo();
 
+// Po wylaczeniu symulacji trzeba NATYCHMIAST sciagnac prawdziwe klatki — inaczej
+// ekran wisi na "Pobieram mapę opadów" az do najblizszego cyklu (10 minut).
+bool wantsFetch();
+
 }  // namespace radarmap

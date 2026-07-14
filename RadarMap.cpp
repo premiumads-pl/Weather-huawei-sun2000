@@ -26,6 +26,7 @@ int gCount = 0;
 uint32_t gUpdatedAt = 0;
 bool gDemo = false;
 bool gRain = false;
+bool gWantFetch = false;
 char gErr[48] = "brak danych";
 SemaphoreHandle_t gMx = nullptr;
 
@@ -187,8 +188,13 @@ bool begin() {
   return true;
 }
 
+bool wantsFetch() {
+  return gWantFetch;
+}
+
 bool fetch() {
   if (gTile == nullptr || gDemo) return false;   // w symulacji nie nadpisujemy klatek
+  gWantFetch = false;
 
   String js;
   if (!httpGet("http://api.rainviewer.com/public/weather-maps.json", nullptr, nullptr, &js)) {
@@ -348,6 +354,7 @@ void setDemo(bool on) {
     gCount = 0;
     gRain = false;
     gUpdatedAt = 0;
+    gWantFetch = true;   // wracamy na prawdziwe dane — i to od razu
     return;
   }
   if (gFrames[0] == nullptr) return;

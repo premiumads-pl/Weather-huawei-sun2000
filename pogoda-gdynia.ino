@@ -346,7 +346,7 @@ static void netTask(void*) {
     // ---- animowana mapa opadow (7 kafelkow, 2 h wstecz) ----
     // Idzie PO radarze punktowym i PRZED lotami: sciaga 7 obrazkow, wiec nie chcemy
     // tego robic czesto ani rownolegle z niczym ciezkim.
-    if (static_cast<int32_t>(millis() - nextRadarMapAt) >= 0) {
+    if (radarmap::wantsFetch() || static_cast<int32_t>(millis() - nextRadarMapAt) >= 0) {
       if (radarmap::fetch()) {
         nextRadarMapAt = millis() + cfg::RADAR_MAP_REFRESH_MS;
       } else {
