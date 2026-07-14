@@ -640,6 +640,8 @@ void apiDiag() {
                        : 0;
   gfx["period_ms"] = d.framePeriodUs / 1000.0;
   gfx["fps_real"] = d.framePeriodUs > 0 ? 1000000.0 / d.framePeriodUs : 0;
+  gfx["radar_frame"] = d.radarFrame;
+  gfx["radar_min"] = d.radarFrameMin;
   gfx["spi_hz"] = 80000000;   // z User_Setup.h
 
   JsonObject o = j["ota"].to<JsonObject>();

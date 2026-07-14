@@ -1809,6 +1809,8 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
   const int fi = step >= n ? n - 1 : step;
 
   const radarmap::Frame& fr = radarmap::frame(fi);
+  diag().radarFrame = fi;
+  diag().radarFrameMin = fr.offsetMin;
 
   // --- mapa na PELNA szerokosc (osobny raster gmapw, 320 px) ---
   // Ekran samolotow dzieli miejsce z lista lotow i musi miec 224 px. Radar nie ma
@@ -1865,8 +1867,11 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
     for (uint16_t k = a; k < b; ++k) {
       const uint16_t x0 = pgm_read_word(&gmapw::LAND_SPANS[k][0]);
       const uint16_t x1 = pgm_read_word(&gmapw::LAND_SPANS[k][1]);
-      spr.drawPixel(mx + x0, my + row, col::MAP_COAST_HI);
-      spr.drawPixel(mx + x1, my + row, col::MAP_COAST_HI);
+      // Piksel na KRAWEDZI KADRU to nie wybrzeze, tylko miejsce, w ktorym mapa sie
+      // konczy. Rysowany dawal pionowa biala krechę wzdluz calego lewego brzegu,
+      // bo lad (Pomorze) dochodzi tam do granicy obrazu.
+      if (x0 > 0) spr.drawPixel(mx + x0, my + row, col::MAP_COAST_HI);
+      if (x1 < gmapw::MAP_W - 1) spr.drawPixel(mx + x1, my + row, col::MAP_COAST_HI);
     }
   }
 
