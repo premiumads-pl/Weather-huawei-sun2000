@@ -620,7 +620,7 @@ void apiDiag() {
   gfx["max_fps"] = d.frameDrawUs + d.framePushUs > 0
                        ? 1000000.0 / (d.frameDrawUs + d.framePushUs)
                        : 0;
-  gfx["spi_hz"] = 27000000;   // z User_Setup.h
+  gfx["spi_hz"] = 40000000;   // z User_Setup.h
 
   JsonObject o = j["ota"].to<JsonObject>();
   o["remote"] = d.otaRemote;
