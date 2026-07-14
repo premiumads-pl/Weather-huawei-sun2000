@@ -1793,14 +1793,6 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
 
   const radarmap::Frame& fr = radarmap::frame(fi);
 
-  char hdr[24];
-  if (fr.offsetMin >= -1) {
-    snprintf(hdr, sizeof(hdr), "teraz");
-  } else {
-    snprintf(hdr, sizeof(hdr), "%ld min temu", static_cast<long>(-fr.offsetMin));
-  }
-  viewHeader(spr, ox, "RADAR OPADÓW", hdr);
-
   // --- mapa (ten sam raster co ekran samolotow, wysrodkowany) ---
   const int mx = ox + (W - gmap::MAP_W) / 2;
   const int my = CY;
@@ -1857,6 +1849,19 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
   spr.drawCircle(gx, gy, 3, col::ACCENT);
   spr.fillCircle(gx, gy, 1, col::ACCENT);
   gl(spr, "GDYNIA", gx + 7, gy - 4, col::ACCENT);
+
+  // Naglowek DOPIERO TERAZ, na wlasnym pasku. Mapa zaczyna sie od CY (jak ekran
+  // samolotow), wiec rysowana wczesniej zamalowywalaby tytul. Pasek zaslania
+  // gorne 18 wierszy mapy — tam jest otwarte morze na polnoc od Helu.
+  spr.fillRect(ox, CY, W, 18, col::BG);
+
+  char hdr[24];
+  if (fr.offsetMin >= -1) {
+    snprintf(hdr, sizeof(hdr), "teraz");
+  } else {
+    snprintf(hdr, sizeof(hdr), "%ld min temu", static_cast<long>(-fr.offsetMin));
+  }
+  viewHeader(spr, ox, "RADAR OPADÓW", hdr);
 
   // --- os czasu (na dole, na mapie) ---
   const int ty = CY + gmap::MAP_H - 20;
