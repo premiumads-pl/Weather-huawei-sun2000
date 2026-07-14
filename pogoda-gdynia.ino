@@ -32,6 +32,7 @@
 #include "Ota.h"
 #include "BleSensors.h"
 #include "OtaGuard.h"
+#include "RadarMap.h"
 #include "RoomHistory.h"
 #include "Touch.h"
 
@@ -186,6 +187,7 @@ static void netTask(void*) {
   uint32_t nextBleAt = 20000;  // po WiFi i pierwszej pogodzie
   uint32_t nextRoomSaveAt = 0;
   uint32_t nextRoamAt = 120000;   // pierwszy przeglad po 2 min od startu
+  uint32_t nextRadarMapAt = 25000;
   bool firstWeather = false;
 
   for (;;) {
@@ -338,6 +340,18 @@ static void netTask(void*) {
         strncpy(diag().radarErr, rs.errorMsg, sizeof(diag().radarErr) - 1);
         LOG("Radar BLAD: %s\n", rs.errorMsg);
         nextRadarAt = millis() + 60000;
+      }
+    }
+
+    // ---- animowana mapa opadow (7 kafelkow, 2 h wstecz) ----
+    // Idzie PO radarze punktowym i PRZED lotami: sciaga 7 obrazkow, wiec nie chcemy
+    // tego robic czesto ani rownolegle z niczym ciezkim.
+    if (static_cast<int32_t>(millis() - nextRadarMapAt) >= 0) {
+      if (radarmap::fetch()) {
+        nextRadarMapAt = millis() + cfg::RADAR_MAP_REFRESH_MS;
+      } else {
+        LOG("Radar mapa BLAD: %s", radarmap::lastError());
+        nextRadarMapAt = millis() + 120000;
       }
     }
 
@@ -666,6 +680,7 @@ void setup() {
   // ma bronić.
   ble::begin();
   touch::begin();
+  radarmap::begin();
 
   esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_BSS_RSSI_LOW, &onRssiLow, nullptr);
 

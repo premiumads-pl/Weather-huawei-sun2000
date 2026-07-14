@@ -82,11 +82,12 @@ constexpr uint32_t FRAME_IDLE_MS = 50;   // 20 fps na statycznym ekranie (pasek 
 // Serial. Przydatne po zmianie na dwa pasy — domyślnie wyłączone, bo to tylko log.
 constexpr bool PROFILE_FRAME = false;
 
-constexpr int VIEW_COUNT = 7;   // TERAZ / GODZINY / 5 DNI / W DOMU / PV / SAMOLOTY / STATYSTYKI
-constexpr int VIEW_HOME = 3;    // czujniki BLE — pomijany, gdy zadnego nie ma
-constexpr int VIEW_PV = 4;
-constexpr int VIEW_FLIGHTS = 5;
-constexpr int VIEW_STATS = 6;   // ekran serwisowy
+constexpr int VIEW_COUNT = 8;   // TERAZ / GODZINY / RADAR / 5 DNI / W DOMU / PV / SAMOLOTY / STATYSTYKI
+constexpr int VIEW_RADAR = 2;   // animowana mapa opadow
+constexpr int VIEW_HOME = 4;    // czujniki BLE — pomijany, gdy zadnego nie ma
+constexpr int VIEW_PV = 5;
+constexpr int VIEW_FLIGHTS = 6;
+constexpr int VIEW_STATS = 7;   // ekran serwisowy
 
 // --- progi zdrowia urządzenia (wskaźniki na ekranie statystyk) ---
 // Temperatura: czujnik w ESP32-S3 mierzy strukturę (die), nie otoczenie.
@@ -104,5 +105,8 @@ constexpr uint32_t HEAP_WARN = 45000;
 constexpr uint32_t HEAP_FULL = 160000;  // pełna skala wskaźnika
 constexpr uint32_t VIEW_HOLD_FLIGHTS_MS = 15000;
 constexpr uint32_t VIEW_HOLD_STATS_MS = 6000;   // serwisowy — krótko
+constexpr uint32_t VIEW_HOLD_RADAR_MS = 16000;  // tyle, zeby animacja zdazyla przejsc 2x
+constexpr uint32_t RADAR_MAP_REFRESH_MS = 10UL * 60UL * 1000UL;
+constexpr uint32_t RADAR_FRAME_MS = 420;       // tempo animacji
 
 }  // namespace cfg

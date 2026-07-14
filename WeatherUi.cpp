@@ -9,6 +9,7 @@
 #include "Colors.h"
 #include "Config.h"
 #include "MapData.h"
+#include "RadarMap.h"
 #include "PlText.h"
 #include "BleSensors.h"
 #include "Log.h"
@@ -946,7 +947,7 @@ void WeatherUi::drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, co
   //   zielony   = nadwyżka oddana do sieci      (dioda zielona)
   //   niebieski = zużycie pokryte z własnej PV  (dioda niebieska — równowaga)
   //   czerwony  = prąd dobrany z sieci          (dioda czerwona)
-  gl(spr, "PRODUKCJA / ZUZYCIE", ox + 12, 122, col::TEXT_MUTE);
+  plStr(spr, PLF14, "PRODUKCJA / ZUŻYCIE", ox + 12, 126, col::TEXT_MUTE);
   char tot[24];
   snprintf(tot, sizeof(tot), "RAZEM %.0f kWh", d.energyTotalKwh);
   glRight(spr, tot, ox + W - 12, 122, col::TEXT_MUTE);
@@ -1151,6 +1152,7 @@ void WeatherUi::raiseAlert(const Alert& a, uint32_t nowMs) {
 uint32_t WeatherUi::holdFor(uint8_t view) const {
   if (view == cfg::VIEW_FLIGHTS) return cfg::VIEW_HOLD_FLIGHTS_MS;
   if (view == cfg::VIEW_STATS) return cfg::VIEW_HOLD_STATS_MS;
+  if (view == cfg::VIEW_RADAR) return cfg::VIEW_HOLD_RADAR_MS;
   return cfg::VIEW_HOLD_MS;
 }
 
@@ -1183,20 +1185,23 @@ void WeatherUi::drawView(TFT_eSPI& spr, uint8_t view, int ox, float t, const Wea
       if (w.ready) drawViewHours(spr, ox, t, w);
       else drawNoData(spr, ox, "Pobieram prognozę...");
       break;
-    case 2:
+    case 3:
       if (w.ready) drawViewDays(spr, ox, t, w);
       else drawNoData(spr, ox, "Pobieram prognozę...");
       break;
-    case 3:
-      drawViewHome(spr, ox, t, w);
+    case 2:
+      drawViewRadar(spr, ox, t, nowMs);
       break;
     case 4:
-      drawViewPv(spr, ox, t, pv, hist);
+      drawViewHome(spr, ox, t, w);
       break;
     case 5:
-      drawViewFlights(spr, ox, t, fl);
+      drawViewPv(spr, ox, t, pv, hist);
       break;
     case 6:
+      drawViewFlights(spr, ox, t, fl);
+      break;
+    case 7:
       drawViewStats(spr, ox, t, nowMs, heapNow);
       break;
     default:
@@ -1763,6 +1768,126 @@ void WeatherUi::drawLedTest(const char* colorName) {
 }
 
 // ---------------------------------------------- WIDOK 6: STATYSTYKI ----------
+
+
+// ------------------------------------------------ WIDOK 3: RADAR OPADOW -------
+// Mapa Zatoki Gdanskiej z nalozonym RZECZYWISTYM obrazem opadu, animowana przez
+// ostatnie 2 godziny. Nie mieszamy tego z ekranem samolotow — dwie warstwy danych
+// na jednej mapie zrobilyby z niej kaszę.
+
+void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
+  const float e = easeOutCubic(t);
+
+  const int n = radarmap::count();
+  if (n == 0) {
+    viewHeader(spr, ox, "RADAR OPADÓW", "pobieram...");
+    drawNoData(spr, ox, "Pobieram mapę opadów", radarmap::lastError());
+    return;
+  }
+
+  // Klatka animacji: cyklicznie, z krotka pauza na ostatniej (najnowszej) —
+  // inaczej oko nie zdazy zauwazyc, gdzie pada TERAZ.
+  const int steps = n + 2;   // 2 dodatkowe "przystanki" na koncu
+  const int step = static_cast<int>((nowMs / cfg::RADAR_FRAME_MS) % steps);
+  const int fi = step >= n ? n - 1 : step;
+
+  const radarmap::Frame& fr = radarmap::frame(fi);
+
+  char hdr[24];
+  if (fr.offsetMin >= -1) {
+    snprintf(hdr, sizeof(hdr), "teraz");
+  } else {
+    snprintf(hdr, sizeof(hdr), "%ld min temu", static_cast<long>(-fr.offsetMin));
+  }
+  viewHeader(spr, ox, "RADAR OPADÓW", hdr);
+
+  // --- mapa (ten sam raster co ekran samolotow, wysrodkowany) ---
+  const int mx = ox + (W - gmap::MAP_W) / 2;
+  const int my = CY;
+
+  spr.fillRect(mx, my, gmap::MAP_W, gmap::MAP_H, col::MAP_SEA);
+  for (int row = 0; row < gmap::MAP_H; ++row) {
+    const uint16_t a = pgm_read_word(&gmap::LAND_ROW_OFF[row]);
+    const uint16_t b = pgm_read_word(&gmap::LAND_ROW_OFF[row + 1]);
+    for (uint16_t k = a; k < b; ++k) {
+      const uint8_t x0 = pgm_read_byte(&gmap::LAND_SPANS[k][0]);
+      const uint8_t x1 = pgm_read_byte(&gmap::LAND_SPANS[k][1]);
+      spr.drawFastHLine(mx + x0, my + row, x1 - x0 + 1, col::MAP_LAND);
+    }
+  }
+
+  // --- warstwa opadu ---
+  // Rysujemy CIAGAMI, nie pikselami: przy 224x172 = 38 tys. pikseli pojedyncze
+  // drawPixel zjadloby budzet klatki (21 ms) w calosci.
+  static const uint16_t kPal[6] = {
+      0,                       // 0 — brak opadu
+      lerp565(col::MAP_SEA, col::RAIN, 0.55f),   // mzawka: ledwo widoczna
+      col::RAIN,                                 // deszcz
+      col::WARN,                                 // silny
+      col::PV_IMPORT,                            // bardzo silny
+      col::ERR,                                  // ulewa
+  };
+
+  const int rows = static_cast<int>(gmap::MAP_H * e);   // animacja wejscia: opad "wchodzi"
+  for (int y = 0; y < rows; ++y) {
+    int x = 0;
+    while (x < gmap::MAP_W) {
+      const uint8_t lv = radarmap::levelAt(fi, x, y);
+      if (lv == 0) {
+        ++x;
+        continue;
+      }
+      int x2 = x + 1;
+      while (x2 < gmap::MAP_W && radarmap::levelAt(fi, x2, y) == lv) ++x2;
+      spr.drawFastHLine(mx + x, my + y, x2 - x, kPal[lv > 5 ? 5 : lv]);
+      x = x2;
+    }
+  }
+
+  // --- Gdynia ---
+  int gx = 0, gy = 0;
+  {
+    const float lat = settings().lat, lon = settings().lon;
+    gx = mx + static_cast<int>((lon - gmap::LON_MIN) / (gmap::LON_MAX - gmap::LON_MIN) *
+                               gmap::MAP_W);
+    gy = my + static_cast<int>((gmap::LAT_MAX - lat) / (gmap::LAT_MAX - gmap::LAT_MIN) *
+                               gmap::MAP_H);
+  }
+  spr.drawCircle(gx, gy, 4, col::BG);
+  spr.drawCircle(gx, gy, 3, col::ACCENT);
+  spr.fillCircle(gx, gy, 1, col::ACCENT);
+  gl(spr, "GDYNIA", gx + 7, gy - 4, col::ACCENT);
+
+  // --- os czasu (na dole, na mapie) ---
+  const int ty = CY + gmap::MAP_H - 20;
+  spr.fillRect(ox, ty, W, 20, col::BG);
+
+  const int ax0 = ox + 40, ax1 = ox + W - 46;
+  spr.drawFastHLine(ax0, ty + 12, ax1 - ax0, col::GRID_HI);
+
+  for (int i = 0; i < n; ++i) {
+    const int x = ax0 + (i * (ax1 - ax0)) / (n - 1);
+    const bool cur = (i == fi);
+    spr.drawFastVLine(x, ty + 8, 8, cur ? col::ACCENT : col::TEXT_MUTE);
+    if (cur) {
+      spr.fillCircle(x, ty + 5, 3, col::ACCENT);
+    }
+  }
+
+  gl(spr, "-2h", ox + 14, ty + 8, col::TEXT_MUTE);
+  glRight(spr, "teraz", ox + W - 12, ty + 8, col::TEXT_MUTE);
+
+  // godzina biezacej klatki
+  if (fr.epoch > 0) {
+    const time_t tt = static_cast<time_t>(fr.epoch);
+    struct tm tmv{};
+    localtime_r(&tt, &tmv);
+    char hm[8];
+    snprintf(hm, sizeof(hm), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+    const int x = ax0 + (fi * (ax1 - ax0)) / (n - 1);
+    plCenter(spr, PLF14, hm, x, ty + 4, col::TEXT);
+  }
+}
 
 // ---------------------------------------------- WIDOK 7: W DOMU (czujniki BLE) --
 // Sens tego ekranu nie polega na pokazaniu dwoch liczb — te sa w telefonie.
