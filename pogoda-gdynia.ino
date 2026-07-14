@@ -793,5 +793,29 @@ void loop() {
   }
 
   const bool animating = ui.render(uiWeather, uiPv, uiHist, uiFlights, gWifiOk, now);
-  delay(animating ? cfg::FRAME_ACTIVE_MS : cfg::FRAME_IDLE_MS);
+
+  // TAKTOWANIE KLATEK, nie stala pauza. Poprzednio bylo delay(33) PO renderowaniu,
+  // wiec okres klatki wynosil "rysowanie + 33 ms": przy 66 ms rysowania dawalo to
+  // 99 ms (10 fps). Podniesienie SPI z 27 na 80 MHz scielo rysowanie do 32 ms,
+  // ale pauza i tak doklejala swoje 33 — z 31 klatek, ktore sprzet potrafi,
+  // polowa szla do kosza. Teraz czekamy tylko RESZTE okresu.
+  static uint32_t nextFrameAt = 0;
+  const uint32_t period = animating ? cfg::FRAME_ACTIVE_MS : cfg::FRAME_IDLE_MS;
+  const uint32_t tNow = millis();
+
+  if (static_cast<int32_t>(tNow - nextFrameAt) > 0) {
+    nextFrameAt = tNow;   // spoznilismy sie (dlugi zrzut, OTA) — nie gonimy strat
+  }
+  nextFrameAt += period;
+
+  const int32_t left = static_cast<int32_t>(nextFrameAt - millis());
+  delay(left > 1 ? left : 1);   // zawsze oddajemy procesor, choc na 1 ms
+
+  // rzeczywisty okres klatki (srednia kroczaca) — zeby bylo widac, czy cel 30 fps
+  // jest naprawdę osiągany, a nie tylko deklarowany
+  static uint32_t lastFrame = 0;
+  if (lastFrame != 0) {
+    diag().framePeriodUs = (diag().framePeriodUs * 7 + (micros() - lastFrame)) / 8;
+  }
+  lastFrame = micros();
 }

@@ -39,6 +39,7 @@ struct Diag {
   uint32_t wifiRoams = 0;  // ile razy przenieslismy sie na mocniejszy punkt
   uint32_t frameDrawUs = 0;   // rysowanie klatki do bufora (PSRAM)
   uint32_t framePushUs = 0;   // wypchniecie bufora na SPI
+  uint32_t framePeriodUs = 0; // RZECZYWISTY okres klatki (z pauzami)
   uint32_t radarSkips = 0;   // ile razy radar odpuścił z braku pamięci
 
   // --- OTA: okres próbny i rollback (patrz OtaGuard.h) ---
