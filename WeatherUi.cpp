@@ -1921,6 +1921,13 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
   gl(spr, "-2h", ox + 14, ty + 8, col::TEXT_MUTE);
   glRight(spr, "teraz", ox + W - 12, ty + 8, col::TEXT_MUTE);
 
+  // Strzalka: czas plynie w prawo. Bez niej kierunek trzeba zgadywac z ruchu chmur,
+  // a ten bywa mylacy (patrz: efekt kola wozu w symulacji).
+  const int arrX = ax1 - 12;
+  spr.drawFastHLine(arrX - 10, ty + 12, 10, col::ACCENT);
+  spr.drawLine(arrX, ty + 12, arrX - 4, ty + 9, col::ACCENT);
+  spr.drawLine(arrX, ty + 12, arrX - 4, ty + 15, col::ACCENT);
+
   // godzina biezacej klatki
   if (fr.epoch > 0) {
     const time_t tt = static_cast<time_t>(fr.epoch);

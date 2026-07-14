@@ -108,6 +108,6 @@ constexpr uint32_t VIEW_HOLD_FLIGHTS_MS = 15000;
 constexpr uint32_t VIEW_HOLD_STATS_MS = VIEW_HOLD_MS;   // tyle samo co reszta
 constexpr uint32_t VIEW_HOLD_RADAR_MS = 16000;  // tyle, zeby animacja zdazyla przejsc 2x
 constexpr uint32_t RADAR_MAP_REFRESH_MS = 10UL * 60UL * 1000UL;
-constexpr uint32_t RADAR_FRAME_MS = 420;       // tempo animacji
+constexpr uint32_t RADAR_FRAME_MS = 650;       // wolniej = oko nadaza za frontem
 
 }  // namespace cfg

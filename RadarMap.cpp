@@ -355,22 +355,26 @@ void setDemo(bool on) {
   const time_t nowT = time(nullptr);
   xSemaphoreTake(gMx, portMAX_DELAY);
 
+  // KLUCZOWE: front nie moze przeskakiwac o wiecej niz ~polowe wlasnej szerokosci
+  // na klatke. Pierwsza wersja robila 73 px skoku przy pasie 124 px szerokim —
+  // oko dopasowywalo wtedy lewa krawedz nowej klatki do prawej krawedzi starej
+  // i widzialo ruch DO TYLU (efekt kola wozu). Animacja szla do przodu, ale
+  // wygladala na cofajaca sie. Teraz: 26 px skoku przy pasie ~92 px.
   for (int i = 0; i < FRAMES; ++i) {
-    // srodek frontu wedruje przez cala mape w ciagu 7 klatek
-    const float cx = -60.f + (W + 120.f) * (i / static_cast<float>(FRAMES - 1));
+    const float cx = 30.f + 155.f * (i / static_cast<float>(FRAMES - 1));
 
     for (int y = 0; y < H; ++y) {
       for (int x = 0; x < W; ++x) {
         // ukosny front (jak na Baltyku) + falowanie krawedzi
         const float fx = x + (y - H / 2) * 0.35f;
-        const float d = fabsf(fx - cx - sinf(y * 0.06f + i) * 12.f);
+        const float d = fabsf(fx - cx - sinf(y * 0.06f + i) * 10.f);
 
         uint8_t lv = 0;
-        if (d < 14.f) lv = 5;
-        else if (d < 24.f) lv = 4;
-        else if (d < 34.f) lv = 3;
-        else if (d < 48.f) lv = 2;
-        else if (d < 62.f) lv = 1;
+        if (d < 10.f) lv = 5;
+        else if (d < 18.f) lv = 4;
+        else if (d < 26.f) lv = 3;
+        else if (d < 36.f) lv = 2;
+        else if (d < 46.f) lv = 1;
 
         // dziury w opadzie — inaczej wyglada jak pomalowany pas
         if (lv > 1 && ((x * 7 + y * 13 + i * 31) % 11) == 0) --lv;
