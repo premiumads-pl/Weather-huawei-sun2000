@@ -206,7 +206,12 @@ bool fetch() {
     return false;
   }
 
-  const char* host = doc["host"] | "tilecache.rainviewer.com";
+  // API zwraca host ZE SCHEMATEM ("https://tilecache..."). Bez obciecia budowalismy
+  // adres "http://https://..." i zadna klatka nie dochodzila. Kafelki bierzemy po
+  // czystym HTTP — TLS nie jest tu potrzebny, a oszczedza sterte.
+  const char* host = doc["host"] | "https://tilecache.rainviewer.com";
+  if (strncmp(host, "https://", 8) == 0) host += 8;
+  else if (strncmp(host, "http://", 7) == 0) host += 7;
   JsonArrayConst past = doc["radar"]["past"];
   const int n = past.size();
   if (n < FRAMES) {
