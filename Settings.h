@@ -54,6 +54,14 @@ struct Settings {
   bool hasViessmann() const { return viEnabled && viClientId[0] != '\0' && viRefresh[0] != '\0'; }
   void viSave();
 
+  // Odczyty licznika gazu wpisywane recznie — do weryfikacji, czy piec nie klamie.
+  static constexpr int METERS = 8;
+  struct MeterCfg { uint32_t day = 0; float m3 = 0.f; };
+  MeterCfg meters[METERS];
+  bool meterAdd(uint32_t day, float m3);
+  bool meterDel(uint32_t day);
+  void meterSave();
+
   const BleCfg* bleFind(const char* mac) const;
   bool bleSet(const char* mac, const char* name, const char* keyHex);  // keyHex: 32 znaki lub ""
 

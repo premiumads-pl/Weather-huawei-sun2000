@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "PvData.h"
+#include "GasMeter.h"
 #include "RoomHistory.h"
 
 namespace {
@@ -42,6 +43,9 @@ void Settings::load() {
   String vi = prefs.getString("viinst", "");
   String vg = prefs.getString("vigw", "");
   viAuthAt = prefs.getUInt("viat", 0);
+  if (prefs.getBytesLength("mets") == sizeof(meters)) {
+    prefs.getBytes("mets", meters, sizeof(meters));
+  }
   viEnabled = prefs.getBool("vien", false);
   strncpy(viClientId, vc.c_str(), sizeof(viClientId) - 1);
   strncpy(viRefresh, vr.c_str(), sizeof(viRefresh) - 1);
@@ -109,6 +113,57 @@ void Settings::viSave() {
   prefs.putUInt("viat", viAuthAt);
   prefs.putBool("vien", viEnabled);
   prefs.end();
+}
+
+void Settings::meterSave() {
+  prefs.begin(NS_CFG, false);
+  prefs.putBytes("mets", meters, sizeof(meters));
+  prefs.end();
+}
+
+// Trzymamy posortowane po dacie. Ten sam dzien = nadpisanie (poprawka literowki).
+bool Settings::meterAdd(uint32_t day, float m3) {
+  if (day == 0 || m3 <= 0.f) return false;
+
+  int slot = -1;
+  for (int i = 0; i < METERS; ++i) {
+    if (meters[i].day == day) { slot = i; break; }
+  }
+  if (slot < 0) {
+    for (int i = 0; i < METERS; ++i) {
+      if (meters[i].day == 0) { slot = i; break; }
+    }
+  }
+  if (slot < 0) {   // pelno — wyrzucamy najstarszy
+    slot = 0;
+    for (int i = 1; i < METERS; ++i) {
+      if (meters[i].day < meters[slot].day) slot = i;
+    }
+  }
+  meters[slot].day = day;
+  meters[slot].m3 = m3;
+
+  for (int i = 0; i < METERS - 1; ++i) {
+    for (int j = i + 1; j < METERS; ++j) {
+      const bool swap = (meters[i].day == 0 && meters[j].day != 0) ||
+                        (meters[j].day != 0 && meters[i].day != 0 && meters[j].day < meters[i].day);
+      if (swap) { MeterCfg t = meters[i]; meters[i] = meters[j]; meters[j] = t; }
+    }
+  }
+  meterSave();
+  return true;
+}
+
+bool Settings::meterDel(uint32_t day) {
+  for (int i = 0; i < METERS; ++i) {
+    if (meters[i].day == day) {
+      meters[i].day = 0;
+      meters[i].m3 = 0.f;
+      meterSave();
+      return true;
+    }
+  }
+  return false;
 }
 
 const Settings::BleCfg* Settings::bleFind(const char* mac) const {

@@ -82,13 +82,14 @@ constexpr uint32_t FRAME_IDLE_MS = 50;   // 20 fps na statycznym ekranie (pasek 
 // Serial. Przydatne po zmianie na dwa pasy — domyślnie wyłączone, bo to tylko log.
 constexpr bool PROFILE_FRAME = false;
 
-constexpr int VIEW_COUNT = 8;   // TERAZ / GODZINY / RADAR / 5 DNI / W DOMU / PV / SAMOLOTY / STATYSTYKI
+constexpr int VIEW_COUNT = 9;   // TERAZ / GODZINY / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / STATYSTYKI
 constexpr int VIEW_RADAR = 2;   // animowana mapa opadow (pomijany, gdy nie pada)
 constexpr int VIEW_DAYS = 3;
 constexpr int VIEW_HOME = 4;    // czujniki BLE — pomijany, gdy zadnego nie ma
-constexpr int VIEW_PV = 5;
-constexpr int VIEW_FLIGHTS = 6;
-constexpr int VIEW_STATS = 7;   // ekran serwisowy
+constexpr int VIEW_BOILER = 5;  // piec — pomijany, gdy nieautoryzowany
+constexpr int VIEW_PV = 6;
+constexpr int VIEW_FLIGHTS = 7;
+constexpr int VIEW_STATS = 8;   // ekran serwisowy
 
 // --- progi zdrowia urządzenia (wskaźniki na ekranie statystyk) ---
 // Temperatura: czujnik w ESP32-S3 mierzy strukturę (die), nie otoczenie.

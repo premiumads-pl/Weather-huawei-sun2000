@@ -10,6 +10,7 @@
 #include "Config.h"
 #include "MapData.h"
 #include "Moon.h"
+#include "Viessmann.h"
 #include "MapDataWide.h"
 #include "RadarMap.h"
 #include "PlText.h"
@@ -385,7 +386,8 @@ void WeatherUi::drawProgress(TFT_eSPI& spr, uint32_t nowMs) {
     // Ekran pominiety w rotacji (radar bez opadu, "w domu" bez czujnikow) dostaje
     // wlasny, przygaszony kolor — widac, ze istnieje, ale nie ma czego pokazac.
     const bool skipped = (i == cfg::VIEW_RADAR && !radarmap::hasRain()) ||
-                         (i == cfg::VIEW_HOME && ble::count() == 0);
+                         (i == cfg::VIEW_HOME && ble::count() == 0) ||
+                         (i == cfg::VIEW_BOILER && !settings().hasViessmann());
     if (skipped) {
       spr.fillRect(x, cfg::PROG_Y, wSeg, cfg::PROG_H, lerp565(col::BG, col::RAIN, 0.30f));
       continue;
@@ -1282,12 +1284,15 @@ void WeatherUi::drawView(TFT_eSPI& spr, uint8_t view, int ox, float t, const Wea
       drawViewHome(spr, ox, t, w);
       break;
     case 5:
-      drawViewPv(spr, ox, t, pv, hist);
+      drawViewBoiler(spr, ox, t);
       break;
     case 6:
-      drawViewFlights(spr, ox, t, fl);
+      drawViewPv(spr, ox, t, pv, hist);
       break;
     case 7:
+      drawViewFlights(spr, ox, t, fl);
+      break;
+    case 8:
       drawViewStats(spr, ox, t, nowMs, heapNow);
       break;
     default:
@@ -1383,6 +1388,9 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
       // żeby było widać, że taki ekran istnieje i po prostu nie ma co pokazywać.
       if (view_ == cfg::VIEW_RADAR && !radarmap::hasRain()) {
         view_ = static_cast<uint8_t>(cfg::VIEW_DAYS);
+      }
+      if (view_ == cfg::VIEW_BOILER && !settings().hasViessmann()) {
+        view_ = static_cast<uint8_t>(cfg::VIEW_PV);
       }
       transitioning_ = true;
       transStart_ = nowMs;
@@ -2015,6 +2023,121 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
   }
 }
 
+
+// -------------------------------------------------- WIDOK 6: PIEC ------------
+// Vitodens 050-W przez chmure ViCare. Piec jest slepy — nie ma czujnika
+// zewnetrznego ani krzywej grzewczej — wiec pokazujemy to, co naprawde wie:
+// wlasna wode, palnik i zuzycie gazu.
+
+void WeatherUi::drawViewBoiler(TFT_eSPI& spr, int ox, float t) {
+  const float e = easeOutCubic(t);
+  static const vi::Model kEmptyBoiler{};
+  const vi::Model& b = boiler_ ? *boiler_ : kEmptyBoiler;
+
+  if (!b.valid) {
+    viewHeader(spr, ox, "PIEC", "brak danych");
+    drawNoData(spr, ox, "Piec nie odpowiada",
+               diag().viErr[0] ? diag().viErr : "skonfiguruj w panelu");
+    return;
+  }
+
+  // Naglowek: stan palnika — jedyna rzecz, ktora zmienia sie z minuty na minute.
+  char hdr[24];
+  if (b.burnerActive) {
+    snprintf(hdr, sizeof(hdr), "palnik %d%%", b.modulationPct);
+  } else {
+    snprintf(hdr, sizeof(hdr), "palnik wyłączony");
+  }
+  viewHeader(spr, ox, "PIEC", hdr, b.burnerActive ? col::PV_SOLAR : col::TEXT_MUTE,
+             b.burnerActive ? col::PV_SOLAR : col::TEXT_MUTE);
+
+  // --- CIEPLA WODA: najwazniejsza liczba na tym ekranie ---
+  gl(spr, "CIEPŁA WODA", ox + 13, 56, col::TEXT_MUTE);
+  char v[12];
+  snprintf(v, sizeof(v), "%.1f", b.dhwTempC);
+  const int vw = bigStr(spr, &FreeSansBold24pt7b, v, ox + 12, 102,
+                        b.dhwTempC < 40.f ? col::PV_HOUSE : col::PV_IMPORT);
+  plStr(spr, PLF18, "°C", ox + 16 + vw, 76, col::TEXT_DIM);
+
+  char sub[40];
+  snprintf(sub, sizeof(sub), "zadana %.0f°C · %s", b.dhwTargetC,
+           strcmp(b.dhwMode, "comfort") == 0   ? "komfort"
+           : strcmp(b.dhwMode, "eco") == 0     ? "eko"
+           : strcmp(b.dhwMode, "off") == 0     ? "wyłączona"
+                                               : b.dhwMode);
+  plStr(spr, PLF14, sub, ox + 12, 120, col::TEXT_DIM);
+
+  // --- obieg grzewczy (po prawej) ---
+  const bool heating = strcmp(b.circuitMode, "heating") == 0;
+  glCenter(spr, "OBIEG GRZEWCZY", ox + 250, 56, col::TEXT_MUTE);
+  plCenter(spr, PLF18, heating ? "grzeje" : "standby", ox + 250, 82,
+           heating ? col::PV_IMPORT : col::TEXT_MUTE);
+  if (heating) {
+    char cs[20];
+    snprintf(cs, sizeof(cs), "nastawa %.0f°C", b.circuitTargetC);
+    glCenter(spr, cs, ox + 250, 92, col::TEXT_MUTE);
+  } else {
+    glCenter(spr, "lato — nie grzeje", ox + 250, 92, col::TEXT_MUTE);
+  }
+  char sup[24];
+  snprintf(sup, sizeof(sup), "zasilanie %.1f°C", b.supplyTempC);
+  glCenter(spr, sup, ox + 250, 108, col::TEXT_MUTE);
+
+  // --- 4 kafelki: zuzycie dzis ---
+  struct Card {
+    const char* label;
+    char value[12];
+    const char* unit;
+    uint16_t color;
+  } cards[4];
+
+  cards[0] = {"Gaz dziś", {0}, "m³", col::PV_SOLAR};
+  snprintf(cards[0].value, sizeof(cards[0].value), "%.1f", b.gasDhwM3 + b.gasHeatM3);
+
+  cards[1] = {"Ciepło", {0}, "kWh", col::PV_IMPORT};
+  snprintf(cards[1].value, sizeof(cards[1].value), "%.0f", b.heatDhwKwh + b.heatHeatKwh);
+
+  cards[2] = {"Prąd", {0}, "kWh", col::PV_HOUSE};
+  snprintf(cards[2].value, sizeof(cards[2].value), "%.1f", b.powerKwh);
+
+  cards[3] = {"Palnik", {0}, "h", col::TEXT_DIM};
+  snprintf(cards[3].value, sizeof(cards[3].value), "%lu",
+           static_cast<unsigned long>(b.burnerHours));
+
+  const int cy0 = 131, chh = 45;
+  for (int i = 0; i < 4; ++i) {
+    const int x = ox + 6 + i * 78;
+    const int grow = static_cast<int>(chh * clampf(e * 1.3f - i * 0.08f, 0.f, 1.f));
+    if (grow < 4) continue;
+    spr.fillRoundRect(x, cy0 + (chh - grow), 74, grow, 6, col::BG_CARD);
+    if (grow < chh - 2) continue;
+    spr.fillRoundRect(x, cy0, 3, chh, 1, cards[i].color);
+    plStr(spr, PLF14, cards[i].label, x + 8, cy0 + 15, col::TEXT_DIM);
+    const int w2 = pltxt::drawString(spr, PLF18, cards[i].value, x + 8, cy0 + 40,
+                                     cards[i].color, cards[i].color);
+    gl(spr, cards[i].unit, x + 11 + w2, cy0 + 33, col::TEXT_MUTE);
+  }
+
+  // --- pasek dolny: uruchomienia + wiek autoryzacji ---
+  const int by = 196;
+  char st[40];
+  snprintf(st, sizeof(st), "uruchomień %lu", static_cast<unsigned long>(b.burnerStarts));
+  plStr(spr, PLF14, st, ox + 12, by, col::TEXT_MUTE);
+
+  const int dleft = vi::daysLeft();
+  if (dleft >= 0 && dleft < 21) {
+    // Refresh token zyje 180 dni. Bez ostrzezenia piec pewnego dnia po prostu
+    // zniknalby z ekranu i nikt by nie wiedzial dlaczego.
+    char au[32];
+    snprintf(au, sizeof(au), "autoryzacja: %d dni!", dleft);
+    plRight(spr, PLF14, au, ox + W - 12, by, col::ERR);
+  } else {
+    char wf[20];
+    snprintf(wf, sizeof(wf), "piec %d dBm", b.wifiRssi);
+    plRight(spr, PLF14, wf, ox + W - 12, by, col::TEXT_MUTE);
+  }
+}
+
 // ---------------------------------------------- WIDOK 7: W DOMU (czujniki BLE) --
 // Sens tego ekranu nie polega na pokazaniu dwoch liczb — te sa w telefonie.
 // Polega na ZESTAWIENIU ich z tym, co na zewnatrz: od razu widac, czy warto
@@ -2415,7 +2538,8 @@ void WeatherUi::prevView() {
   for (int i = 0; i < cfg::VIEW_COUNT; ++i) {
     v = (v - 1 + cfg::VIEW_COUNT) % cfg::VIEW_COUNT;
     const bool skipped = (v == cfg::VIEW_RADAR && !radarmap::hasRain()) ||
-                         (v == cfg::VIEW_HOME && ble::count() == 0);
+                         (v == cfg::VIEW_HOME && ble::count() == 0) ||
+                         (v == cfg::VIEW_BOILER && !settings().hasViessmann());
     if (!skipped) break;
   }
   if (v == view_) {

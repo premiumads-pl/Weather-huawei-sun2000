@@ -675,6 +675,7 @@ void setup() {
   uiRooms = gRooms;
   uiVi = gVi;
   ui.setRoomHistory(&uiRooms);
+  ui.setBoiler(&uiVi);
 
   if (!settings().hasWifi()) {
     portal::beginAp();

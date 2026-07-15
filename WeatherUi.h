@@ -6,6 +6,7 @@
 #include "FlightData.h"
 #include "PvData.h"
 #include "WeatherData.h"
+#include "Viessmann.h"
 
 enum class AlertKind : uint8_t {
   NONE = 0,
@@ -78,6 +79,7 @@ class WeatherUi {
   // a przewlekanie jej przez render/paintFrame/drawView tylko po to, zeby doszla
   // do jednego widoku, zasmiecaloby cztery sygnatury.
   void setRoomHistory(const struct RoomHistory* rh) { rooms_ = rh; }
+  void setBoiler(const vi::Model* b) { boiler_ = b; }
   void viewState(int& cur, int& pin) const {
     cur = view_;
     pin = pinned_;
@@ -148,6 +150,7 @@ class WeatherUi {
   // rotacja widoków
   uint8_t view_ = 0;
   const struct RoomHistory* rooms_ = nullptr;
+  const vi::Model* boiler_ = nullptr;
   int8_t pinned_ = -1;  // >=0: ekran zablokowany z panelu WWW
   uint8_t prevView_ = 0;
   uint32_t viewStart_ = 0;
@@ -190,6 +193,7 @@ class WeatherUi {
   void drawViewFlights(TFT_eSPI& spr, int ox, float t, const FlightModel& fl);
   void drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs);
   void drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
+  void drawViewBoiler(TFT_eSPI& spr, int ox, float t);
   void drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs, uint32_t heapNow);
   void drawAlert(TFT_eSPI& spr, float t);
   // Podtytuł (sub) niesie powód ciszy falownika — noc, nie awaria.
