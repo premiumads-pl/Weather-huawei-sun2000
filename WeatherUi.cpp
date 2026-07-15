@@ -319,6 +319,81 @@ void WeatherUi::drawColorTest() {
 
 // ------------------------------------------------------------------- chrome ----
 
+// Nazwy ekranow — JEDNO zrodlo prawdy dla belki gornej i dla panelu WWW.
+// Krotkie, bo w belce na tytul zostaje 152 px: "STATYSTYKI URZĄDZENIA" mialo 178 px
+// i nie mieszczilo sie, a "FOTOWOLTAIKA" (najdluzsza z tych ponizej) ma 112 px.
+// Indeks = cfg::VIEW_*, pilnuje tego static_assert w drawView().
+const char* const kViewNames[cfg::VIEW_COUNT] = {
+    "TERAZ", "GODZINY", "RADAR", "5 DNI", "W DOMU", "PIEC", "FOTOWOLTAIKA",
+    "SAMOLOTY", "STATYSTYKI"};
+
+// Zdrowie calego systemu w jednej liczbie: 0 = OK, 1 = uwaga, 2 = awaria.
+//
+// To jest DOKLADNIE to samo, co osiem kropek na ekranie statystyk, tylko zwiniete
+// do jednej. Kropka w belce gornej jest widoczna zawsze, a ekran statystyk raz na
+// dziewiec obrotow — bez tego podsumowania awaria potrafila wisiec niezauwazona
+// przez kilka minut.
+//
+// "Wylaczone" NIE jest awaria: falownik spi po zachodzie, MQTT i piec moga byc
+// swiadomie wylaczone, bramka moze nie istniec. Zolto swieci tylko to, co MIALO
+// dzialac i jeszcze nie dostarczylo; czerwono to, co zglosilo blad.
+int systemHealth(bool wifiOk) {
+  if (!wifiOk) return 2;   // bez sieci nie dziala nic innego — nie ma po co liczyc dalej
+
+  const Diag& d = diag();
+  // `soft` = blad tego zrodla to najwyzej ostrzezenie, nigdy awaria calego systemu.
+  struct S { uint32_t okAt; const char* err; bool off; bool soft; };
+  const S s[8] = {
+      {d.weatherOkAt, d.weatherErr, false, false},
+      {d.radarOkAt, d.radarErr, false, false},
+      {d.pvOkAt, d.pvErr, d.pvAsleep, false},
+      {d.viOkAt, d.viErr, !settings().hasViessmann(), false},
+      {d.flightOkAt, d.flightErr, false, false},
+      {d.mqttOkAt, d.mqttErr, !settings().hasMqtt(), false},
+      // blegw::lastError() niesie blad PIERWSZEJ padnietej bramki z listy, a nie stan
+      // calej listy. Przy trzech bramkach jeden restartujacy sie Shelly zapalal przez
+      // to czerwono na wszystkich dziewieciu ekranach, podczas gdy ekran statystyk
+      // w tej samej klatce spokojnie pisal "2 z 3 zyje": dwa miejsca, dwie odpowiedzi.
+      // Jedna cicha bramka to `soft`: zolto. Awaria to dopiero cisza WSZYSTKICH,
+      // sprawdzana ponizej przez online() == 0.
+      {blegw::lastOkAt(), blegw::lastError(), blegw::configured() == 0, true},
+      {d.otaOkAt, "", false, false},
+  };
+
+  int worst = 0;
+  for (const S& e : s) {
+    if (e.off) continue;
+    if (e.err[0] != '\0') {
+      if (!e.soft) return 2;               // blad = czerwono, dalej nie ma co szukac
+      worst = 1;
+    } else if (e.okAt == 0) {
+      worst = 1;                           // jeszcze nic nie przyslal
+    }
+  }
+
+  // Bramki: czerwono dopiero wtedy, gdy zamilkly WSZYSTKIE skonfigurowane. Wtedy
+  // faktycznie nie ma zadnego zrodla odczytow z bramek i to juz jest awaria.
+  if (blegw::configured() > 0 && blegw::online() == 0) return 2;
+
+  // Zdrowie samego urzadzenia — te progi maja juz swoje karty na statystykach,
+  // wiec kropka tylko je powtarza, zamiast wprowadzac nowe reguly.
+  //
+  // Sterta BIEZACA, nie dolek historyczny. Progi HEAP_* opisuja stan "TERAZ":
+  // HEAP_DANGER (25000) to poziom, ponizej ktorego radar nie zdekoduje PNG, a TLS
+  // zaczyna sie dlawic. To prognoza na najblizsza klatke, a nie fakt z przeszlosci.
+  // diag().minHeap to ESP.getMinFreeHeap(), czyli dolek DOZYWOTNI: nigdy nie rosnie
+  // i na urzadzeniu stoi na 22044 B, bo tyle zostalo w najciezszym momencie setup().
+  // Karmienie nim tych progow zapalaloby kropke na czerwono raz na zawsze, na kazdym
+  // ekranie, do konca swiata, mimo ze sterta dawno wrocila do ~150 kB i wszystko dziala.
+  // Dolek jest metryka HISTORYCZNA i ma swoje miejsce: biala kreska na wskazniku na
+  // ekranie statystyk. Nie jest stanem biezacym i nie moze karmic progow stanu biezacego.
+  const uint32_t heapNow = ESP.getFreeHeap();
+  if (heapNow < cfg::HEAP_DANGER) return 2;
+  if (heapNow < cfg::HEAP_WARN) worst = 1;
+  if (otaTrialActive()) worst = 1;   // wersja probna jeszcze nie potwierdzila, ze dziala
+  return worst;
+}
+
 void WeatherUi::drawHeader(TFT_eSPI& spr, const WeatherModel& w, bool wifiOk, uint32_t nowMs) {
   // Belka mieści się w całości w pasie górnym — w dolnym nie ma co liczyć.
   if (!spr.checkViewport(0, 0, W, cfg::HEADER_H)) {
@@ -327,37 +402,65 @@ void WeatherUi::drawHeader(TFT_eSPI& spr, const WeatherModel& w, bool wifiOk, ui
   spr.fillRect(0, 0, W, cfg::HEADER_H, col::HEADER);
   spr.drawFastHLine(0, cfg::HEADER_H - 1, W, col::DIVIDER);
 
-  // status sieci — kropka + delikatny puls przy braku WiFi
-  uint16_t dot = wifiOk ? col::OK : col::ERR;
-  if (!wifiOk && ((nowMs / 500) % 2)) {
+  // Kropka to STAN CALEGO SYSTEMU, nie samo WiFi. Wczesniej mowila wylacznie
+  // "jest siec" — czyli swiecila na zielono, gdy piec nie odpowiadal, radar sie
+  // sypal i MQTT nie publikowal. Teraz zwija osiem kropek z ekranu statystyk do
+  // jednej, widocznej na kazdym z dziewieciu ekranow.
+  const int health = systemHealth(wifiOk);
+  uint16_t dot = health == 0 ? col::OK : (health == 1 ? col::WARN : col::ERR);
+  // Puls tylko przy awarii — zolte "cos nie dostarczylo" nie musi migac.
+  if (health == 2 && ((nowMs / 500) % 2)) {
     dot = col::BG_CARD;
   }
   spr.fillCircle(12, 14, 4, dot);
 
-  plStr(spr, PLF14, settings().city, 24, 19, col::TEXT);
+  // Nazwa miasta USUNIETA — uzytkownik wie, gdzie mieszka. Zwolnione miejsce
+  // bierze tytul ekranu, ktory dotad zjadal osobna linie w obszarze tresci.
+  const time_t now = time(nullptr);
 
-  time_t now = time(nullptr);
+  // Zegar jeszcze nie ustawiony: nie ma daty, wiec nie ma tez okna dla tytulu.
+  // Napis o synchronizacji zajmuje wtedy cale srodkowe pole.
   if (now < 1700000000) {
+    plCenter(spr, PLF14, "synchronizacja czasu", W / 2, 19, col::TEXT_MUTE);
     plRight(spr, PLF18, "--:--", W - 10, 21, col::TEXT_MUTE);
-    plCenter(spr, PLF14, "synchronizacja czasu", W / 2 + 10, 19, col::TEXT_MUTE);
     return;
   }
 
   struct tm tmv{};
   localtime_r(&now, &tmv);
-
   static const char* kMon[12] = {"sty", "lut", "mar", "kwi", "maj", "cze",
                                  "lip", "sie", "wrz", "paź", "lis", "gru"};
   static const char* kDow[7] = {"niedz", "pon", "wt", "śr", "czw", "pt", "sob"};
 
-  char mid[32];
-  snprintf(mid, sizeof(mid), "%s %d %s", kDow[tmv.tm_wday % 7], tmv.tm_mday,
-           kMon[tmv.tm_mon % 12]);
-  plCenter(spr, PLF14, mid, W / 2 + 10, 19, col::TEXT_DIM);
-
   char clk[8];
   snprintf(clk, sizeof(clk), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+  char dt[24];
+  snprintf(dt, sizeof(dt), "%s %d %s", kDow[tmv.tm_wday % 7], tmv.tm_mday,
+           kMon[tmv.tm_mon % 12]);
+
+  // KAZDY element mierzony SWOJA czcionka. Wczesniej data i zegar byly sklejane
+  // w jeden napis i mierzone razem jednym PLF14, a zegar rysuje sie PLF18.
+  // Zmierzone na tablicach glifow: "18:49" to 36 px w PLF14, ale 50 px w PLF18,
+  // czyli 14 px niedomiaru; do tego ginela 8 px przerwa miedzy data a zegarem.
+  // Razem 22 px bledu przy marginesie, ktory wynosil 14 px. Tytul miescil sie
+  // wylacznie dlatego, ze jest wysrodkowany, a nie dlatego, ze cos to liczylo.
+  const int clkW = pltxt::stringWidth(PLF18, clk);
+  const int rightW = pltxt::stringWidth(PLF14, dt) + 8 + clkW + 8;
+
   plRight(spr, PLF18, clk, W - 10, 21, col::ACCENT);
+  // Data TUZ PRZED zegarem, nie na srodku — srodek nalezy teraz do tytulu.
+  plRight(spr, PLF14, dt, W - 10 - clkW - 8, 19, col::TEXT_DIM);
+
+  // Tytul wysrodkowany w tym, co ZOSTALO miedzy kropka a prawym blokiem, nie na
+  // srodku ekranu. Zmierzone: przy najdluzszej dacie ("niedz 10 mar" = 83 px)
+  // prawy blok zaczyna sie na x=169, wiec tytul wysrodkowany na W/2=160 wjezdzalby
+  // w date. Okno ma wtedy 129 px, a najdluzszy tytul ("FOTOWOLTAIKA") 112 px, wiec
+  // miesci sie z zapasem 25 px po kazdej stronie.
+  const int lo = 24, hi = W - 10 - rightW - 8;
+  if (hi > lo) {
+    plCenter(spr, PLF14, kViewNames[view_ % cfg::VIEW_COUNT], (lo + hi) / 2, 19,
+             col::ACCENT);
+  }
 }
 
 void WeatherUi::drawProgress(TFT_eSPI& spr, uint32_t nowMs) {
@@ -521,9 +624,14 @@ void WeatherUi::drawContentBg(TFT_eSPI& spr) {
 
 constexpr int HDR_Y = 46;  // wspólna linia bazowa tytułu i etykiety po prawej
 
-static void viewHeader(TFT_eSPI& spr, int ox, const char* title, const char* right = nullptr,
+// Tytul NIE jest tu juz rysowany: od v95 siedzi w belce gornej, wysrodkowany, w
+// miejscu po nazwie miasta (patrz kViewNames i drawHeader). Zostawianie go w obu
+// miejscach oznaczaloby ten sam napis dwa razy, jeden pod drugim. Dlatego funkcja
+// nie przyjmuje juz tytulu: martwy parametr z `(void)title;` byl pulapka. Wygladal
+// na zywy, wiec ktos predzej czy pozniej zmienilby go w wywolaniu i szukal, czemu
+// ekran sie nie zmienil. Zrodlem prawdy dla tytulu jest wylacznie kViewNames.
+static void viewHeader(TFT_eSPI& spr, int ox, const char* right = nullptr,
                        uint16_t rightCol = col::TEXT_MUTE, uint16_t dotCol = 0) {
-  plStr(spr, PLF14, title, ox + 10, HDR_Y, col::ACCENT);
   if (right == nullptr || right[0] == '\0') return;
 
   const int rw = pltxt::stringWidth(PLF14, right);
@@ -587,7 +695,7 @@ void WeatherUi::drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& 
 
   char hdr[24];
   snprintf(hdr, sizeof(hdr), "dane z %s", w.updatedAt[0] ? w.updatedAt : "--:--");
-  viewHeader(spr, ox, "TERAZ", hdr);
+  viewHeader(spr, ox, hdr);
 
   // --- wielka temperatura ---
   char big[12];
@@ -732,7 +840,7 @@ void WeatherUi::drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& 
 void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel& w) {
   const float e = easeOutCubic(t);
 
-  viewHeader(spr, ox, "NAJBLIŻSZE 12 GODZIN", "TEMP / OPAD");
+  viewHeader(spr, ox, "TEMP / OPAD");
 
   // N punktow: teraz + WX_HOURS godzin. Ta liczba MUSI byc wyprowadzona, nie wpisana.
   // Wczesniej stalo tu "13", sprzezone z WX_HOURS=12 wylacznie przez wiare, a w petlach
@@ -881,7 +989,7 @@ void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel
 void WeatherUi::drawViewDays(TFT_eSPI& spr, int ox, float t, const WeatherModel& w) {
   const float e = easeOutCubic(t);
 
-  viewHeader(spr, ox, "PROGNOZA 5 DNI", "MAX / MIN °C");
+  viewHeader(spr, ox, "MAX / MIN °C");
 
   float vmin = 1e9f, vmax = -1e9f, rmax = 0.f;
   int n = 0;
@@ -938,8 +1046,14 @@ void WeatherUi::drawViewDays(TFT_eSPI& spr, int ox, float t, const WeatherModel&
       spr.fillRoundRect(bx, y0 - 4, 16, 5, 2, tempColor(d.tempMin));
     }
 
+    // Caly dolny blok przesuniety o 2-3 px w gore. Powod: data byla PRZYCIETA.
+    // gl()/glCenter() kotwicza GORA, ale glify PlFont10 siegaja od baseline-11 do
+    // baseline+2, wiec glCenter(y=197) rysowal realnie 196..209 — a obszar tresci
+    // konczy sie na 205 (VIEW_H=206, dalej jest stopka). Trzy piksele dat scinala
+    // stopka, a do tego napis wchodzil na nazwe dnia (ta konczyla sie na 197).
+    // Teraz: temp 170, pasek opadu 174..178, nazwa 179..192, data 194..204.
     fmtTempInt(b, sizeof(b), d.tempMin);
-    plCenter(spr, PLF14, b, cx, 171, col::TEXT_DIM);
+    plCenter(spr, PLF14, b, cx, 170, col::TEXT_DIM);
 
     // opad — pasek pod słupkiem
     if (d.precipMm > 0.2f) {
@@ -947,15 +1061,15 @@ void WeatherUi::drawViewDays(TFT_eSPI& spr, int ox, float t, const WeatherModel&
       int rw = static_cast<int>((d.precipMm / scale) * 44.f * e);
       if (rw < 3) rw = 3;
       if (rw > 44) rw = 44;
-      spr.fillRoundRect(cx - 22, 176, 44, 4, 2, col::PV_TRACK);
-      spr.fillRoundRect(cx - 22, 176, rw, 4, 2, col::RAIN);
+      spr.fillRoundRect(cx - 22, 174, 44, 4, 2, col::PV_TRACK);
+      spr.fillRoundRect(cx - 22, 174, rw, 4, 2, col::RAIN);
     }
 
     // Pierwszy dzień był po prostu NIEBIESKI — kolor niósł informację "to jutro",
     // której nikt nie miał jak odczytać. Piszemy to słowem, w tym samym kolorze
     // co reszta. Kolor zostaje wyłącznie dla danych (temperatura, opad).
-    plCenter(spr, PLF14, i == 0 ? "JUTRO" : d.name, cx, 195, col::TEXT);
-    glCenter(spr, d.date, cx, 197, col::TEXT_MUTE);
+    plCenter(spr, PLF14, i == 0 ? "JUTRO" : d.name, cx, 192, col::TEXT);
+    glCenter(spr, d.date, cx, 194, col::TEXT_MUTE);
   }
 }
 
@@ -974,7 +1088,7 @@ void WeatherUi::drawNoData(TFT_eSPI& spr, int ox, const char* msg, const char* s
 void WeatherUi::drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, const PvHistory& hist) {
   const float e = easeOutCubic(t);
   if (!pv.online) {
-    viewHeader(spr, ox, "FOTOWOLTAIKA", pv.asleep ? "uśpiony" : "brak łączności",
+    viewHeader(spr, ox, pv.asleep ? "uśpiony" : "brak łączności",
                col::TEXT_MUTE, pv.asleep ? col::TEXT_MUTE : col::ERR);
     // Noc: falownik ma prawo milczeć (Huawei wyłącza Modbus TCP po zachodzie).
     // Piszemy to wprost, zamiast straszyć awarią do rana.
@@ -988,7 +1102,7 @@ void WeatherUi::drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, co
   // status falownika — jedyny kolorowy element nagłówka, bo niesie informację
   const bool fault = pvStatusIsFault(d.statusCode);
   const uint16_t sc = fault ? col::ERR : (pvStatusIsRunning(d.statusCode) ? col::OK : col::WARN);
-  viewHeader(spr, ox, "FOTOWOLTAIKA", pvStatusLabel(d.statusCode), sc, sc);
+  viewHeader(spr, ox, pvStatusLabel(d.statusCode), sc, sc);
 
   // --- wielka moc AC (animowana) ---
   const int32_t acNow = static_cast<int32_t>(lroundf(animAcW_));
@@ -996,7 +1110,14 @@ void WeatherUi::drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, co
   fmtPower(v, sizeof(v), u, sizeof(u), acNow);
   gl(spr, "MOC CHWILOWA", ox + 13, 54, col::TEXT_MUTE);
   const int pw = bigStr(spr, &FreeSansBold24pt7b, v, ox + 12, 100, col::PV_SOLAR);
-  plStr(spr, PLF18, u, ox + 16 + pw, 74, col::TEXT_DIM);
+  // Jednostka na linii bazowej LICZBY (100), nie w indeksie gornym (74).
+  // Indeks gorny dzialal tylko w dzien: przy "5.20" jednostka ladowala na x=110 i
+  // mijala etykiete. Noca produkcja to "0" — 27 px zamiast 98 — wiec "W" siadalo
+  // na x=43, prosto w napis "MOC CHWILOWA" (ktory zajmuje x=13..83, y=54..64,
+  // a jednostka w indeksie gornym y=60..74). Kolizja byla widoczna co noc.
+  // Na linii bazowej liczby "0 W" i "5.20 kW" czytaja sie tak samo i nie ma jak
+  // nachodzic na cokolwiek nad soba.
+  plStr(spr, PLF18, u, ox + 16 + pw, 100, col::TEXT_DIM);
 
   char sub[40];
   snprintf(sub, sizeof(sub), "DC %ld W   |   %.0f V", static_cast<long>(d.powerDcW),
@@ -1891,7 +2012,7 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
 
   const int n = radarmap::count();
   if (n == 0) {
-    viewHeader(spr, ox, "RADAR OPADÓW", "pobieram...");
+    viewHeader(spr, ox, "pobieram...");
     drawNoData(spr, ox, "Pobieram mapę opadów", radarmap::lastError());
     return;
   }
@@ -1994,7 +2115,7 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
   } else {
     snprintf(hdr, sizeof(hdr), "%ld min temu", static_cast<long>(-fr.offsetMin));
   }
-  viewHeader(spr, ox, "RADAR OPADÓW", hdr);
+  viewHeader(spr, ox, hdr);
 
   // --- os czasu (na dole, na mapie) ---
   const int ty = CY + gmapw::MAP_H - 20;
@@ -2046,7 +2167,7 @@ void WeatherUi::drawViewBoiler(TFT_eSPI& spr, int ox, float t) {
   const vi::Model& b = boiler_ ? *boiler_ : kEmptyBoiler;
 
   if (!b.valid) {
-    viewHeader(spr, ox, "PIEC", "brak danych");
+    viewHeader(spr, ox, "brak danych");
     drawNoData(spr, ox, "Piec nie odpowiada",
                diag().viErr[0] ? diag().viErr : "skonfiguruj w panelu");
     return;
@@ -2068,7 +2189,7 @@ void WeatherUi::drawViewBoiler(TFT_eSPI& spr, int ox, float t) {
     snprintf(hdr, sizeof(hdr), "palnik wyłączony");
   }
   const bool hot = b.hasBurnerState && b.burnerActive;
-  viewHeader(spr, ox, "PIEC", hdr, hot ? col::PV_SOLAR : col::TEXT_MUTE,
+  viewHeader(spr, ox, hdr, hot ? col::PV_SOLAR : col::TEXT_MUTE,
              hot ? col::PV_SOLAR : col::TEXT_MUTE);
 
   // --- CIEPLA WODA: najwazniejsza liczba na tym ekranie ---
@@ -2079,7 +2200,10 @@ void WeatherUi::drawViewBoiler(TFT_eSPI& spr, int ox, float t) {
                         !b.hasDhwTemp        ? col::TEXT_MUTE
                         : b.dhwTempC < 40.f  ? col::PV_HOUSE
                                              : col::PV_IMPORT);
-  plStr(spr, PLF18, "°C", ox + 16 + vw, 76, col::TEXT_DIM);
+  // Linia bazowa liczby (102), nie indeks gorny (76) — to samo, co przy mocy PV:
+  // przy waskiej wartosci ("--" zamiast "53.4") jednostka wjezdzala w etykiete
+  // "CIEPŁA WODA" nad soba.
+  plStr(spr, PLF18, "°C", ox + 16 + vw, 102, col::TEXT_DIM);
 
   char sub[40];
   if (b.hasDhwTarget) {
@@ -2211,7 +2335,7 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     snprintf(hdr, sizeof(hdr), "na zewnątrz %d°C · %d%%",
              static_cast<int>(lroundf(w.current.tempC)), w.current.humidity);
   }
-  viewHeader(spr, ox, "W DOMU", hdr);
+  viewHeader(spr, ox, hdr);
 
   // Kolor kafelka = kolor jego linii na wykresie. TO JEST CALA LEGENDA — dlatego
   // pod wykresem nie ma juz zadnego napisu. Kolejnosc musi zostac zgodna z
@@ -2226,8 +2350,10 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     float hum;
     bool hasTemp;
     bool hasHum;
-    int slot;  // indeks w Settings — po nim idzie historia i kolor
+    int slot;         // indeks w Settings — po nim idzie historia i kolor
     uint32_t ageS;
+    int rssiBest;     // sygnal LEPSZEGO ze zrodel, 0 = nikt go nie slyszy
+    bool viaGw;       // true = to bramka slyszy go lepiej (litera S), false = ESP (E)
   } rooms[RoomHistory::ROOMS];
   int n = 0;
 
@@ -2245,8 +2371,29 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     }
     if (slot < 0) continue;
 
+    // Wybieramy LEPSZE ze zrodel, a nie ostatni zapis. Pole `s.rssi` niesie to,
+    // co przyszlo ostatnie — dlatego Schody potrafily pokazywac -90 z wlasnego
+    // radia, choc bramka slyszy je z -56. Odczyt (temperatura) jest identyczny
+    // z obu zrodel, wiec wybor dotyczy wylacznie tego, ktora liczbe pokazac.
+    // Zrodlo starsze niz 90 s nie liczy sie w ogole: lepszy slaby sygnal teraz
+    // niz swietny sprzed pol godziny.
+    const bool ownFresh = s.rssiOwn != 0 && s.ownAt != 0 && (millis() - s.ownAt) < 90000;
+    const bool gwFresh = s.rssiGw != 0 && s.gwAt != 0 && (millis() - s.gwAt) < 90000;
+    int best = 0;
+    bool bestGw = false;
+    if (ownFresh && gwFresh) {
+      bestGw = s.rssiGw > s.rssiOwn;
+      best = bestGw ? s.rssiGw : s.rssiOwn;
+    } else if (ownFresh) {
+      best = s.rssiOwn;
+    } else if (gwFresh) {
+      best = s.rssiGw;
+      bestGw = true;
+    }
+
     rooms[n] = {cfg->name[0] ? cfg->name : s.mac, s.tempC, s.humidity, s.hasTemp,
-                s.hasHum, slot, s.seenAt ? (millis() - s.seenAt) / 1000 : 9999};
+                s.hasHum, slot, s.seenAt ? (millis() - s.seenAt) / 1000 : 9999,
+                best, bestGw};
     ++n;
   }
 
@@ -2259,9 +2406,10 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
   // Uklad zalezy od liczby czujnikow. Zmierzone: przy 4 kafelkach w jednym rzedzie
   // kazdy ma 69 px, a sama liczba "23.8" w duzej czcionce potrzebuje ~90 px.
   // Wiec: 1-2 czujniki -> rzad z wielka liczba, 3-4 -> siatka 2x2 mniejsza czcionka.
-  // 5-6 czujnikow -> trzy kolumny. Kafelek chudnie ze 146 do 94 px i wtedy
-  // "23.8" + "°C" + "53%" w PLF18 juz sie nie mieszcza (zmierzone: ~3 px nachodzenia),
-  // wiec przy trzech kolumnach wilgotnosc schodzi do PLF14.
+  // 5-6 czujnikow -> trzy kolumny (`tight`). Kafelek chudnie ze 146 do 94 px i wtedy
+  // temperatura + jednostka + RSSI nie mieszcza sie w jednej linii. Zeby weszly,
+  // przy `tight` dzieje sie troje: znika jednostka, RSSI traci minus i schodzi do
+  // PlFont10. Szczegoly i pomiary przy odpowiednich liniach nizej.
   const bool grid = n > 2;
   const int cols = grid ? (n > 4 ? 3 : 2) : n;
   const int gap = 8;
@@ -2286,11 +2434,43 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     spr.fillRoundRect(x, y, 3, ch, 1, stale ? col::TEXT_MUTE : rc);
     plStr(spr, PLF14, r.name, x + 10, y + 15, stale ? col::TEXT_MUTE : col::TEXT);
 
-    char hs[10];
-    snprintf(hs, sizeof(hs), r.hasHum ? "%.0f%%" : "--", r.hum);
-    const uint16_t hc = !r.hasHum ? col::TEXT_MUTE
-                        : (r.hum > 65.f || r.hum < 30.f) ? col::WARN : col::PV_HOUSE;
-    plRight(spr, tight ? PLF14 : PLF18, hs, x + cw - 10, y + (grid ? 32 : 20), hc);
+    // Zamiast wilgotnosci: SILA SYGNALU i ZRODLO. Wilgotnosc w domu jest niemal
+    // stala i nic z niej nie wynika; sygnal mowi, czy czujnik zaraz zamilknie,
+    // a litera — ktore z dwoch uszu go slyszy. E = wlasne radio ESP, S = bramka.
+    // To NIE jest to samo miejsce: lustro w lazience tlumi radio ESP tak, ze
+    // Schody slychac z -90, a z Shelly z -56. Bez tej litery nie wiadomo, czyj
+    // to pomiar ani co poprawilo przestawienie bramki.
+    const int rs = r.rssiBest;
+    char hs[12];
+    if (rs == 0) {
+      snprintf(hs, sizeof(hs), "--");
+    } else if (tight) {
+      // Przy trzech kolumnach zdejmujemy minus: RSSI jest zawsze ujemny, wiec znak
+      // nie niesie informacji, a kosztuje 5 px (zmierzone na tablicach glifow PLF14:
+      // "-100E" = 38 px, "100E" = 33 px).
+      //
+      // Sam brak minusa NIE wystarcza. Przy cw=94 RSSI wyrownany do prawej konczy
+      // sie na x+84, a temperatura startuje na x+10. Zeby zmiescic najgorszy realny
+      // przypadek, musialy zadzialac TRZY rzeczy naraz (patrz nizej: brak jednostki
+      // i PlFont10 dla RSSI). Sciezka jest dzis MARTWA: przy 4 czujnikach sa
+      // 2 kolumny, cw=146. Zapali sie dopiero przy piatym czujniku.
+      snprintf(hs, sizeof(hs), "%d%c", rs < 0 ? -rs : rs, r.viaGw ? 'S' : 'E');
+    } else {
+      snprintf(hs, sizeof(hs), "%d%c", rs, r.viaGw ? 'S' : 'E');
+    }
+    // Progi jak w narzedziu do rozstawiania czujnikow: > -70 swietnie, > -80 dobrze,
+    // > -88 slabo, nizej na granicy.
+    const uint16_t hc = rs == 0        ? col::TEXT_MUTE
+                        : rs > -80     ? col::OK
+                        : rs > -88     ? col::WARN
+                                       : col::ERR;
+    // Przy trzech kolumnach RSSI schodzi az do PlFont10. PLF14 nie starcza:
+    // "100E" ma w nim 33 px i startuje na x+51, a temperatura bez jednostki konczy
+    // sie na x+48, czyli zapas 3 px = tyle co nic. W PlFont10 to samo "100E" ma
+    // 25 px, startuje na x+59 i zapas rosnie do 11 px. RSSI jest tu liczba
+    // pomocnicza, nie trescia kafelka, wiec drobniejszy font mu nie szkodzi.
+    plRight(spr, tight ? pltxt::font10() : PLF18, hs, x + cw - 10, y + (grid ? 32 : 20),
+            hc);
 
     char v[12];
     snprintf(v, sizeof(v), r.hasTemp ? "%.1f" : "--", r.tempC);
@@ -2299,7 +2479,15 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     if (grid) {
       // ciasno — temperatura w PLF18 zamiast wielkiej czcionki
       const int vw = pltxt::drawString(spr, PLF18, v, x + 10, y + 32, tc, tc);
-      gl(spr, "°C", x + 13 + vw, y + 22, col::TEXT_DIM);
+      // Przy trzech kolumnach znika jednostka. To tu najtanszy piksel do oddania:
+      // ekran nazywa sie "W DOMU", a wszystko na nim to temperatury pokoi w stopniach
+      // Celsjusza. Jednostka powtarzalaby tytul ekranu szesc razy pod rzad, a kosztuje
+      // 15 px: z nia blok temperatury konczy sie na x+63 (3 px przerwy + 12 px znaku
+      // stopnia w PlFont10) i KAZDY wariant RSSI koliduje; bez niej konczy sie na
+      // x+48. Przy dwoch kolumnach (cw=146) miejsca jest dosc i jednostka zostaje.
+      if (!tight) {
+        gl(spr, "°C", x + 13 + vw, y + 22, col::TEXT_DIM);
+      }
     } else {
       const int vw = bigStr(spr, &FreeSansBold24pt7b, v, x + 10, y + 58, tc);
       plStr(spr, PLF14, "°C", x + 14 + vw, y + 40, col::TEXT_DIM);
@@ -2430,18 +2618,31 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
     // Okres próbny: wersja jeszcze nie potwierdziła, że działa. Jeśli w ciągu
     // 3 minut nie udowodni (WiFi + dane + sterta), urządzenie samo się cofnie.
     snprintf(b, sizeof(b), "v%d · próbna", FW_VERSION);
-    viewHeader(spr, ox, "STATYSTYKI URZĄDZENIA", b, col::WARN);
+    viewHeader(spr, ox, b, col::WARN);
   } else if (d.otaRemote > FW_VERSION) {
     snprintf(b, sizeof(b), "v%d → v%d", FW_VERSION, d.otaRemote);
-    viewHeader(spr, ox, "STATYSTYKI URZĄDZENIA", b, col::WARN);
+    viewHeader(spr, ox, b, col::WARN);
   } else {
     snprintf(b, sizeof(b), "v%d", FW_VERSION);
-    viewHeader(spr, ox, "STATYSTYKI URZĄDZENIA", b, col::OK);
+    viewHeader(spr, ox, b, col::OK);
   }
 
   // --- źródła danych: zielona kropka = działa, czerwona = błąd, szara = wyłączone ---
   // "off" = stan neutralny, NIE awaria: falownik śpi po zachodzie (Modbus wyłączony),
   // MQTT jest świadomie wyłączony przez użytkownika. W obu razach kropka szara.
+  // Bramki: JEDEN wiersz na cala liste. Na trzy osobne nie ma miejsca — src[8] to
+  // dokladnie 4 wiersze x 2 kolumny konczace sie na y=120, a karty startuja na 128.
+  // Liczba zywych idzie w STATUS, nie w nazwe: przy nazwie "Bramka" zostaje
+  // zmierzone 76 px, a "Bramki 2/3" zjadloby ~28 px i przycieloby "nie odpowiada".
+  char gwSt[16] = "";
+  const int gwCfg = blegw::configured();
+  const int gwOn = blegw::online();
+  if (gwCfg > 1 && gwOn < gwCfg) {
+    snprintf(gwSt, sizeof(gwSt), "%d z %d żyje", gwOn, gwCfg);
+  } else if (gwCfg > 0) {
+    snprintf(gwSt, sizeof(gwSt), "%s", blegw::lastError());
+  }
+
   struct Src {
     const char* name;
     uint32_t okAt;
@@ -2461,8 +2662,9 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
       {"Samoloty", d.flightOkAt, d.flightErr, false, ""},
       {"MQTT", d.mqttOkAt, d.mqttErr, !settings().hasMqtt(), "wyłączony"},
 
-      {"Bramka", blegw::lastOkAt(), blegw::lastError(),
-       settings().bleGwHost[0] == '\0', "wyłączona"},
+      // configured(), nie "bleGwHost[0] == 0" — poprawne takze wtedy, gdyby lista
+      // kiedys przestala byc zageszczana.
+      {gwCfg > 1 ? "Bramki" : "Bramka", blegw::lastOkAt(), gwSt, gwCfg == 0, "wyłączona"},
       // OTA: err zawsze puste. otaMsg NIE nadaje sie na blad — tym samym kanalem
       // leci postep ("Pobieram nową wersję"), wiec czerwona kropka zapalalaby sie
       // w trakcie poprawnej aktualizacji. Tu wystarczy wiek ostatniego sprawdzenia.
@@ -2564,11 +2766,17 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
   // Bez "ń" — podpisy kart rysuje GLCD, który nie zna polskich znaków.
   snprintf(cards[0].sub, sizeof(cards[0].sub), "procesor");
 
-  // minimalna sterta jest ważniejsza niż bieżąca — to ona ostrzega przed padem
+  // Kolor OPISUJE TE LICZBE, KTORA KARTA POKAZUJE, a karta pokazuje `heap`, czyli
+  // sterte biezaca. Liczenie koloru z minHeap dawalo czerwona karte z zielona
+  // wartoscia "150 kB" i bylo nie do obronienia odkad minHeap to dolek DOZYWOTNI
+  // (ESP.getMinFreeHeap(), zmierzone na urzadzeniu 22044 B < HEAP_DANGER = 25000):
+  // karta swiecilaby na czerwono do konca swiata, niezaleznie od tego, co pokazuje.
+  // Progi HEAP_* opisuja sterte biezaca, patrz systemHealth(). Dolek zostaje tam,
+  // gdzie jest uczciwy i niczego nie przefarbowuje: biala kreska na wskazniku obok.
   cards[1] = {"WOLNY SRAM", {0}, {0},
-              minHeap < cfg::HEAP_DANGER
+              heap < cfg::HEAP_DANGER
                   ? col::ERR
-                  : (minHeap < cfg::HEAP_WARN ? col::WARN : col::OK)};
+                  : (heap < cfg::HEAP_WARN ? col::WARN : col::OK)};
   snprintf(cards[1].value, sizeof(cards[1].value), "%lu kB",
            static_cast<unsigned long>(heap / 1024));
   // Pod spodem PSRAM — od v50 to on dzwiga bufor ekranu i dekoder radaru.
@@ -2597,20 +2805,24 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
   snprintf(cards[2].sub, sizeof(cards[2].sub), "po: %s",
            resetReasonShort(d.resetReason));
 
-  const int cy0 = 128, chh = 44;
+  // Karty: 100 px szerokosci z 4 px przerwy ZLEWALY sie w jeden pas — na ciemnym tle
+  // 4 px to mniej niz promien zaokraglenia rogu, wiec granicy po prostu nie bylo
+  // widac. Teraz 96 px z przerwa 10 px, i wyzsze o 6 px po odzyskaniu linii z dolu.
+  const int cw = 96, cgap = 10;
+  const int cy0 = 128, chh = 50;
   for (int i = 0; i < 3; ++i) {
-    const int x = ox + 6 + i * 104;
+    const int x = ox + 7 + i * (cw + cgap);
     const int grow = static_cast<int>(chh * clampf(e * 1.8f - 0.3f - i * 0.15f, 0.f, 1.f));
     if (grow < 5) continue;
-    spr.fillRoundRect(x, cy0 + (chh - grow), 100, grow, 6, col::BG_CARD);
+    spr.fillRoundRect(x, cy0 + (chh - grow), cw, grow, 6, col::BG_CARD);
     if (grow < chh - 2) continue;
     spr.fillRoundRect(x, cy0, 3, chh, 1, cards[i].color);
-    gl(spr, cards[i].label, x + 9, cy0 + 4, col::TEXT_MUTE);
-    plStr(spr, PLF18, cards[i].value, x + 9, cy0 + 30, cards[i].color);
-    gl(spr, cards[i].sub, x + 9, cy0 + 34, col::TEXT_MUTE);
+    gl(spr, cards[i].label, x + 9, cy0 + 6, col::TEXT_MUTE);
+    plStr(spr, PLF18, cards[i].value, x + 9, cy0 + 34, cards[i].color);
+    gl(spr, cards[i].sub, x + 9, cy0 + 38, col::TEXT_MUTE);
 
     // wskaźnik po prawej stronie kafelka (temperatura / sterta)
-    const int gx = x + 82, gy = cy0 + 7, gw = 11, gh = 30;
+    const int gx = x + 78, gy = cy0 + 8, gw = 11, gh = 34;
     if (i == 0) {
       // Strefy wg noty katalogowej ESP32-S3. Biała kreska = 85 °C, czyli granica
       // zalecanej pracy — koniec skali to Tj max 125 °C, a nie "czerwono".
@@ -2630,21 +2842,53 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
     }
   }
 
-  // --- sieć: siła sygnału + adres panelu ---
+  // --- siec: JEDNA linia zamiast dwoch ---
+  // Bylo: paski + SSID na y=190, adres IP osobno na y=205, a napis "panel" wciskany
+  // miedzy nie na y=197 — trzy rzeczy w dwoch liniach, ktore na siebie nachodzily.
+  // Teraz wszystko na jednej linii bazowej: paski i SSID po lewej, panel i IP po
+  // prawej. Zwolniona linia poszla do kart wyzej (44 -> 50 px).
   const int rssi = WiFi.RSSI();
   const int bars = rssi >= -55 ? 4 : (rssi >= -65 ? 3 : (rssi >= -75 ? 2 : (rssi >= -85 ? 1 : 0)));
+  const int netY = 201;   // wspolna linia bazowa
   for (int i = 0; i < 4; ++i) {
     const int bh = 4 + i * 3;
-    spr.fillRect(ox + 10 + i * 6, 190 - bh, 4, bh,
-                  i < bars ? col::ACCENT : col::PV_TRACK);
+    spr.fillRect(ox + 10 + i * 6, netY - 1 - bh, 4, bh, i < bars ? col::ACCENT : col::PV_TRACK);
   }
 
-  snprintf(b, sizeof(b), "%s  %d dBm", WiFi.SSID().c_str(), rssi);
-  plStr(spr, PLF14, b, ox + 40, 190, col::TEXT_DIM);
+  // Adres BEZ "http://" — to 44 px, ktore odbieraly miejsce nazwie sieci, a nikt
+  // nie wpisuje schematu z ekranu. Podpis "panel" mowi, czym ten adres jest.
+  char ip[20];
+  snprintf(ip, sizeof(ip), "%s", WiFi.localIP().toString().c_str());
+  const int ipW = pltxt::stringWidth(PLF14, ip);
+  plRight(spr, PLF14, ip, ox + W - 10, netY, col::ACCENT);
+  // netY-10, NIE netY-2: glRight() kotwiczy GORE i sam dodaje PlFont10Ascent = 10,
+  // wiec argument y=netY-2 dawal linie bazowa 209. Glify "panel" siegaja od -8 do +2
+  // wzgledem bazowej (litera "p" schodzi pod linie), czyli realnie y = 201..211,
+  // a obszar tresci konczy sie na 205. Widocznych bylo 5 z 11 px. Teraz bazowa
+  // wypada na 201, glify na 193..203, i podpis faktycznie stoi na tej samej linii
+  // bazowej co adres IP obok: tak jak od poczatku twierdzil komentarz nizej.
+  glRight(spr, "panel", ox + W - 14 - ipW, netY - 10, col::TEXT_MUTE);
 
-  snprintf(b, sizeof(b), "http://%s", WiFi.localIP().toString().c_str());
-  plStr(spr, PLF14, b, ox + 10, 205, col::ACCENT);
-  glRight(spr, "panel", ox + W - 10, 197, col::TEXT_MUTE);
+  // SSID dostaje to, co zostalo — i jest przycinany, a nie nachodzi na adres.
+  // Nazwa sieci moze byc dowolnie dluga, wiec bez pomiaru to tylko kwestia czasu.
+  snprintf(b, sizeof(b), "%s  %d dBm", WiFi.SSID().c_str(), rssi);
+  const int ssidMax = (ox + W - 14 - ipW - pltxt::stringWidth(pltxt::font10(), "panel") - 8) -
+                      (ox + 40);
+  // Ciecie CALYMI ZNAKAMI, nie bajtami. SSID moze legalnie miec polskie znaki, a te
+  // zajmuja w UTF-8 po dwa bajty. Urwanie samego ogona zostawialo osierocony bajt
+  // wiodacy (z dwubajtowej sekwencji C5 82 zostawalo samo C5), a wtedy
+  // pltxt::decodeUtf8 bierze NASTEPNY bajt jako kontynuacje: zjada '\0', przeskakuje
+  // terminator i czyta pamiec za buforem, az trafi na przypadkowe zero.
+  // Warunek patrzy na b[n], czyli na bajt, NA KTORYM tniemy: dopoki jest to bajt
+  // kontynuacji (10xxxxxx), cofamy sie do bajtu wiodacego i dopiero tam stawiamy '\0'.
+  // (Sprawdzanie b[n-1] cofaloby o jeden za duzo: zjadaloby poprawny znak i mimo to
+  // zostawialo osierocony bajt wiodacy, czyli dokladnie ten blad, ktory naprawiamy.)
+  while (b[0] != '\0' && pltxt::stringWidth(PLF14, b) > ssidMax) {
+    size_t n = strlen(b) - 1;
+    while (n > 0 && (static_cast<uint8_t>(b[n]) & 0xC0) == 0x80) --n;
+    b[n] = '\0';
+  }
+  plStr(spr, PLF14, b, ox + 40, netY, col::TEXT_DIM);
 }
 
 // ------------------------------------- ZRZUT EKRANU DO PRZEGLĄDARKI ----------

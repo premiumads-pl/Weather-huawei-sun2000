@@ -18,10 +18,18 @@
 #include "OtaGuard.h"
 #include "BleGateway.h"
 #include "BleSensors.h"
+#include "GasMeter.h"
 #include "RadarMap.h"
 #include "Viessmann.h"
 #include "Settings.h"
 #include "Version.h"
+
+// ZAKRES GLOBALNY, nie wewnatrz namespace portal — gGas i gLock sa zdefiniowane
+// w .ino jako ::gGas i ::gLock. Deklaracja wewnatrz namespace stworzylaby
+// portal::gGas, ktore nie zlinkuje sie z niczym.
+// webTask czyta gGas pod gLock: netTask pisze do niego co 3 minuty.
+extern GasHistory gGas;
+extern SemaphoreHandle_t gLock;
 
 namespace portal {
 namespace {
@@ -160,13 +168,29 @@ jest klucz (bindkey) z chmury Xiaomi. Klucz zostaje w pamięci urządzenia i nig
 nie opuszcza sieci domowej.</div>
 <ul id=bles></ul>
 <div class=hint id=bmsg></div>
-<label>Bramka BLE — adres Shelly (opcjonalnie)</label>
-<input id=blegw placeholder="np. 192.168.0.102" autocapitalize=off autocorrect=off>
-<button class=s onclick=saveGw()>Zapisz bramkę</button>
+<label>Bramki BLE — adresy (opcjonalnie)</label>
+<div id=gws></div>
+<button class=s onclick=saveGw()>Zapisz bramki</button>
 <div class=hint id=gmsg></div>
 <div class=hint>Bluetooth nie ma sieci kratowej — czujnik musi dosięgnąć odbiornika.
 Shelly stojący bliżej przekazuje ramki przez WiFi. Klucze zostają tutaj: bramka
 widzi wyłącznie szyfrogram.</div>
+</div>
+
+<div class=c>
+<h2>Licznik gazu — kontrola pieca</h2>
+<div class=hint>Piec podaje własne zużycie, ale jego liczniki miesięczny i roczny
+są zepsute (sprawdzone: miesiąc pokazywał mniej niż ostatnie 7 dni, rok 5,3 m³ po
+czterech latach). Wiarygodna jest tylko doba — więc zbieramy ją sami, dzień po dniu.
+Wpisz stan licznika przy odczycie, a urządzenie porówna go z sumą z pieca za ten
+sam okres.</div>
+<div class=row>
+<input id=mdate type=date>
+<input id=mval type=number step=0.001 placeholder="stan licznika [m³]">
+</div>
+<button class=s onclick=addMeter()>Dodaj odczyt</button>
+<div class=hint id=mmsg></div>
+<ul id=meters></ul>
 </div>
 
 <div class=c>
@@ -268,9 +292,42 @@ async function bles(){
 }
 async function saveGw(){
  $('gmsg').textContent='...';
+ const hosts=[...document.querySelectorAll('[id^=blegw]')].map(e=>e.value.trim());
  const r=await(await fetch('/api/blegw',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({host:$('blegw').value.trim()})})).json();
+  body:JSON.stringify({hosts:hosts})})).json();
  $('gmsg').className='hint '+(r.ok?'ok':'err');$('gmsg').textContent=r.msg;
+ load();   // lista zageszcza sie po stronie urzadzenia — pokaz realny stan, nie wpisany
+}
+async function meters(){
+ const r=await(await fetch('/api/meter')).json();
+ if(!r.length){$('meters').innerHTML='<li>Brak odczytów. Wpisz pierwszy — porównanie pojawi się przy drugim.</li>';return;}
+ $('meters').innerHTML=r.map(m=>{
+  // cmp<0 znaczy "nie ma z czym porownac": albo to pierwszy odczyt, albo log
+  // gazu nie siega tak daleko wstecz. To NIE jest blad i nie moze wygladac jak zero.
+  let c='<span class=sig>pierwszy odczyt</span>';
+  if(m.cmp>=0){
+   const d=m.meter_used-m.boiler_used;
+   const p=m.meter_used>0?(d/m.meter_used*100):0;
+   const cl=Math.abs(p)<=5?'ok':(Math.abs(p)<=15?'':'err');
+   c=`<span class="sig ${cl}">licznik ${m.meter_used.toFixed(2)} · piec ${m.boiler_used.toFixed(2)} m³
+      · różnica ${d>=0?'+':''}${d.toFixed(2)} (${p>=0?'+':''}${p.toFixed(1)}%)</span>`;
+  }else if(m.cmp==-2){c='<span class=sig>log gazu nie sięga tak daleko</span>';}
+  return `<li><div class=row style="justify-content:space-between;align-items:center">
+   <div><b>${m.date}</b> — ${m.m3.toFixed(3)} m³<br>${c}</div>
+   <button class=s onclick="delMeter('${m.date}')" style="width:auto">Usuń</button>
+  </div></li>`;
+ }).join('');
+}
+async function addMeter(){
+ $('mmsg').textContent='...';
+ const r=await(await fetch('/api/meter',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({date:$('mdate').value,m3:parseFloat($('mval').value)})})).json();
+ $('mmsg').className='hint '+(r.ok?'ok':'err');$('mmsg').textContent=r.msg;
+ if(r.ok){$('mval').value='';meters();}
+}
+async function delMeter(d){
+ await fetch('/api/meter?date='+d,{method:'DELETE'});
+ meters();
 }
 async function saveBle(mac,i){
  $('bmsg').textContent='Zapisuję…';
@@ -321,7 +378,10 @@ async function load(){
  $('ssid').value=r.ssid||'';$('mb').value=r.mb||'';$('peak').value=(r.peak/1000).toFixed(1);
  $('mqen').checked=!!r.mq_en;$('mqhost').value=r.mq_host||'';$('mqport').value=r.mq_port||1883;
  $('mqpre').value=r.mq_pre||'';$('mquser').value=r.mq_user||'';$('mqpass').value='';
- $('blegw').value=r.blegw||'';
+ // Pola generuje JS z tablicy, zeby ich liczba szla za firmware'em, a nie za HTML-em.
+ $('gws').innerHTML=(r.blegw||[]).map((h,i)=>
+  `<input id=blegw${i} value="${h}" placeholder="${i?'kolejna bramka (opcjonalnie)':'np. 192.168.0.102'}"
+   autocapitalize=off autocorrect=off style="margin-bottom:6px">`).join('');
  // hasla brokera NIE zwracamy — tylko informacje, ze jakies jest zapisane
  $('mqpass').placeholder=r.mq_pass_set?'(zapisane — zostaw puste, aby nie zmieniać)':'(brak)';
 }
@@ -382,7 +442,9 @@ async function fgt(){
 }
 (async()=>{
  try{const r=await(await fetch('/api/view')).json();pin=r.pin;}catch(e){}
- tabs();nextShot();await load();bles();viStat();setInterval(bles,20000);setInterval(viStat,30000);
+ tabs();nextShot();await load();bles();viStat();meters();setInterval(bles,20000);setInterval(viStat,30000);
+// Data domyslnie dzisiejsza — odczyt licznika robi sie zwykle w dniu wpisywania.
+$('mdate').value=new Date().toISOString().slice(0,10);
 })();
 </script></html>)HTML";
 
@@ -412,7 +474,10 @@ void apiState() {
   d["mq_pre"] = settings().mqttPrefix;
   d["mq_user"] = settings().mqttUser;
   d["mq_pass_set"] = settings().mqttPass[0] != '\0';
-  d["blegw"] = settings().bleGwHost;
+  // Tablica, nie string. Liczba pol w panelu ma isc za firmware'em (Settings::BLE_GW),
+  // a nie byc przepisana w HTML-u — to bylby kolejny literal udajacy zrodlo prawdy.
+  JsonArray gw = d["blegw"].to<JsonArray>();
+  for (int i = 0; i < Settings::BLE_GW; ++i) gw.add(settings().bleGwAt(i));
 
   String out;
   serializeJson(d, out);
@@ -847,6 +912,13 @@ void apiBleList() {
     o["rssi_gw"] = s.rssiGw;
     o["own_age"] = s.ownAt ? (millis() - s.ownAt) / 1000 : -1;
     o["gw_age"] = s.gwAt ? (millis() - s.gwAt) / 1000 : -1;
+
+    // Co slyszy KAZDA bramka z osobna — to jest narzedzie do rozstawiania bramek
+    // i czujnikow. Bez tego przy trzech bramkach widac tylko wynik arbitrazu, czyli
+    // nie da sie stwierdzic, czy nowa bramka na parterze cokolwiek poprawila.
+    o["gw_own"] = blegw::ownerOf(s.mac);   // indeks bramki-opiekuna, -1 = zadna
+    JsonArray g = o["gw_rssi"].to<JsonArray>();
+    for (int k = 0; k < blegw::SLOTS; ++k) g.add(blegw::rssiOf(s.mac, k));
   }
 
   String out;
@@ -906,15 +978,160 @@ String viRedirect() {
   return String("http://") + WiFi.localIP().toString() + "/vicare";
 }
 
+// --- licznik gazu: weryfikacja, czy piec mowi prawde ---
+//
+// SEDNO: piec podaje wlasne zuzycie doby (currentDay). Sumujemy je sami dzien po
+// dniu (GasHistory), a uzytkownik wpisuje stany licznika. Miedzy dwoma odczytami
+// licznika mamy wiec DWIE niezalezne liczby na ten sam okres: roznice wskazan
+// licznika i sume dob z pieca. Jesli sie zgadzaja — piec nie klamie.
+//
+// "day" to epoch/86400 (UTC). Data z panelu przychodzi jako "YYYY-MM-DD".
+
+namespace {
+
+uint32_t dayFromIso(const char* iso) {
+  int y = 0, m = 0, d = 0;
+  if (sscanf(iso, "%d-%d-%d", &y, &m, &d) != 3) return 0;
+  struct tm tmv{};
+  tmv.tm_year = y - 1900;
+  tmv.tm_mon = m - 1;
+  tmv.tm_mday = d;
+  tmv.tm_hour = 12;   // poludnie: odporne na strefe i zmiane czasu
+  const time_t t = mktime(&tmv);
+  return t > 0 ? static_cast<uint32_t>(t) / 86400 : 0;
+}
+
+void isoFromDay(uint32_t day, char* out, size_t n) {
+  const time_t t = static_cast<time_t>(day) * 86400 + 43200;
+  struct tm tmv{};
+  localtime_r(&t, &tmv);
+  strftime(out, n, "%Y-%m-%d", &tmv);
+}
+
+}  // namespace
+
+void apiMeterList() {
+  // Kopia pod mutexem — gGas zyje w netTask. sumBetween() liczy na kopii.
+  GasHistory g;
+  xSemaphoreTake(gLock, portMAX_DELAY);
+  g = gGas;
+  xSemaphoreGive(gLock);
+
+  // Posortowane rosnaco po dacie, zeby "poprzedni odczyt" mial sens.
+  int idx[Settings::METERS];
+  int n = 0;
+  for (int i = 0; i < Settings::METERS; ++i) {
+    if (settings().meters[i].day != 0) idx[n++] = i;
+  }
+  for (int i = 1; i < n; ++i) {
+    const int k = idx[i];
+    int j = i - 1;
+    while (j >= 0 && settings().meters[idx[j]].day > settings().meters[k].day) {
+      idx[j + 1] = idx[j];
+      --j;
+    }
+    idx[j + 1] = k;
+  }
+
+  JsonDocument j;
+  JsonArray arr = j.to<JsonArray>();
+  for (int i = 0; i < n; ++i) {
+    const Settings::MeterCfg& m = settings().meters[idx[i]];
+    JsonObject o = arr.add<JsonObject>();
+    char iso[12];
+    isoFromDay(m.day, iso, sizeof(iso));
+    o["date"] = iso;
+    o["m3"] = m.m3;
+
+    if (i == 0) {
+      o["cmp"] = -1;   // pierwszy odczyt — nie ma z czym porownac
+      continue;
+    }
+    const Settings::MeterCfg& p = settings().meters[idx[i - 1]];
+    const float boiler = g.sumBetween(p.day, m.day);
+    if (boiler < 0.f) {
+      o["cmp"] = -2;   // log gazu nie siega tak daleko wstecz
+      continue;
+    }
+    o["cmp"] = 0;
+    o["meter_used"] = m.m3 - p.m3;
+    o["boiler_used"] = boiler;
+  }
+  String out;
+  serializeJson(j, out);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", out);
+}
+
+void apiMeterAdd() {
+  JsonDocument b;
+  if (deserializeJson(b, server.arg("plain")) != DeserializationError::Ok) {
+    server.send(400, "application/json", "{\"ok\":false,\"msg\":\"zły JSON\"}");
+    return;
+  }
+  const uint32_t day = dayFromIso(b["date"] | "");
+  const float m3 = b["m3"] | -1.f;
+  if (day == 0) {
+    server.send(200, "application/json", "{\"ok\":false,\"msg\":\"Podaj datę odczytu\"}");
+    return;
+  }
+  if (m3 < 0.f) {
+    server.send(200, "application/json",
+                "{\"ok\":false,\"msg\":\"Podaj stan licznika w m³ (można z przecinkiem)\"}");
+    return;
+  }
+  if (!settings().meterAdd(day, m3)) {
+    char msg[80];
+    snprintf(msg, sizeof(msg),
+             "{\"ok\":false,\"msg\":\"Brak miejsca (maks. %d odczytów) — usuń najstarszy\"}",
+             Settings::METERS);
+    server.send(200, "application/json", msg);
+    return;
+  }
+  settings().meterSave();
+  server.send(200, "application/json", "{\"ok\":true,\"msg\":\"Zapisano odczyt.\"}");
+}
+
+void apiMeterDel() {
+  const uint32_t day = dayFromIso(server.arg("date").c_str());
+  if (day != 0 && settings().meterDel(day)) settings().meterSave();
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
 void apiBleGw() {
   JsonDocument b;
-  deserializeJson(b, server.arg("plain"));
-  const char* h = b["host"] | "";
-  snprintf(settings().bleGwHost, sizeof(settings().bleGwHost), "%s", h);
-  settings().save();
+  if (deserializeJson(b, server.arg("plain")) != DeserializationError::Ok) {
+    server.send(400, "application/json", "{\"ok\":false,\"msg\":\"zły JSON\"}");
+    return;
+  }
+  JsonArrayConst hosts = b["hosts"];
+
+  // DWA przebiegi: najpierw walidacja CALEJ listy, dopiero potem zapis. Inaczej
+  // literowka w trzecim polu zostawia dwa pierwsze zmienione w RAM i niezapisane
+  // w NVS — czyli stan, ktorego uzytkownik nie widzi ani w panelu, ani na ekranie.
+  // Host wchodzi prosto do URL-a, wiec walidacja jest tez bariera bezpieczenstwa.
+  for (int i = 0; i < Settings::BLE_GW; ++i) {
+    const char* h = (i < static_cast<int>(hosts.size())) ? (hosts[i] | "") : "";
+    if (!Settings::bleGwHostValid(h)) {
+      server.send(200, "application/json",
+                  "{\"ok\":false,\"msg\":\"Zły adres — dozwolone litery, cyfry, kropka, "
+                  "myślnik i dwukropek (maks. 23 znaki)\"}");
+      return;
+    }
+  }
+  for (int i = 0; i < Settings::BLE_GW; ++i) {
+    settings().bleGwSet(i, (i < static_cast<int>(hosts.size())) ? (hosts[i] | "") : "");
+  }
+  // bleGwSave(), NIE save(): tylko ono zageszcza liste. Bez zageszczenia wpis
+  // wylacznie w slocie 2 zostawilby slot 0 pusty, a caly kod pyta o bramki przez
+  // "czy slot 0 jest obsadzony".
+  settings().bleGwSave();
+  blegw::retryNow();   // nie czekaj do 2 min backoffu poprzedniej, martwej bramki
+
   JsonDocument o;
   o["ok"] = true;
-  o["msg"] = h[0] ? "Zapisano. Pierwszy odczyt w ciągu 20 s." : "Bramka wyłączona.";
+  o["msg"] = settings().hasBleGw() ? "Zapisano. Pierwszy odczyt w ciągu 20 s."
+                                   : "Bramki wyłączone.";
   String out;
   serializeJson(o, out);
   server.send(200, "application/json", out);
@@ -1027,6 +1244,9 @@ void routes() {
   server.on("/api/ble", HTTP_GET, apiBleList);
   server.on("/api/ble", HTTP_POST, apiBleSet);
   server.on("/api/blegw", HTTP_POST, apiBleGw);
+  server.on("/api/meter", HTTP_GET, apiMeterList);
+  server.on("/api/meter", HTTP_POST, apiMeterAdd);
+  server.on("/api/meter", HTTP_DELETE, apiMeterDel);
   server.on("/api/radardemo", apiRadarDemo);
   server.on("/api/vi", HTTP_GET, apiViState);
   server.on("/api/vi/link", HTTP_POST, apiViLink);

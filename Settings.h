@@ -81,8 +81,56 @@ struct Settings {
   bool meterDel(uint32_t day);
   void meterSave();
 
-  // Bramka BLE (Shelly) — druga para uszu dla czujnikow poza zasiegiem wyswietlacza.
-  char bleGwHost[24] = {};
+  // --- bramki BLE (Shelly) ---
+  // LISTA, nie jeden host. Bluetooth nie ma sieci kratowej: kazdy czujnik musi
+  // dosiegnac konkretnego odbiornika, a odbiorniki sie NIE dubluja - uzupelniaja.
+  // Zmierzone u uzytkownika (dBm, wlasne radio wyswietlacza / bramka na pietrze):
+  //   Lazienka  -72 / -70     Schody   -90 / -56     Salon -98 / -79
+  //   Sypialnia -84 / -94     Biuro (parter) -98 / -98  <- nie slyszy go NIKT.
+  // Kazdy czujnik ma dokladnie jednego opiekuna i zaden odbiornik nie zastepuje
+  // drugiego. Biuro wymaga wiec bramki NA PARTERZE, a nie lepszej anteny.
+  //
+  // Trzy sloty: dwa sa potrzebne od zaraz (Shelly na pietrze + ESP32-C3 na
+  // parterze z issue #12), trzeci to zapas na strych/garaz. Wiecej nie ma po co -
+  // kazdy slot to osobny GET w netTask przy kazdym odpytaniu, a ekran statystyk
+  // ma na bramki jeden wiersz.
+  static constexpr int BLE_GW = 3;
+
+  // SLOT 0 TO NADAL bleGwHost POD KLUCZEM NVS "blegw": ta sama nazwa pola, ten sam
+  // klucz, to samo znaczenie co w v91. Dzieki temu jedyna skonfigurowana bramka
+  // (192.168.0.102) przezywa OTA bez migracji i bez linijki kodu migrujacego - a
+  // gdyby OtaGuard cofnal wersje, stara binarka czyta swoj klucz i dziala dalej.
+  // Sloty 1..BLE_GW-1 leza pod NOWYMI kluczami "bgw1".."bgwN", ktorych stara
+  // binarka nie zna i po prostu je ignoruje.
+  //
+  // Nie ma tu blobu, wiec nie ma pulapki "dwa uklady, ten sam rozmiar" (patrz
+  // RoomHistory w Settings.cpp): kazdy slot to osobny klucz z osobnym stringiem.
+  // Rozszerzenie listy = dopisanie kluczy, nigdy przemeblowanie istniejacych.
+  //
+  // Lista jest ZAGESZCZANA przy zapisie (bleGwSave), wiec slot 0 jest obsadzony
+  // zawsze, gdy obsadzony jest ktorykolwiek. To nie kosmetyka: netTask
+  // (pogoda-gdynia.ino) i ekran statystyk pytaja o bleGwHost[0] != '\0' i dzieki
+  // zageszczaniu ten warunek dalej znaczy dokladnie "jest jakas bramka".
+  char bleGwHost[24] = {};               // bramka 1 - klucz NVS "blegw"
+  char bleGwHostN[BLE_GW - 1][24] = {};  // bramki 2..N - klucze "bgw1".."bgwN"
+
+  // Jednolity dostep do calej listy. Poza lista zwraca "" - nigdy nullptr, zeby
+  // wolajacy nie musial sprawdzac przed kazdym snprintf("%s").
+  const char* bleGwAt(int i) const;
+  int bleGwCount() const;
+  bool hasBleGw() const { return bleGwCount() > 0; }
+
+  // Sam sprawdzian, bez zapisu: panel ma przepuscic CALA liste, zanim ruszy
+  // pierwszy slot. Inaczej literowka w trzecim polu zostawia dwa pierwsze zmienione
+  // w RAM i niezapisane w NVS - netTask odpytuje juz nowy adres, a restart wraca
+  // do starego i nikt nie wie, ktora wersja jest prawdziwa.
+  static bool bleGwHostValid(const char* host);
+
+  // bleGwSet pisze TYLKO do RAM i waliduje (host wchodzi prosto do URL-a).
+  // NVS rusza dopiero bleGwSave() - inaczej zapis calej listy z panelu to trzy
+  // osobne transakcje NVS, a zageszczanie w polowie petli mieszaloby sloty.
+  bool bleGwSet(int i, const char* host);
+  void bleGwSave();
 
   // BLE_SLOTS / BLE_USABLE stoja wyzej, przy samej tablicy ble[].
   const BleCfg* bleFind(const char* mac) const;
@@ -109,3 +157,9 @@ void pvHistoryClear();
 // --- historia czujnikow BLE (24 h, ruchome okno; przezywa zanik zasilania) ---
 void roomHistoryLoad(struct RoomHistory& h);
 void roomHistorySave(const struct RoomHistory& h);
+
+// Dzienny log gazu. Bez utrwalania cala weryfikacja licznika byla martwa: dane
+// zbierane co 3 min ginely przy kazdym restarcie, a porownanie z rachunkiem
+// wymaga tygodni.
+void gasHistoryLoad(struct GasHistory& g);
+void gasHistorySave(const struct GasHistory& g);

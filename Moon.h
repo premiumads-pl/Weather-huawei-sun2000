@@ -30,15 +30,22 @@ inline float illum(float p) {
   return 0.5f * (1.f - cosf(2.f * static_cast<float>(M_PI) * p));
 }
 
+// Nazwy sa RZECZOWNIKOWE i samodzielne. Bylo "Przybywa" / "Ubywa" — czasownik bez
+// podmiotu, ktory pod ikona wygladal na urwany w pol zdania ("Czyste niebo /
+// Przybywa" — czego przybywa?). Reszta faz byla rzeczownikami ("Nów", "Pełnia"),
+// wiec te dwie wylamywaly sie tez ze wzoru.
+// Sierp = ponizej kwadry, garb = powyzej — tak sie te fazy nazywaja po polsku.
+// Zmierzone w PLF14: najszersze slowo to "przybywa" (60 px) przy limicie 116 px
+// na slowo (drawWeatherDesc lamie tylko przy spacji).
 inline const char* name(float p) {
   if (p < 0.03f || p > 0.97f) return "Nów";
-  if (p < 0.22f) return "Przybywa";
+  if (p < 0.22f) return "Sierp przybywa";
   if (p < 0.28f) return "Pierwsza kwadra";
-  if (p < 0.47f) return "Przybywa";
+  if (p < 0.47f) return "Garb przybywa";
   if (p < 0.53f) return "Pełnia";
-  if (p < 0.72f) return "Ubywa";
+  if (p < 0.72f) return "Garb ubywa";
   if (p < 0.78f) return "Ostatnia kwadra";
-  return "Ubywa";
+  return "Sierp ubywa";
 }
 
 // Terminator (granica swiatla i cienia) to elipsa. Dla kazdego wiersza tarczy

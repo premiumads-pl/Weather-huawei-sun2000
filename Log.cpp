@@ -49,7 +49,19 @@ void logPrintf(const char* fmt, ...) {
   }
   portEXIT_CRITICAL(&gMux);
 
-  const uint32_t h = ESP.getFreeHeap();
+  // ESP.getMinFreeHeap(), a NIE getFreeHeap() porownywany z wlasnym minimum.
+  //
+  // Poprzednia wersja probkowala stan sterty W MOMENCIE LOGOWANIA — a kazdy LOG stoi
+  // z natury ZA ciezka operacja, ktora pamiec juz oddala. To bylo wiec minimum
+  // SPOCZYNKU podpisane na ekranie jako "najgorszy moment od startu".
+  // Zmierzone na urzadzeniu: nasza wartosc 85464 B, prawdziwy dolek 22044 B.
+  // Rozjazd 63 kB, i to po niewlasciwej stronie progu HEAP_DANGER (25000) — karta
+  // swiecila na zielono, a biala kreska stala na 53% skali zamiast na 14%.
+  //
+  // getMinFreeHeap() to licznik sprzetowy: widzi kazdy dolek, takze w setup(), takze
+  // krotszy niz klatka, takze wewnatrz cudzej biblioteki. Nigdy nie rosnie, wiec
+  // porownanie jest zbedne.
+  const uint32_t h = ESP.getMinFreeHeap();
   if (h < gDiag.minHeap) {
     gDiag.minHeap = h;
   }

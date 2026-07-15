@@ -100,8 +100,9 @@ void onRssiLow(void*, esp_event_base_t, int32_t, void*) {
   gRoamWanted = true;
 }
 
-volatile bool gRadarWantMem = false;
-volatile bool gRadarMemReady = false;
+// gRadarWantMem/gRadarMemReady usuniete razem z mechanizmem oddawania bufora —
+// patrz komentarz przy pobieraniu radaru. releaseBuffer() zostaje: uzywa go OTA
+// (tam zwolnienie 129 kB PSRAM ma sens, bo Update alokuje wlasny bufor).
 volatile int gWifiAttempt = 0;
 char gBootMsg[48] = "Łączenie z WiFi...";
 
@@ -332,20 +333,27 @@ static void netTask(void*) {
 
     // ---- radar opadowy (realny pomiar; model bywa ślepy na lokalne ulewy) ----
     if (static_cast<int32_t>(millis() - nextRadarAt) >= 0) {
-      // Za ciasno na dekoder PNG? Poproś rdzeń 1 o oddanie bufora ekranu.
-      const bool needMem = ESP.getMaxAllocHeap() < 48000;
-      if (needMem) {
-        gRadarWantMem = true;
-        const uint32_t t0 = millis();
-        while (!gRadarMemReady && millis() - t0 < 3000) vTaskDelay(pdMS_TO_TICKS(20));
-      }
-
+      // USUNIETE: proszenie rdzenia 1 o oddanie bufora ekranu przed dekodowaniem PNG.
+      //
+      // Ten mechanizm zamrazal ekran na CALY czas pobierania radaru (nie na 3 s —
+      // 3000 ms to bylo tylko czekanie na potwierdzenie z rdzenia 1; `fetch()` leci
+      // dopiero potem, a `gRadarWantMem` wraca na false po nim). Co 5 minut, bo
+      // warunek `getMaxAllocHeap() < 48000` jest na tym urzadzeniu spelniony ZAWSZE
+      // (zmierzone: largest_block ~39-43 kB).
+      //
+      // I nie mogl pomoc, bo mierzyl co innego, niz zwalnial:
+      //   - getMaxAllocHeap() to MALLOC_CAP_INTERNAL, czyli SRAM,
+      //   - a bufor sprite'a (129 kB) siedzi w PSRAM. Nie przez TFT_eSPI — jego
+      //     `#if defined(CONFIG_SPIRAM_SUPPORT)` jest FALSZYWY, bo rdzen 3.3.10
+      //     definiuje CONFIG_SPIRAM, nie CONFIG_SPIRAM_SUPPORT. Trafia tam przez
+      //     CONFIG_SPIRAM_USE_MALLOC=1 z CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096:
+      //     kazda alokacja > 4 kB idzie do PSRAM sama.
+      // Czyli: oddawalismy PSRAM, zeby zrobic miejsce w SRAM-ie.
+      //
+      // Prawdziwy straznik jest w RadarClient (prog 64 kB, licznik radar.skips_low_ram)
+      // i na urzadzeniu pokazuje ZERO — dekoder nigdy nie odpuscil z braku pamieci.
       RadarSnapshot rs{};
       const bool radarOk = radarClient.fetch(rs);
-
-      if (needMem) {
-        gRadarWantMem = false;  // rdzeń 1 odtworzy bufor przy najbliższej klatce
-      }
 
       if (radarOk) {
         xSemaphoreTake(gLock, portMAX_DELAY);
@@ -383,6 +391,7 @@ static void netTask(void*) {
     if (settings().hasViessmann() && static_cast<int32_t>(millis() - nextViAt) >= 0) {
       vi::Model tmp{};
       const bool ok = vi::fetch(tmp);
+      bool gasWantSave = false;
       xSemaphoreTake(gLock, portMAX_DELAY);
       if (ok) {
         gVi = tmp;
@@ -406,8 +415,15 @@ static void netTask(void*) {
             gBurner.push(tmv.tm_yday, tmv.tm_hour, tmv.tm_min,
                          tmp.hasModulation ? tmp.modulationPct : 0, tmp.burnerActive);
           }
-          if (tmp.hasGas && gGas.advance(static_cast<uint32_t>(tt))) {
-            gGas.push(tmp.gasDhwM3 + tmp.gasHeatM3);
+          if (tmp.hasGas) {
+            const uint32_t prevDay = gGas.lastDay;
+            if (gGas.advance(static_cast<uint32_t>(tt))) {
+              gGas.push(tmp.gasDhwM3 + tmp.gasHeatM3);
+              // Zapis RAZ NA DOBE, przy przewinieciu dnia — nie co 3 minuty.
+              // Doba wlasnie sie zamknela, wiec jej suma jest juz ostateczna.
+              // Snapshot na stos (248 B) i zapis POZA mutexem: NVS nigdy pod gLock.
+              if (prevDay != 0 && gGas.lastDay != prevDay) gasWantSave = true;
+            }
           }
         }
       } else {
@@ -415,7 +431,16 @@ static void netTask(void*) {
         snprintf(diag().viErr, sizeof(diag().viErr), "%s", tmp.err);
         LOG("Piec BLAD: %s", tmp.err);
       }
+
+      // Snapshot pod mutexem, zapis POZA nim — NVS nigdy pod gLock (rdzen 1
+      // renderuje 30 klatek/s i czeka na te sama blokade).
+      GasHistory gasSnap;
+      if (gasWantSave) gasSnap = gGas;
       xSemaphoreGive(gLock);
+      if (gasWantSave) {
+        gasHistorySave(gasSnap);
+        LOG("Gaz: zamknieta doba, log zapisany");
+      }
       nextViAt = millis() + (ok ? 180000UL : 120000UL);
     }
 
@@ -742,6 +767,7 @@ void setup() {
   roomHistoryLoad(gRooms);
   uiRooms = gRooms;
   ui.setRoomHistory(&uiRooms);
+  gasHistoryLoad(gGas);   // 120 dni logu gazu — bez tego weryfikacja licznika nie ma z czym porownywac
   ui.setBoiler(&uiVi);
   ui.setBurnerHistory(&uiBurner);
 
@@ -804,19 +830,6 @@ void loop() {
     delay(1000);
     return;
   }
-
-  // --- radar prosi o pamięć: oddajemy bufor i nie rysujemy, dopóki nie skończy ---
-  // releaseBuffer(false) = bez czyszczenia ekranu, więc panel zostaje z ostatnią
-  // klatką zamiast mrugnąć na czarno.
-  if (gRadarWantMem) {
-    if (!gRadarMemReady) {
-      ui.releaseBuffer(false);
-      gRadarMemReady = true;
-    }
-    delay(30);
-    return;
-  }
-  gRadarMemReady = false;  // render() sam odtworzy bufor przy najbliższej klatce
 
   const uint32_t now = millis();
 

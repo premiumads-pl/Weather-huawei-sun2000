@@ -12,6 +12,31 @@ namespace {
 Settings gSettings;
 constexpr const char* NS_CFG = "pogoda";
 constexpr const char* NS_PV = "pvday";
+
+// Klucze listy bramek. Slot 0 zostaje pod historycznym "blegw" (patrz Settings.h),
+// reszta dostaje wlasne klucze. Jedno miejsce, bo zapisuja to DWIE funkcje:
+// save() (calosc konfiguracji z panelu) i bleGwSave() (sama lista).
+void bleGwWrite(Preferences& prefs, const Settings& s) {
+  prefs.putString("blegw", s.bleGwHost);
+  for (int i = 1; i < Settings::BLE_GW; ++i) {
+    char k[8];
+    snprintf(k, sizeof(k), "bgw%d", i);
+    prefs.putString(k, s.bleGwAt(i));
+  }
+}
+
+// Host wchodzi bez zmian do "http://%s/script/1/ble", wiec przepuszczamy wylacznie
+// to, z czego adres moze sie skladac. Bez tego spacja albo ukosnik w polu panelu
+// robi z URL-a cos zupelnie innego niz uzytkownik widzi na ekranie.
+bool bleGwHostOk(const char* h) {
+  for (const char* p = h; *p != '\0'; ++p) {
+    const char c = *p;
+    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == '.' || c == '-' || c == ':';
+    if (!ok) return false;
+  }
+  return true;
+}
 }  // namespace
 
 // UWAGA - NIE dodawaj tu globalnego `Preferences`. Kazda funkcja MUSI miec wlasny,
@@ -62,8 +87,18 @@ void Settings::load() {
   String vi = prefs.getString("viinst", "");
   String vg = prefs.getString("vigw", "");
   viAuthAt = prefs.getUInt("viat", 0);
+  // Bramka 1 czyta sie z tego samego klucza co zawsze - to CALA "migracja" z
+  // pojedynczego hosta na liste. Sloty 2..N to nowe klucze; na urzadzeniu sprzed
+  // OTA ich nie ma, wiec zostaja puste i lista ma dokladnie jedna, dzialajaca
+  // pozycje: te, ktora uzytkownik wpisal.
   String bg = prefs.getString("blegw", "");
   strncpy(bleGwHost, bg.c_str(), sizeof(bleGwHost) - 1);
+  for (int i = 1; i < BLE_GW; ++i) {
+    char k[8];
+    snprintf(k, sizeof(k), "bgw%d", i);
+    String g = prefs.getString(k, "");
+    strncpy(bleGwHostN[i - 1], g.c_str(), sizeof(bleGwHostN[i - 1]) - 1);
+  }
   if (prefs.getBytesLength("mets") == sizeof(meters)) {
     prefs.getBytes("mets", meters, sizeof(meters));
   }
@@ -125,7 +160,74 @@ void Settings::save() {
   prefs.putString("mqpre", mqttPrefix);
   prefs.putUShort("mqport", mqttPort);
   prefs.putBool("mqen", mqttEnabled);
-  prefs.putString("blegw", bleGwHost);
+  bleGwWrite(prefs, *this);
+  prefs.end();
+}
+
+const char* Settings::bleGwAt(int i) const {
+  if (i < 0 || i >= BLE_GW) return "";
+  return (i == 0) ? bleGwHost : bleGwHostN[i - 1];
+}
+
+int Settings::bleGwCount() const {
+  int n = 0;
+  for (int i = 0; i < BLE_GW; ++i) {
+    if (bleGwAt(i)[0] != '\0') ++n;
+  }
+  return n;
+}
+
+bool Settings::bleGwHostValid(const char* host) {
+  const char* h = (host != nullptr) ? host : "";
+  return strlen(h) < sizeof(Settings::bleGwHost) && bleGwHostOk(h);
+}
+
+// Sam RAM, bez NVS. Puste = slot skasowany.
+bool Settings::bleGwSet(int i, const char* host) {
+  if (i < 0 || i >= BLE_GW) return false;
+  if (!bleGwHostValid(host)) return false;
+  const char* h = (host != nullptr) ? host : "";
+
+  char* dst = (i == 0) ? bleGwHost : bleGwHostN[i - 1];
+  // snprintf, nie strcpy: OSTATNI bajt kazdego slotu ma zostac zerem NA ZAWSZE.
+  // netTask czyta te tablice bez blokady, w trakcie zapisu z webTask - dopoki
+  // bajt [23] jest zerem, czytajacy ZAWSZE znajdzie koniec stringa i najgorsze,
+  // co go spotka, to jedno odpytanie polowy starego adresu.
+  snprintf(dst, sizeof(bleGwHost), "%s", h);
+  return true;
+}
+
+// Zageszcza liste i zapisuje ja w NVS. Osobno od save(), tak jak viSave()/meterSave():
+// zapis bramki nie ma po co przepisywac hasla WiFi i calego MQTT.
+void Settings::bleGwSave() {
+  // Dziury wypadaja, kolejnosc zostaje, duplikaty gina. Duplikat to nie blad
+  // uzytkownika bez konsekwencji: ten sam Shelly odpytywany dwa razy startuje
+  // sam ze soba w wyborze opiekuna czujnika i marnuje sekundy w netTask.
+  //
+  // Zageszczanie ma jeszcze jedno zadanie: pilnuje, ze slot 0 (klucz "blegw",
+  // czytany takze przez starsza binarke po cofnieciu OTA) trzyma PRAWDZIWA
+  // bramke, a nie pustke, gdy user obsadzi tylko sloty 2-3.
+  char tmp[BLE_GW][sizeof(bleGwHost)] = {};
+  int n = 0;
+  for (int i = 0; i < BLE_GW; ++i) {
+    const char* h = bleGwAt(i);
+    if (h[0] == '\0') continue;
+    bool dup = false;
+    for (int j = 0; j < n; ++j) {
+      if (strcasecmp(tmp[j], h) == 0) { dup = true; break; }
+    }
+    if (!dup) snprintf(tmp[n++], sizeof(tmp[0]), "%s", h);
+  }
+  for (int i = 0; i < BLE_GW; ++i) {
+    char* dst = (i == 0) ? bleGwHost : bleGwHostN[i - 1];
+    snprintf(dst, sizeof(bleGwHost), "%s", tmp[i]);
+  }
+
+  Preferences prefs;
+  if (!prefs.begin(NS_CFG, false)) {
+    return;
+  }
+  bleGwWrite(prefs, *this);
   prefs.end();
 }
 
@@ -429,5 +531,59 @@ void roomHistorySave(const RoomHistory& h) {
     return;
   }
   prefs.putBytes("rh2", &h, sizeof(RoomHistory));
+  prefs.end();
+}
+
+// ------------------------------------------ dzienny log gazu (120 dni) --------
+// Bez tego cala weryfikacja licznika nie ma sensu: gGas zbieral dane od zawsze,
+// ale ginely przy KAZDYM restarcie — a porownanie "licznik vs piec" wymaga
+// tygodni historii. Zbieranie bez zapisu to byl najgorszy mozliwy stan: kod
+// wygladal na dzialajacy, koszt RAM byl placony, pozytku zero.
+//
+// Ten sam wzorzec co przy profilu PV: wersja w blobie, wlasny klucz, asercja
+// rozmiaru. GasHistory ma 248 B, wiec zapis jest tani — leci raz na dobe, przy
+// przewinieciu dnia, a nie co 3 minuty.
+namespace {
+struct GasBlob {
+  uint16_t ver;
+  uint32_t lastDay;
+  int16_t head;
+  uint16_t m3x100[GasHistory::DAYS];
+};
+constexpr uint16_t GAS_VER = 1;
+constexpr const char* K_GAS = "gas1";
+
+static_assert(sizeof(GasBlob) == 252,
+              "zmienil sie uklad logu gazu - podbij klucz NVS na \"gas2\"");
+}  // namespace
+
+void gasHistoryLoad(GasHistory& g) {
+  g.reset();
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, true)) {
+    return;
+  }
+  GasBlob b{};
+  if (prefs.getBytesLength(K_GAS) == sizeof(b) &&
+      prefs.getBytes(K_GAS, &b, sizeof(b)) == sizeof(b) && b.ver == GAS_VER) {
+    g.lastDay = b.lastDay;
+    g.head = b.head;
+    memcpy(g.m3x100, b.m3x100, sizeof(b.m3x100));
+    Serial.printf("Gaz: wczytano log (dzien %lu)\n", static_cast<unsigned long>(g.lastDay));
+  }
+  prefs.end();
+}
+
+void gasHistorySave(const GasHistory& g) {
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, false)) {
+    return;
+  }
+  GasBlob b{};
+  b.ver = GAS_VER;
+  b.lastDay = g.lastDay;
+  b.head = g.head;
+  memcpy(b.m3x100, g.m3x100, sizeof(b.m3x100));
+  prefs.putBytes(K_GAS, &b, sizeof(b));
   prefs.end();
 }
