@@ -22,6 +22,21 @@ const char* apIp();
 bool wifiJustSaved();
 void clearWifiSavedFlag();
 
+// Panel wlasnie testuje nowe dane WiFi (apiWifi w zadaniu web).
+// Zadanie sieci MUSI wtedy odpuscic swoje WiFi.begin() ze starymi danymi z NVS —
+// inaczej nadpisze probe panelu, a panel uzna powrot na STARA siec za dowod, ze
+// nowe haslo dziala. Flaga SAMA WYGASA po kilkunastu sekundach, wiec nawet blad
+// w panelu nie odetnie urzadzenia od sieci na stale.
+bool wifiConfigBusy();
+
+// Wyniki skanu WiFi to JEDEN globalny bufor w rdzeniu (WiFiScanClass::_scanResult),
+// a scanNetworks() zaczyna od jego zwolnienia. Dwa zadania skanujace naraz = odczyt
+// ze zwolnionej pamieci = panic. Kto skanuje, bierze te blokade na CALY cykl:
+// scanNetworks() + odczyt wynikow (SSID/RSSI/BSSID) + scanDelete().
+// NIE brac jej pod gLock — kolejnosc blokad musi zostac jednokierunkowa.
+bool scanLock(uint32_t waitMs);
+void scanUnlock();
+
 // Prowizoryczna konfiguracja z portu szeregowego (do wgrania bez telefonu).
 void serialConsole();
 

@@ -1,6 +1,7 @@
 #include "PvClient.h"
 
 #include "Config.h"
+#include "Log.h"
 #include "Settings.h"
 
 #include <Arduino.h>
@@ -214,17 +215,47 @@ bool PvClient::fetch(PvModel& out, bool night) {
   float f = 0.f;
   uint16_t u16 = 0;
 
+  // DWA liczniki, nie jeden — i to jest celowe.
+  //
+  // `fails` pilnuje piatki, dla ktorej prog "fails >= 3" zostal kiedys skalibrowany:
+  // to 3 z 5, czyli 60% odczytow. Gdyby dorzucic do niego piatke ponizej, ten sam
+  // prog znaczylby nagle 3 z 10, czyli 30% — cichaczem dwukrotnie ostrzejszy werdykt
+  // "Modbus nie odpowiada", w tym samym wydaniu, w ktorym te rejestry PIERWSZY RAZ
+  // sa w ogole sprawdzane. Nie wiemy, jak czesto padaja, wlasnie dlatego, ze do dzis
+  // nikt ich nie liczyl. Zmiana progu i zmiana tego, co go karmi, nie moga isc razem.
+  //
+  // `extra` liczy nowa piatke: zapisuje prawde do logu, ale NIE zamyka sesji.
+  // Gdy `/api/log` pokaze po dobie, ze one nie padaja, mozna je bedzie dolaczyc do
+  // `fails` i podniesc prog do 6 — juz na danych, nie na przeczuciu.
   int fails = 0;
-  if (readS32(32064, s32)) snap.powerDcW = s32; else ++fails;
-  if (readS32(32080, s32)) snap.powerAcW = s32; else ++fails;
-  if (readS32(37113, s32)) snap.gridPowerW = s32; else ++fails;
+  int extra = 0;
+  uint16_t missing = 0;  // pierwszy rejestr MOCY, ktory nie doszedl (0 = komplet)
+
+  // Trzy rejestry mocy sa nierozlaczne — z dwoch z nich liczy sie houseLoadW.
+  if (readS32(32064, s32)) snap.powerDcW = s32; else { ++fails; if (!missing) missing = 32064; }
+  if (readS32(32080, s32)) snap.powerAcW = s32; else { ++fails; if (!missing) missing = 32080; }
+  if (readS32(37113, s32)) snap.gridPowerW = s32; else { ++fails; if (!missing) missing = 37113; }
   if (readU32(32106, u32)) snap.energyTotalKwh = static_cast<float>(u32) / 100.f; else ++fails;
   if (readU32(32114, u32)) snap.energyTodayKwh = static_cast<float>(u32) / 100.f; else ++fails;
-  if (readS16(32016, 10, f)) snap.pvVoltageV = f;
-  if (readS16(32087, 10, f)) snap.inverterTempC = f;
-  if (readU16(32086, u16)) snap.efficiencyPct = static_cast<float>(u16) / 100.f;
-  if (readU16(32089, u16)) snap.statusCode = u16;
-  if (readU16(37100, u16)) snap.meterOk = (u16 == 1);
+
+  // Ponizsza piatka nie miala "else" W OGOLE — mogla PASC W CALOSCI, a nikt by sie
+  // nie dowiedzial. snap jest wyzerowany, wiec kazda taka porazka wychodzila na ekran
+  // jako pomiar: temperatura 0,0 C (zima wyglada wiarygodnie), meterOk=false (alarm
+  // o liczniku, ktorego nie ma), a statusCode 0 to u Huawei "Czuwanie" — w sloneczne
+  // poludnie. Dlatego przy porazce 32089 wpisujemy 0xFFFF: to kod, ktorego Huawei
+  // nie uzywa, wiec pvStatusLabel() zejdzie do default i powie "Stan nieznany"
+  // zamiast udawac, ze falownik czuwa.
+  if (readS16(32016, 10, f)) snap.pvVoltageV = f; else ++extra;
+  if (readS16(32087, 10, f)) snap.inverterTempC = f; else ++extra;
+  if (readU16(32086, u16)) snap.efficiencyPct = static_cast<float>(u16) / 100.f; else ++extra;
+  if (readU16(32089, u16)) snap.statusCode = u16; else { snap.statusCode = 0xFFFF; ++extra; }
+  if (readU16(37100, u16)) snap.meterOk = (u16 == 1); else { snap.meterOk = true; ++extra; }
+
+  if (extra > 0) {
+    // Sam log, bez konsekwencji. To jest pomiar, nie alarm — po dobie w /api/log
+    // bedzie wiadomo, czy te rejestry sa stabilne.
+    LOG("PV: %d z 5 rejestrow dodatkowych nie doszlo (nie wplywa na prog awarii)", extra);
+  }
 
   // Sesja się posypała — zamknij, żeby następny cykl zaczął od czystego handshake.
   // (Tak samo wygląda zasypianie falownika o zmroku: TCP jeszcze stoi, ale rejestry
@@ -235,6 +266,32 @@ bool PvClient::fetch(PvModel& out, bool night) {
     out.asleep = night;
     strncpy(out.errorMsg, night ? "Falownik uśpiony" : "Modbus bez odpowiedzi",
             sizeof(out.errorMsg) - 1);
+    return false;
+  }
+
+  // Brak KTOREGOKOLWIEK z trzech rejestrow mocy = calego odczytu nie wolno pokazac.
+  // Prog fails >= 3 tego nie lapal, bo to jest JEDNA porazka. A gdy padalo 37113
+  // (bilans sieci — timeout, chwilowa desynchronizacja, licznik na innym Modbusie),
+  // gridPowerW zostawalo 0 i wychodzilo houseLoadW = powerAcW - 0 = CALA produkcja:
+  // sloneczne poludnie, 5 kW z paneli i "Pobor domu: 5000 W", "Siec: 0 W". Ta sama
+  // liczba szla do PvHistory (czerwona krzywa poboru rysowana dokladnie pod zolta
+  // krzywa produkcji, na stale, do NVS) i do Home Assistanta jako encja "Pobor domu".
+  // Rachunek sie nie zgadzal, a wykres wygladal przekonujaco.
+  // Sesji tutaj NIE zamykamy: readRegsRetry probowal juz 3 razy, a gdy reszta
+  // rejestrow odpowiada, to nie polaczenie jest zepsute — pelny handshake kosztuje
+  // ~20 s rozgrzewki Huawei i zaszkodzilby bardziej, niz pomogl.
+  // Rozroznienie "spi" od "zepsuty" zostaje: nocą to nadal stan neutralny.
+  if (missing != 0) {
+    out.online = false;
+    out.asleep = night;
+    if (night) {
+      strncpy(out.errorMsg, "Falownik uśpiony", sizeof(out.errorMsg) - 1);
+    } else {
+      // Numer rejestru na ekranie i w /api/diag — inaczej ta awaria jest nie do
+      // odroznienia od zwyklego braku sieci na urzadzeniu bez konsoli.
+      snprintf(out.errorMsg, sizeof(out.errorMsg), "Brak rejestru mocy %u",
+               static_cast<unsigned>(missing));
+    }
     return false;
   }
 

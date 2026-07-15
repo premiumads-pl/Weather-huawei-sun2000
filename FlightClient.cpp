@@ -31,13 +31,40 @@ bool inMapBounds(float lat, float lon) {
          lon <= gmap::LON_MAX;
 }
 
+// Ile kilometrow ma stopien dlugosci geograficznej na NASZEJ szerokosci.
+// Bylo tu zaszyte 64,6 = 111,2 * cos(54,5 stopnia) — poprawne dla Gdyni i TYLKO dla
+// Gdyni, podczas gdy lat/lon sa konfigurowalne w panelu (Krakow: 71,4, blad 10%).
+// cosf liczymy przy zmianie szerokosci, a nie per samolot — distKm leci w petli.
+float lonKmPerDeg() {
+  static float cachedLat = 1000.f;   // niemozliwa szerokosc = "jeszcze nie liczone"
+  static float cached = 64.6f;
+  const float lat = settings().lat;
+  if (lat != cachedLat) {
+    cachedLat = lat;
+    cached = 111.2f * cosf(lat * 0.017453293f);   // stopnie -> radiany
+  }
+  return cached;
+}
+
 float distKm(float lat, float lon) {
   const float dLat = (lat - settings().lat) * 111.2f;
-  const float dLon = (lon - settings().lon) * 64.6f;
+  const float dLon = (lon - settings().lon) * lonKmPerDeg();
   return sqrtf(dLat * dLat + dLon * dLon);
 }
 
-bool httpGetJson(const char* url, JsonDocument& doc, const JsonDocument* filter) {
+// Karencja dla API tras. Gdy vrs-standing-data padnie, nie ma sensu walic w nie
+// po 4 razy w kazdym cyklu (a cykl leci co minute) — trasy i tak dojda pozniej.
+uint32_t gRouteBlockUntil = 0;   // millis(); 0 = brak karencji
+
+bool routeApiBlocked() {
+  return gRouteBlockUntil != 0 && static_cast<int32_t>(millis() - gRouteBlockUntil) < 0;
+}
+
+// Zwraca KOD HTTP, nie bool — bo wolajacy musi odroznic "404, czyli takiej trasy na
+// pewno nie ma" (mozna zapamietac) od "nie udalo sie zapytac" (nie wolno zapamietac).
+// 200 = OK i JSON sparsowany. 0 = blad transportu/TLS/DNS albo zle JSON.
+// HTTPClient oddaje przy bledach polaczenia wartosci ujemne — tez nie sa 200.
+int httpGetJson(const char* url, JsonDocument& doc, const JsonDocument* filter) {
   WiFiClientSecure client;
   client.setInsecure();
   client.setTimeout(10);
@@ -47,12 +74,12 @@ bool httpGetJson(const char* url, JsonDocument& doc, const JsonDocument* filter)
   http.setReuse(false);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   if (!http.begin(client, url)) {
-    return false;
+    return 0;
   }
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     http.end();
-    return false;
+    return code;
   }
   const String body = http.getString();
   http.end();
@@ -63,7 +90,7 @@ bool httpGetJson(const char* url, JsonDocument& doc, const JsonDocument* filter)
   } else {
     err = deserializeJson(doc, body);
   }
-  return !err;
+  return err ? 0 : 200;
 }
 
 }  // namespace
@@ -78,6 +105,7 @@ const FlightClient::RouteEntry* FlightClient::findCached(const char* callsign) c
 }
 
 // https://vrs-standing-data.adsb.lol/routes/<2 pierwsze znaki>/<callsign>.json
+// Zwraca "czy wynik wolno zapamietac w cache", a nie "czy trasa jest znana".
 bool FlightClient::lookupRoute(const char* callsign, RouteEntry& out) {
   memset(&out, 0, sizeof(out));
   strncpy(out.callsign, callsign, sizeof(out.callsign) - 1);
@@ -96,9 +124,24 @@ bool FlightClient::lookupRoute(const char* callsign, RouteEntry& out) {
   filter["_airport_codes_iata"] = true;
 
   JsonDocument doc;
-  if (!httpGetJson(url, doc, &filter)) {
-    return true;  // 404 / brak danych — cache'ujemy jako nieznane
+  const int code = httpGetJson(url, doc, &filter);
+
+  // Stary komentarz mowil "404 / brak danych", ale funkcja zwracala false TAKZE przy
+  // timeoucie, bledzie TLS, DNS i HTTP 5xx — i wszystkie te przypadki ladowaly
+  // w cache jako known = false, czyli NA STALE. Jeden chwilowy problem z siecia
+  // odbieral trafionym wtedy rejsom trase az do wykrecenia wpisu z pierscienia:
+  // lista pokazywala sam znak wywolawczy zamiast "WAW-GDN", a prio spadalo z 0/1 na 2,
+  // wiec samolot lecacy do Gdanska tracil priorytet i wypadal z szostki na rzecz
+  // przypadkowego GA. Wszystko po cichu.
+  if (code == 404) {
+    gRouteBlockUntil = 0;      // API zyje i odpowiedzialo: takiej trasy po prostu nie ma
+    return true;
   }
+  if (code != 200) {
+    gRouteBlockUntil = millis() + 600000UL;   // 10 min przerwy
+    return false;                             // NIE cache'ujemy — sprobujemy w nastepnym cyklu
+  }
+  gRouteBlockUntil = 0;
 
   const char* codes = doc["_airport_codes_iata"];
   if (codes == nullptr || strlen(codes) < 5) {
@@ -164,13 +207,11 @@ bool FlightClient::fetch(FlightModel& out) {
     float dist;
     int prio;
   };
-  Cand cand[kMaxCandidates]{};
-  int n = 0;
+  Cand cand[kMaxCandidates]{};   // trzymana caly czas ROSNACO po dist
+  int n = 0;                     // ile kandydatow w tablicy (max kMaxCandidates)
+  int total = 0;                 // ile samolotow w zasiegu — liczone po CALEJ odpowiedzi
 
   for (JsonObjectConst a : arr) {
-    if (n >= kMaxCandidates) {
-      break;
-    }
     const char* fl = a["flight"];
     if (fl == nullptr) {
       continue;  // bez znaku wywolawczego (obiekty naziemne TWR itp.)
@@ -190,6 +231,23 @@ bool FlightClient::fetch(FlightModel& out) {
     if (f.callsign[0] == '\0') {
       continue;
     }
+
+    // Bylo tu "if (n >= kMaxCandidates) break;" — czyli obciecie PRZED sortowaniem.
+    // adsb.fi oddaje samoloty w SWOJEJ kolejnosci, nie po odleglosci: kod bral
+    // pierwszych 18 z odpowiedzi, sortowal je i pokazywal "6 najblizszych" —
+    // z osiemnastu przypadkowych, nie z czterdziestu pieciu w zasiegu. Samolot
+    // przelatujacy nad domem, ktory wypadl w JSON-ie na pozycji 25, nie pojawial sie
+    // wcale. Do tego "total" bylo liczba kandydatow PO obcieciu, wiec naglowek
+    // zatrzymywal sie na "18 w zasiegu" i nigdy nie szedl wyzej.
+    // Teraz: total liczy kazdy samolot, a tablica trzyma 18 NAJBLIZSZYCH — wstawianie
+    // jest O(n*18), przy n ~ 50 to darmo.
+    ++total;
+
+    const float d = distKm(lat, lon);
+    if (n == kMaxCandidates && d >= cand[kMaxCandidates - 1].dist) {
+      continue;  // dalszy niz najgorszy z biezacych — nie ma po co go budowac
+    }
+
     const char* ty = a["t"];
     if (ty != nullptr) {
       strncpy(f.type, ty, sizeof(f.type) - 1);
@@ -205,26 +263,35 @@ bool FlightClient::fetch(FlightModel& out) {
     }
     f.track = static_cast<int16_t>(tr);
 
-    cand[n].f = f;
-    cand[n].dist = distKm(lat, lon);
-    cand[n].prio = 2;
-    ++n;
+    // Wstaw z zachowaniem porzadku; przy pelnej tablicy nadpisz najgorszego.
+    int pos = (n < kMaxCandidates) ? n++ : kMaxCandidates - 1;
+    while (pos > 0 && cand[pos - 1].dist > d) {
+      cand[pos] = cand[pos - 1];
+      --pos;
+    }
+    cand[pos].f = f;
+    cand[pos].dist = d;
+    cand[pos].prio = 2;
   }
 
-  out.total = n;
+  out.total = total;
 
   // --- trasy: najpierw z cache, potem kilka nowych zapytan na cykl ---
   int budget = kMaxLookupsPerFetch;
   for (int i = 0; i < n; ++i) {
     Flight& f = cand[i].f;
     const RouteEntry* e = findCached(f.callsign);
-    if (e == nullptr && budget > 0) {
+    if (e == nullptr && budget > 0 && !routeApiBlocked()) {
       RouteEntry tmp{};
-      lookupRoute(f.callsign, tmp);
-      cache_[cacheNext_] = tmp;
-      cacheNext_ = (cacheNext_ + 1) % CACHE_N;
-      --budget;
-      e = findCached(f.callsign);
+      // Do cache trafia tylko odpowiedz, ktorej API faktycznie udzielilo.
+      // Nieudane zapytanie zostaje bez sladu — sprobujemy w nastepnym cyklu.
+      if (lookupRoute(f.callsign, tmp)) {
+        cache_[cacheNext_] = tmp;
+        cacheNext_ = (cacheNext_ + 1) % CACHE_N;
+        e = findCached(f.callsign);
+      }
+      --budget;   // budzet zjada takze porazka — inaczej jeden padniety cykl
+                  // wysylalby 18 zapytan zamiast czterech
     }
     if (e != nullptr && e->known) {
       strncpy(f.route, e->route, sizeof(f.route) - 1);

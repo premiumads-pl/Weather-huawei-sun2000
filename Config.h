@@ -48,8 +48,11 @@ constexpr int PROG_Y = 29;
 constexpr int PROG_H = 3;
 constexpr int CONTENT_Y = 34;
 constexpr int CONTENT_H = 172;
-constexpr int FOOTER_Y = 208;
-constexpr int FOOTER_H = 32;
+// FOOTER_Y/FOOTER_H tu NIE MA i niech tak zostanie. Byly, nie definiowaly niczego
+// (zero uzyc w calym repo) i do tego podawaly zle liczby: twierdzily 208/32, gdy
+// stopka realnie stoi na 206 i ma 34 px. Ktos, kto w dobrej wierze zmienilby te
+// stala, nie zobaczylby ZADNEGO efektu. Jedyne zrodlo prawdy o stopce to
+// WeatherUi::VIEW_H (= CONTENT_Y + CONTENT_H) i wysokosc liczona w drawFooterTo().
 
 // ---------- Podświetlenie / tryb nocny ----------
 constexpr uint32_t BL_PWM_FREQ = 5000;
@@ -83,6 +86,8 @@ constexpr uint32_t FRAME_IDLE_MS = 50;   // 20 fps na statycznym ekranie (pasek 
 constexpr bool PROFILE_FRAME = false;
 
 constexpr int VIEW_COUNT = 9;   // TERAZ / GODZINY / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / STATYSTYKI
+constexpr int VIEW_NOW = 0;     // te dwa brakowaly, wiec switch w drawView() musial
+constexpr int VIEW_HOURS = 1;   // uzywac golych literalow "case 0:" / "case 1:"
 constexpr int VIEW_RADAR = 2;   // animowana mapa opadow (pomijany, gdy nie pada)
 constexpr int VIEW_DAYS = 3;
 constexpr int VIEW_HOME = 4;    // czujniki BLE — pomijany, gdy zadnego nie ma

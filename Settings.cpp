@@ -9,18 +9,37 @@
 #include "RoomHistory.h"
 
 namespace {
-Preferences prefs;
 Settings gSettings;
 constexpr const char* NS_CFG = "pogoda";
 constexpr const char* NS_PV = "pvday";
 }  // namespace
+
+// UWAGA - NIE dodawaj tu globalnego `Preferences`. Kazda funkcja MUSI miec wlasny,
+// lokalny obiekt (wzorzec z OtaGuard.cpp:62,75,233) i MUSI sprawdzac begin().
+//
+// Dlaczego: te funkcje wolane sa z DWOCH watkow naraz. netTask robi
+// roomHistorySave() co 10 min i viSave() co ~55 min, webTask robi save() przy
+// kazdym "Zapisz" w panelu. `Preferences` nie jest re-entrantne: begin() na
+// zajetym obiekcie zwraca false i ZOSTAWIA _handle na cudzej przestrzeni nazw,
+// a putString() tego nie zauwaza (_started dalej == true) i pisze pod cudzy
+// uchwyt. Skutkiem byly: haslo WiFi ladujace w przestrzeni "pvday", historia
+// pokoi ginaca bez sladu i ustawienia "zapisane", ktore znikaly po restarcie.
+// Cicho, bez crashu i bez wpisu w logu.
+//
+// Samo NVS (nvs_open/nvs_set_*/nvs_close) jest w ESP-IDF bezpieczne watkowo.
+// Niebezpieczny byl wylacznie wspoldzielony obiekt C++ ze stanem _handle/_started.
 
 Settings& settings() {
   return gSettings;
 }
 
 void Settings::load() {
-  prefs.begin(NS_CFG, true);
+  Preferences prefs;
+  // Na czystym urzadzeniu przestrzen jeszcze nie istnieje i begin(readOnly)
+  // zwraca false. Wtedy zostaja wartosci domyslne z definicji struktury.
+  if (!prefs.begin(NS_CFG, true)) {
+    return;
+  }
   String s = prefs.getString("ssid", "");
   String p = prefs.getString("pass", "");
   String c = prefs.getString("city", "Gdynia");
@@ -54,7 +73,9 @@ void Settings::load() {
   strncpy(viInstallation, vi.c_str(), sizeof(viInstallation) - 1);
   strncpy(viGateway, vg.c_str(), sizeof(viGateway) - 1);
 
-  // czujniki BLE — bindkey jako blob (16 B), nigdy jako tekst w logach/API
+  // czujniki BLE — bindkey jako blob (16 B), nigdy jako tekst w logach/API.
+  // Czytamy WSZYSTKIE sloty, takze te ponad BLE_USABLE: jesli w NVS zostal wpis
+  // z czasow luzniejszego limitu, ma sie dac odczytac i skasowac przez panel.
   for (int i = 0; i < BLE_SLOTS; ++i) {
     char k[8];
     snprintf(k, sizeof(k), "b%dmac", i);
@@ -85,7 +106,10 @@ void Settings::load() {
 }
 
 void Settings::save() {
-  prefs.begin(NS_CFG, false);
+  Preferences prefs;
+  if (!prefs.begin(NS_CFG, false)) {
+    return;
+  }
   prefs.putString("ssid", ssid);
   prefs.putString("pass", pass);
   prefs.putString("city", city);
@@ -108,7 +132,10 @@ void Settings::save() {
 // Osobno od save(): refresh token zmienia sie co 180 dni, a IDy raz. Nie ma po co
 // przepisywac calej konfiguracji przy kazdym odswiezeniu.
 void Settings::viSave() {
-  prefs.begin(NS_CFG, false);
+  Preferences prefs;
+  if (!prefs.begin(NS_CFG, false)) {
+    return;
+  }
   prefs.putString("vicid", viClientId);
   prefs.putString("viref", viRefresh);
   prefs.putString("viinst", viInstallation);
@@ -119,7 +146,10 @@ void Settings::viSave() {
 }
 
 void Settings::meterSave() {
-  prefs.begin(NS_CFG, false);
+  Preferences prefs;
+  if (!prefs.begin(NS_CFG, false)) {
+    return;
+  }
   prefs.putBytes("mets", meters, sizeof(meters));
   prefs.end();
 }
@@ -181,6 +211,8 @@ const Settings::BleCfg* Settings::bleFind(const char* mac) const {
 bool Settings::bleSet(const char* mac, const char* name, const char* keyHex) {
   if (mac == nullptr || mac[0] == '\0') return false;
 
+  // Znany MAC edytujemy w jego slocie, gdziekolwiek stoi - takze ponad
+  // BLE_USABLE, zeby stary wpis dalo sie poprawic albo skasowac.
   int slot = -1;
   for (int i = 0; i < BLE_SLOTS; ++i) {
     if (strcasecmp(ble[i].mac, mac) == 0) {
@@ -188,8 +220,11 @@ bool Settings::bleSet(const char* mac, const char* name, const char* keyHex) {
       break;
     }
   }
+  // NOWY czujnik tylko do slotu, ktory ma miejsce w historii i na ekranie.
+  // Slot ponad limitem dalby sie wpisac i nigdy by sie nie pokazal: cicho,
+  // bez komunikatu. Lepiej powiedziec "brak miejsca" niz udawac, ze zapisano.
   if (slot < 0) {
-    for (int i = 0; i < BLE_SLOTS; ++i) {
+    for (int i = 0; i < BLE_USABLE; ++i) {
       if (ble[i].mac[0] == '\0') {
         slot = i;
         break;
@@ -218,7 +253,10 @@ bool Settings::bleSet(const char* mac, const char* name, const char* keyHex) {
   }
 
   char k[8];
-  prefs.begin(NS_CFG, false);
+  Preferences prefs;
+  if (!prefs.begin(NS_CFG, false)) {
+    return false;
+  }
   snprintf(k, sizeof(k), "b%dmac", slot);
   prefs.putString(k, c.mac);
   snprintf(k, sizeof(k), "b%dnam", slot);
@@ -236,50 +274,117 @@ bool Settings::bleSet(const char* mac, const char* name, const char* keyHex) {
 void Settings::clearWifi() {
   ssid[0] = '\0';
   pass[0] = '\0';
-  prefs.begin(NS_CFG, false);
+  Preferences prefs;
+  if (!prefs.begin(NS_CFG, false)) {
+    return;
+  }
   prefs.remove("ssid");
   prefs.remove("pass");
   prefs.end();
 }
 
 // ------------------------------------------------- profil produkcji PV -------
-// Zapisujemy tylko surowe waty (144 sloty po 10 minut) + numer dnia.
-// Blob ma 288 B, wiec zapis co 10 minut jest dla NVS zupelnie niegrozny.
+// Profil doby: 144 sloty po 10 minut, dwie serie (produkcja i pobor) + numer dnia.
+//
+// PULAPKA (to samo rodzenstwo co "rh2"): do v1 profil lezal w DWOCH blobach:
+// "w" (produkcja) i "l" (pobor). Oba maja IDENTYCZNE 288 B, wiec kontrola
+// `getBytesLength(klucz) == sizeof(...)` przepuszczala kazdy z nich w KAZDA
+// strone. Literowka w kluczu albo zamiana kolejnosci przy zapisie zamienilaby
+// produkcje z poborem i NIC by tego nie zlapalo: wykres pokazalby zolte slupki
+// jako czerwone i odwrotnie. Cicha korupcja, nie crash.
+//
+// Teraz caly profil to JEDNA struktura pod JEDNYM kluczem "prof1". Jej rozmiar
+// (584 B) nie jest podobny do zadnej ze skladowych, wiec pomylka o klucz jest
+// niemozliwa, a pole `ver` lapie zmiane semantyki przy tym samym rozmiarze
+// (np. przejscie z watow na dziesiatki watow).
+//
+// KAZDA zmiana ukladu tej struktury MUSI isc z NOWYM kluczem ("prof2"). Pilnuje
+// tego static_assert nizej: gdy rozmiar sie zmieni, kompilacja padnie z ta
+// instrukcja zamiast po cichu wczytac stary blob jako nowy.
+namespace {
+
+struct PvProfileBlob {
+  uint16_t ver;
+  int32_t day;
+  uint16_t watts[PvHistory::SLOTS];
+  uint16_t load[PvHistory::SLOTS];
+};
+
+constexpr uint16_t PV_PROF_VER = 1;
+constexpr const char* K_PV_PROF = "prof1";
+
+static_assert(sizeof(PvProfileBlob) == 584,
+              "zmienil sie uklad profilu PV - podbij klucz NVS na \"prof2\", "
+              "inaczej stary blob wczyta sie jako nowy (cicha korupcja)");
+
+// Klucze ukladu v1. Nigdy juz nie beda czytane, a zajmuja ~580 B w malej
+// partycji NVS (min_spiffs). Kasujemy je raz, przy pierwszym starcie po zmianie.
+void pvRemoveLegacy(Preferences& p) {
+  p.remove("w");
+  p.remove("l");
+  p.remove("day");
+}
+
+}  // namespace
 
 void pvHistoryLoad(PvHistory& h) {
-  prefs.begin(NS_PV, true);
-  const int day = prefs.getInt("day", -1);
-  const size_t need = sizeof(h.watts);
-  const size_t have = prefs.getBytesLength("w");
-  if (day >= 0 && have == need) {
-    prefs.getBytes("w", h.watts, need);
-    // Pobór doszedł później niż produkcja — starszy zapis go nie ma. Wtedy po
-    // prostu zostaje wyzerowany i wykres dorysuje zużycie od tej chwili.
-    if (prefs.getBytesLength("l") == sizeof(h.load)) {
-      prefs.getBytes("l", h.load, sizeof(h.load));
-    }
-    h.day = day;
+  h.reset(-1);
+
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, true)) {
+    return;
+  }
+  PvProfileBlob b{};
+  const bool ok = prefs.getBytesLength(K_PV_PROF) == sizeof(b) &&
+                  prefs.getBytes(K_PV_PROF, &b, sizeof(b)) == sizeof(b) &&
+                  b.ver == PV_PROF_VER && b.day >= 0;
+  const bool legacy = prefs.isKey("w") || prefs.isKey("l") || prefs.isKey("day");
+  prefs.end();
+
+  if (ok) {
+    memcpy(h.watts, b.watts, sizeof(h.watts));
+    memcpy(h.load, b.load, sizeof(h.load));
+    h.day = b.day;
     for (int i = 0; i < PvHistory::SLOTS; ++i) {
       h.filled[i] = h.watts[i] > 0 || h.load[i] > 0;
     }
-    Serial.printf("PV: wczytano profil dnia %d z NVS\n", day);
-  } else {
-    h.reset(-1);
+    Serial.printf("PV: wczytano profil dnia %d z NVS\n", static_cast<int>(b.day));
   }
-  prefs.end();
+
+  if (legacy) {
+    Preferences w;
+    if (w.begin(NS_PV, false)) {
+      pvRemoveLegacy(w);
+      w.end();
+      Serial.println("PV: skasowano profil w starym ukladzie (klucze w/l/day)");
+    }
+  }
 }
 
 void pvHistorySave(const PvHistory& h) {
-  prefs.begin(NS_PV, false);
-  prefs.putInt("day", h.day);
-  prefs.putBytes("w", h.watts, sizeof(h.watts));
-  prefs.putBytes("l", h.load, sizeof(h.load));
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, false)) {
+    return;
+  }
+  PvProfileBlob b{};
+  b.ver = PV_PROF_VER;
+  b.day = h.day;
+  memcpy(b.watts, h.watts, sizeof(b.watts));
+  memcpy(b.load, h.load, sizeof(b.load));
+  prefs.putBytes(K_PV_PROF, &b, sizeof(b));
   prefs.end();
 }
 
+// NIE WOLNO tu wolac prefs.clear(). W przestrzeni "pvday" siedzi TAKZE "rh2",
+// czyli 24 h historii z czujnikow BLE. clear() skasowalby ja przy okazji i nikt
+// by sie o tym nie dowiedzial. Kasujemy wylacznie klucze profilu PV, po nazwie.
 void pvHistoryClear() {
-  prefs.begin(NS_PV, false);
-  prefs.clear();
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, false)) {
+    return;
+  }
+  prefs.remove(K_PV_PROF);
+  pvRemoveLegacy(prefs);
   prefs.end();
 }
 
@@ -292,8 +397,21 @@ void pvHistoryClear() {
 // i v2 (6 pokoi: sama temperatura) maja PRZYPADKIEM identyczny rozmiar — 1736 B.
 // Kontrola getBytesLength() przepuscilaby stary blob i wczytala wilgotnosc jako
 // temperature pokoi 4-5. Nowy klucz = stara historia jest po prostu ignorowana.
+//
+// Rozmiar jest tu JEDYNYM zabezpieczeniem, a wlasnie sie okazalo, ze potrafi nie
+// zauwazyc zmiany ukladu. Asercja nizej lapie to w kompilacji: jesli RoomHistory
+// sie zmieni, budowanie padnie z instrukcja, zamiast po cichu wczytac stary blob.
+static_assert(sizeof(RoomHistory) == 1736,
+              "zmienil sie uklad RoomHistory - podbij klucz NVS na \"rh3\". "
+              "Sam rozmiar NIE wystarczy: v1 (4 pokoje T+RH) i v2 (6 pokoi T) "
+              "mialy identyczne 1736 B i kontrola rozmiarem ich nie rozroznila");
+
 void roomHistoryLoad(RoomHistory& h) {
-  prefs.begin(NS_PV, true);
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, true)) {
+    h.reset();
+    return;
+  }
   const size_t need = sizeof(RoomHistory);
   if (prefs.getBytesLength("rh2") == need) {
     prefs.getBytes("rh2", &h, need);
@@ -306,7 +424,10 @@ void roomHistoryLoad(RoomHistory& h) {
 }
 
 void roomHistorySave(const RoomHistory& h) {
-  prefs.begin(NS_PV, false);
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, false)) {
+    return;
+  }
   prefs.putBytes("rh2", &h, sizeof(RoomHistory));
   prefs.end();
 }

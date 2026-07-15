@@ -24,6 +24,11 @@ uint8_t* gTile = nullptr;    // 256x256 poziomow, bufor roboczy jednego kafelka
 Frame gMeta[FRAMES];
 int gCount = 0;
 uint32_t gUpdatedAt = 0;
+// Komplet buforow stoi. begin() alokowal 7 klatek w petli i przy porazce wychodzil,
+// zostawiajac czesc wskaznikow waznych, a reszte NULL — a setDemo() sprawdzal tylko
+// gFrames[0] i pisal do wszystkich siedmiu, czyli pod adres 0. Jedna flaga zamiast
+// siedmiu sprawdzen wskaznika.
+bool gReady = false;
 bool gDemo = false;
 bool gRain = false;
 bool gWantFetch = false;
@@ -84,8 +89,24 @@ int pngLine(PNGDRAW* d) {
   static uint16_t rgb[kTilePx];
   static uint8_t alpha[kTilePx];
 
-  gPng->getLineAsRGB565(d, rgb, PNG_RGB565_BIG_ENDIAN, 0xffffffff);
-  gPng->getAlphaMask(d, alpha, 1);
+  // Szerokosc byla pilnowana (x < kTilePx), wysokosc nie — a gTile ma 256 wierszy.
+  // Adres prosi o /256/, wiec dzis przychodzi 256x256; to jest jednak zaufanie do
+  // zdalnego serwera, nie kontrakt lokalny. Wyzszy kafelek pisalby poza bufor
+  // w PSRAM, czyli cicha korupcja sterty. (RadarClient sprawdza draw->y od dawna.)
+  if (d->y < 0 || d->y >= kTilePx) return 1;
+
+  // MUSI byc LITTLE_ENDIAN — patrz obszerny komentarz w RadarClient.cpp. Skrotowo:
+  // przy BIG_ENDIAN PNGdec robi __builtin_bswap16() przed zapisem do tablicy, a my
+  // czytamy ja jako uint16_t na little-endian i rozbieramy tak, jakby bajty byly na
+  // miejscu. Kanaly wychodzily przemieszane i poziom 5 (ULEWA) byl nieosiagalny dla
+  // kazdego koloru z palety RainViewera — ekran radaru pokazywal front burzowy
+  // w jednym kolorze zamiast gradientu.
+  gPng->getLineAsRGB565(d, rgb, PNG_RGB565_LITTLE_ENDIAN, 0xffffffff);
+  // Prog 60, nie 1: maska oddaje bit (alpha >= prog), wiec przy progu 1 kazdy piksel
+  // o alfie >= 1 szedl jako w pelni nieprzezroczysty. Artefakty na krawedzi echa
+  // (alpha rzedu kilku) wpadaly wtedy do "wet" i mogly wlaczyc ekran radaru przy
+  // suchym niebie — czyli dokladnie to, przed czym broni komentarz przy gRain nizej.
+  gPng->getAlphaMask(d, alpha, 60);
 
   uint8_t* row = gTile + d->y * kTilePx;
   for (int x = 0; x < d->iWidth && x < kTilePx; ++x) {
@@ -99,6 +120,49 @@ int pngLine(PNGDRAW* d) {
   }
   return 1;
 }
+
+// Zbiornik na kafelek — patrz PngSink w RadarClient.cpp. Do v51 bylo tu
+// http.getSize() + getStreamPtr()->readBytes(): getSize() zwraca -1 przy
+// Transfer-Encoding: chunked (wtedy "size <= 0" i cichy return false), a surowy
+// strumien niesie naglowki porcji. Dzialalo tylko dlatego, ze RainViewer wysyla
+// dzis Content-Length. writeToStream() rozpakowuje porcje i znosi oba warianty.
+// writeToStream() chce Stream*, nie Print* — stad puste metody odczytu.
+class PngSink : public Stream {
+ public:
+  ~PngSink() { free(buf_); }
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  void flush() override {}
+  size_t write(uint8_t c) override { return write(&c, 1); }
+  size_t write(const uint8_t* d, size_t n) override {
+    if (len_ + n > cap_) {
+      size_t want = cap_ ? cap_ * 2 : 8192;
+      while (want < len_ + n) want *= 2;
+      if (want > kMaxPng) want = kMaxPng;
+      if (len_ + n > want) return 0;   // twardy limit — zwrot 0 przerywa transfer
+      uint8_t* p = static_cast<uint8_t*>(buf_ ? ps_realloc(buf_, want)
+                                             : ps_malloc(want));   // PSRAM
+      if (p == nullptr) return 0;
+      buf_ = p;
+      cap_ = want;
+    }
+    memcpy(buf_ + len_, d, n);
+    len_ += n;
+    return n;
+  }
+  uint8_t* take() {
+    uint8_t* p = buf_;
+    buf_ = nullptr;
+    cap_ = len_ = 0;
+    return p;
+  }
+  size_t size() const { return len_; }
+
+ private:
+  uint8_t* buf_ = nullptr;
+  size_t cap_ = 0, len_ = 0;
+};
 
 bool httpGet(const char* url, uint8_t** buf, size_t* len, String* text) {
   WiFiClient client;
@@ -120,26 +184,23 @@ bool httpGet(const char* url, uint8_t** buf, size_t* len, String* text) {
     return true;
   }
 
+  // getSize() == -1 przy chunked — to nie blad, tylko brak Content-Length.
+  // Limit sprawdzamy, gdy serwer podal rozmiar; reszte przypilnuje PngSink.
   const int size = http.getSize();
-  if (size <= 0 || static_cast<size_t>(size) > kMaxPng) {
+  if (size > 0 && static_cast<size_t>(size) > kMaxPng) {
     http.end();
     return false;
   }
-  *buf = static_cast<uint8_t*>(ps_malloc(size));   // PSRAM — nie ruszamy SRAM-u
-  if (*buf == nullptr) {
-    http.end();
-    return false;
-  }
-  Stream* s = http.getStreamPtr();
-  const int got = s->readBytes(*buf, size);
+
+  PngSink sink;
+  const int written = http.writeToStream(&sink);
   http.end();
-  if (got != size) {
-    free(*buf);
-    *buf = nullptr;
+  if (written <= 0 || sink.size() == 0) {
     return false;
   }
-  *len = size;
-  return true;
+  *len = sink.size();
+  *buf = sink.take();
+  return *buf != nullptr;
 }
 
 // Kafelek -> klatka mapy (przeskalowanie najblizszym sasiadem; radar i tak ma
@@ -161,10 +222,36 @@ void resample(uint8_t* dst) {
   }
 }
 
+// Porazka alokacji zostawia jednoznaczny stan: albo stoi komplet, albo nic.
+void releaseAll() {
+  for (int i = 0; i < FRAMES; ++i) {
+    free(gFrames[i]);
+    gFrames[i] = nullptr;
+  }
+  free(gTile);
+  gTile = nullptr;
+}
+
+// Klatka, ktora nie doszla albo sie nie zdekodowala, NIE moze zostac z poprzedniego
+// cyklu. gCount i tak melduje komplet, a rysowanie animuje wszystkie klatki
+// 0..count-1, wiec stary obrazek pojawilby sie w srodku animacji jako pomiar
+// z innej chwili — front "przeskakuje" albo cofa sie (to samo, co opisuje komentarz
+// przy setDemo). Zerujemy piksele: brak echa to uczciwe "nie mam danych", stary
+// obrazek to falszywy pomiar. Czas slotu znamy z JSON-a, wiec podpis zostaje prawdziwy.
+void invalidate(int i, uint32_t epoch, int32_t offsetMin) {
+  xSemaphoreTake(gMx, portMAX_DELAY);
+  if (gFrames[i] != nullptr) memset(gFrames[i], 0, W * H);
+  gMeta[i].epoch = epoch;
+  gMeta[i].offsetMin = offsetMin;
+  gMeta[i].valid = false;
+  xSemaphoreGive(gMx);
+}
+
 }  // namespace
 
 bool begin() {
   if (gMx == nullptr) gMx = xSemaphoreCreateMutex();
+  gReady = false;
   if (!psramFound()) {
     snprintf(gErr, sizeof(gErr), "brak PSRAM");
     return false;
@@ -173,17 +260,20 @@ bool begin() {
   for (int i = 0; i < FRAMES; ++i) {
     gFrames[i] = static_cast<uint8_t*>(ps_calloc(W * H, 1));
     if (gFrames[i] == nullptr) {
+      releaseAll();
       snprintf(gErr, sizeof(gErr), "brak PSRAM na klatki");
       return false;
     }
   }
   gTile = static_cast<uint8_t*>(ps_malloc(kTilePx * kTilePx));
   if (gTile == nullptr) {
+    releaseAll();
     snprintf(gErr, sizeof(gErr), "brak PSRAM na kafelek");
     return false;
   }
 
   computeGeometry();
+  gReady = true;
   LOG("Radar mapa: %d klatek x %d B w PSRAM", FRAMES, W * H);
   return true;
 }
@@ -193,7 +283,7 @@ bool wantsFetch() {
 }
 
 bool fetch() {
-  if (gTile == nullptr || gDemo) return false;   // w symulacji nie nadpisujemy klatek
+  if (!gReady || gDemo) return false;   // w symulacji nie nadpisujemy klatek
   gWantFetch = false;
 
   String js;
@@ -222,8 +312,15 @@ bool fetch() {
   else if (strncmp(host, "http://", 7) == 0) host += 7;
   JsonArrayConst past = doc["radar"]["past"];
   const int n = past.size();
-  if (n < FRAMES) {
-    snprintf(gErr, sizeof(gErr), "tylko %d klatek", n);
+  // Bierzemy co DRUGA klatke, liczac wstecz, wiec i=0 siega indeksu n-13 — sama
+  // liczba FRAMES nie wystarczy, potrzeba 2*FRAMES-1. Straznik na FRAMES przepuszczal
+  // n w przedziale 7-12: wtedy dla i=0 i i=1 wychodzilo idx < 0, klatki 0-1 zostawaly
+  // z POPRZEDNIEGO cyklu (sprzed 10 minut), a gCount = FRAMES i return true meldowaly
+  // komplet. RainViewer po awarii lub restarcie odbudowuje historie i przez
+  // kilkanascie minut oddaje mniej niz 13 klatek — wtedy to sie odpalalo.
+  constexpr int kNeed = 2 * FRAMES - 1;
+  if (n < kNeed) {
+    snprintf(gErr, sizeof(gErr), "tylko %d z %d klatek", n, kNeed);
     return false;
   }
 
@@ -232,13 +329,18 @@ bool fetch() {
   int ok = 0;
 
   for (int i = 0; i < FRAMES; ++i) {
-    const int idx = n - 1 - (FRAMES - 1 - i) * 2;
-    if (idx < 0) continue;
+    const int idx = n - 1 - (FRAMES - 1 - i) * 2;   // po strazniku zawsze >= 0
 
     JsonObjectConst f = past[idx];
     const char* path = f["path"];
     const uint32_t t = f["time"] | 0U;
-    if (path == nullptr || t == 0) continue;
+    const int32_t off = (nowT > 1700000000 && t > 0)
+                            ? (static_cast<int32_t>(t) - static_cast<int32_t>(nowT)) / 60
+                            : 0;
+    if (path == nullptr || t == 0) {
+      invalidate(i, 0, 0);
+      continue;
+    }
 
     char url[160];
     snprintf(url, sizeof(url), "http://%s%s/%d/%d/%d/%d/0/0_0.png", host, path, kTilePx,
@@ -248,6 +350,7 @@ bool fetch() {
     size_t len = 0;
     if (!httpGet(url, &png, &len, nullptr)) {
       LOG("Radar mapa: klatka %d nie doszla", i);
+      invalidate(i, t, off);
       continue;
     }
 
@@ -273,14 +376,14 @@ bool fetch() {
 
     if (!decoded) {
       LOG("Radar mapa: klatka %d nie zdekodowana", i);
+      invalidate(i, t, off);
       continue;
     }
 
     xSemaphoreTake(gMx, portMAX_DELAY);
     resample(gFrames[i]);
     gMeta[i].epoch = t;
-    gMeta[i].offsetMin = nowT > 1700000000 ? (static_cast<int32_t>(t) -
-                                              static_cast<int32_t>(nowT)) / 60 : 0;
+    gMeta[i].offsetMin = off;
     gMeta[i].valid = true;
     xSemaphoreGive(gMx);
     ++ok;
@@ -349,6 +452,10 @@ bool demo() {
 // ulewy w srodku. Kazda klatka to inne polozenie — dokladnie tak, jak wygladalby
 // prawdziwy front. Sluzy do obejrzenia wizualizacji, gdy nie pada.
 void setDemo(bool on) {
+  // Bez kompletu buforow nie ma czego wypelnic. Sprawdzenie samego gFrames[0] nie
+  // wystarczalo: petla nizej pisze do wszystkich siedmiu klatek, a begin() mogl
+  // zostawic czesc z nich pod NULL-em (patrz gReady).
+  if (on && !gReady) return;
   gDemo = on;
   if (!on) {
     gCount = 0;
@@ -357,7 +464,6 @@ void setDemo(bool on) {
     gWantFetch = true;   // wracamy na prawdziwe dane — i to od razu
     return;
   }
-  if (gFrames[0] == nullptr) return;
 
   const time_t nowT = time(nullptr);
   xSemaphoreTake(gMx, portMAX_DELAY);

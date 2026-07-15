@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "RoomHistory.h"  // RoomHistory::ROOMS - limit slotow BLE, patrz BLE_USABLE
+
 // Cała konfiguracja urządzenia siedzi w pamięci nieulotnej (NVS).
 // W kodzie źródłowym NIE MA żadnych haseł ani adresów — repo może być publiczne,
 // a binarka OTA nie zawiera niczego prywatnego.
@@ -33,12 +35,29 @@ struct Settings {
   // Fabryczny firmware szyfruje rozgłaszanie. Klucz (bindkey) wyciąga się z chmury
   // Xiaomi i jest PRYWATNY — dlatego siedzi wyłącznie tutaj, w NVS, nigdy w repo.
   // Czujnik z firmware pvvx/ATC nadaje otwartym tekstem i klucza nie potrzebuje.
+
+  // BLE_SLOTS JEST zrodlem prawdy o rozmiarze tablicy: stoi PRZED nia i tablica
+  // deklaruje sie jako ble[BLE_SLOTS]. Wczesniej stal tu literal [8], a stala
+  // lezala kilkadziesiat linii nizej i nie definiowala NICZEGO: jej zmiana nie
+  // ruszylaby tablicy, za to petle po BLE_SLOTS w Settings.cpp wyjechalyby poza
+  // nia. Teraz jedna liczba rzadzi tablica i petlami naraz.
+  static constexpr int BLE_SLOTS = 8;
+
+  // Ile slotow uzytkownik moze realnie obsadzic - i to jest liczba, ktora ma
+  // pokazywac panel. Historia i ekran maja miejsce na RoomHistory::ROOMS pokoi;
+  // czujnik wpisany ponad ten limit dalby sie zapisac i NIGDY by sie nie pokazal,
+  // bez zadnego komunikatu. Nadwyzka slotow zostaje w NVS jako zapas: stare wpisy
+  // dalej sie czytaja i edytuja, ale nowych tam nie przydzielamy.
+  static constexpr int BLE_USABLE = RoomHistory::ROOMS;
+  static_assert(BLE_SLOTS >= BLE_USABLE,
+                "tablica ble[] musi pomiescic wszystkie pokoje historii");
+
   struct BleCfg {
     char mac[18] = {};   // "a4:c1:38:54:f9:a9"
     char name[24] = {};  // "Łazienka Góra" — UTF-8, wiec 2 B na znak z ogonkiem
     uint8_t key[16] = {};
     bool hasKey = false;
-  } ble[8];
+  } ble[BLE_SLOTS];
 
   // --- Viessmann (piec) ---
   // Client ID jest PUBLICZNY (siedzi w kazdej instalacji PyViCare) — ale refresh
@@ -65,9 +84,11 @@ struct Settings {
   // Bramka BLE (Shelly) — druga para uszu dla czujnikow poza zasiegiem wyswietlacza.
   char bleGwHost[24] = {};
 
-  static constexpr int BLE_SLOTS = 8;
+  // BLE_SLOTS / BLE_USABLE stoja wyzej, przy samej tablicy ble[].
   const BleCfg* bleFind(const char* mac) const;
-  bool bleSet(const char* mac, const char* name, const char* keyHex);  // keyHex: 32 znaki lub ""
+  // keyHex: 32 znaki hex albo "" (bez zmian) albo "-" (skasuj klucz).
+  // false = brak wolnego slotu, czyli obsadzone juz BLE_USABLE czujnikow.
+  bool bleSet(const char* mac, const char* name, const char* keyHex);
 
   bool hasWifi() const { return ssid[0] != '\0'; }
   bool hasInverter() const { return modbusHost[0] != '\0'; }

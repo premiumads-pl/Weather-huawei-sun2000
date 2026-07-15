@@ -24,6 +24,36 @@ char gAccess[1400] = {};
 uint32_t gAccessExpAt = 0;     // millis()
 char gErr[56] = {};
 
+// Te bufory dotykaja DWA zadania: netTask (fetch co 3 min, odswiezenie tokena co
+// ~55 min) i webTask (autoryzacja z panelu, nastawa obiegu, forget). Bez blokady
+// rozdarty gAccess daje naglowek "Bearer <pol starego, pol nowego>" -> HTTP 401 ->
+// ekran "piec nie odpowiada" przy w pelni poprawnym tokenie. Gorszy wariant:
+// exchangeCode (webTask) i storeTokens (netTask) pisza settings().viRefresh naraz,
+// w NVS laduje sklejka dwoch tokenow i piec trzeba autoryzowac od nowa.
+//
+// GRANICA BLOKADY JEST TU KRYTYCZNA: mutexa NIE WOLNO trzymac podczas postToken(),
+// http.GET() ani http.POST() — to TLS, do 25 s, netTask stanalby na tyle samo.
+// Blokujemy wylacznie dotkniecia buforow: kopiujemy token do lokalnego String
+// i puszczamy blokade PRZED wyjsciem w siec. Mutex nie jest rekurencyjny, wiec
+// zaden wolajacy nie moze trzymac go, wchodzac do storeTokens().
+//
+// gErr zostaje poza blokada swiadomie: postToken() pisze do niego w trakcie
+// operacji sieciowej, wiec objecie go mutexem lamaloby regule powyzej. Najgorszy
+// skutek to przemieszany komunikat bledu — zawsze zakonczony zerem, bo snprintf.
+//
+// Uchwyt tworzymy w statycznym inicjalizatorze, a nie leniwie przy pierwszym
+// uzyciu: "if (gMx == nullptr) gMx = xSemaphoreCreateMutex()" samo jest wyscigiem,
+// gdy dwa zadania wejda naraz. Konstruktory globalne leca raz i jednowatkowo,
+// przed setup(), na gotowej stercie.
+SemaphoreHandle_t gMx = xSemaphoreCreateMutex();
+
+struct Lock {
+  Lock() { if (gMx != nullptr) xSemaphoreTake(gMx, portMAX_DELAY); }
+  ~Lock() { if (gMx != nullptr) xSemaphoreGive(gMx); }
+  Lock(const Lock&) = delete;
+  Lock& operator=(const Lock&) = delete;
+};
+
 // ArduinoJson w PSRAM: odpowiedz z /features ma ~53 kB, a po sparsowaniu jeszcze
 // wiecej. W SRAM nie ma na to miejsca; w PSRAM to szum (mamy 1,9 MB).
 struct PsramAlloc : ArduinoJson::Allocator {
@@ -146,33 +176,66 @@ bool postToken(const String& body, JsonDocument& doc, char* errOut, size_t errLe
 
 // Zapisuje tokeny. Viessmann przy odswiezaniu ROTUJE refresh token — jesli nowy
 // przyjdzie, trzeba go zapisac, inaczej nastepne odswiezenie padnie.
+// Wolane po KAZDYM udanym postToken: z netTask (odswiezenie) i z webTask (autoryzacja).
+// Wolajacy NIE MOZE trzymac gMx — blokade bierzemy tutaj.
 void storeTokens(JsonDocument& doc) {
   const char* acc = doc["access_token"] | "";
   const char* ref = doc["refresh_token"] | "";
   const uint32_t exp = doc["expires_in"] | 3600;
+  const uint32_t now = static_cast<uint32_t>(time(nullptr));
 
-  snprintf(gAccess, sizeof(gAccess), "%s", acc);
-  gAccessExpAt = millis() + (exp > 120 ? (exp - 60) * 1000UL : 60000UL);
+  // Blokada obejmuje SAM RAM. viSave() (kasowanie sektora flasha) leci ZA nia —
+  // patrz komentarz przy gMx: trzymanie mutexa na czas zapisu NVS wstrzymaloby
+  // webTask stojacy na circuitTarget() na caly commit. Ta sama zasada co przy TLS.
+  bool save = false;
+  {
+    Lock l;
+    snprintf(gAccess, sizeof(gAccess), "%s", acc);
+    gAccessExpAt = millis() + (exp > 120 ? (exp - 60) * 1000UL : 60000UL);
 
-  if (ref[0] != '\0' && strcmp(ref, settings().viRefresh) != 0) {
-    snprintf(settings().viRefresh, sizeof(settings().viRefresh), "%s", ref);
-    settings().viAuthAt = static_cast<uint32_t>(time(nullptr));
-    settings().viSave();
-    LOG("Piec: zapisano nowy refresh token");
-  }
+    if (ref[0] != '\0' && strcmp(ref, settings().viRefresh) != 0) {
+      snprintf(settings().viRefresh, sizeof(settings().viRefresh), "%s", ref);
+      save = true;
+      LOG("Piec: zapisano nowy refresh token");
+    }
+
+  // Licznik dni do wygasniecia liczyl od ZLEJ daty: viAuthAt ruszal sie tylko przy
+  // rotacji refresh tokena, a rotacja to polityka serwera, nie gwarancja protokolu.
+  // Gdy Viessmann odsylal ten sam token, viAuthAt zostawal na dacie pierwszej
+  // autoryzacji i panel po pol roku wolal "autoryzuj piec ponownie", choc token
+  // dzialal bez zarzutu. Kazde udane odswiezenie wlasnie POTWIERDZILO waznosc
+  // tokena — wiec liczymy od niego.
+  // Licznik jest orientacyjny (kRefreshTtlDays = 180 to zalozenie, nie dana z API);
+  // prawdziwym sygnalem do ponownej autoryzacji jest blad odswiezenia.
+  // Do NVS zapisujemy dopiero, gdy przyrost przekroczy dobe: odswiezenie leci co
+  // ~55 min, a zapis do flasha co godzine przez lata to nie jest cena za licznik.
+    if (acc[0] != '\0' && now > 1700000000UL) {
+      const uint32_t prev = settings().viAuthAt;
+      settings().viAuthAt = now;
+      // Cofniety zegar tez lapie sie tutaj: przy prev > now odejmowanie sie przekreca
+      // i wychodzi wartosc znacznie wieksza niz doba.
+      if (prev == 0 || now - prev > 86400UL) save = true;
+    }
+  }   // <- tu oddajemy gMx, PRZED zapisem do flasha
+  if (save) settings().viSave();
 }
 
 bool ensureAccess() {
-  if (gAccess[0] != '\0' && static_cast<int32_t>(gAccessExpAt - millis()) > 0) {
-    return true;
+  String body;
+  {
+    Lock l;
+    if (gAccess[0] != '\0' && static_cast<int32_t>(gAccessExpAt - millis()) > 0) {
+      return true;
+    }
+    if (settings().viRefresh[0] == '\0') {
+      snprintf(gErr, sizeof(gErr), "brak autoryzacji");
+      return false;
+    }
+    // Cialo skladamy pod blokada; dalej leci juz tylko lokalna kopia, bo POST
+    // to TLS i blokady w nim trzymac nie wolno.
+    body = "grant_type=refresh_token&client_id=" + urlenc(settings().viClientId) +
+           "&refresh_token=" + urlenc(settings().viRefresh);
   }
-  if (settings().viRefresh[0] == '\0') {
-    snprintf(gErr, sizeof(gErr), "brak autoryzacji");
-    return false;
-  }
-
-  String body = "grant_type=refresh_token&client_id=" + urlenc(settings().viClientId) +
-                "&refresh_token=" + urlenc(settings().viRefresh);
 
   JsonDocument doc;
   if (!postToken(body, doc, gErr, sizeof(gErr))) {
@@ -197,7 +260,9 @@ bool apiPost(const String& path, const String& body, char* errOut, size_t errLen
     snprintf(errOut, errLen, "brak polaczenia");
     return false;
   }
-  http.addHeader("Authorization", String("Bearer ") + gAccess);
+  String auth;
+  { Lock l; auth = String("Bearer ") + gAccess; }   // kopia pod blokada, TLS juz bez niej
+  http.addHeader("Authorization", auth);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Accept", "application/vnd.siren+json");
 
@@ -209,9 +274,13 @@ bool apiPost(const String& path, const String& body, char* errOut, size_t errLen
   // prawdziwy status siedzi w ciele ("statusCode": 400/502...). Sprawdzanie samego
   // kodu HTTP dawalo falszywy sukces: meldowalem "zapisano", a piec nie drgnal.
   // PyViCare broni sie przed tym tak samo (__handle_command_error).
+  // .as<int>() zamiast (| 0) swiadomie: gdyby statusCode przyszedl jako string
+  // ("statusCode": "400"), operator | oddaje wartosc domyslna 0 i cala obrona ponizej
+  // przestaje istniec — komenda odrzucona przez piec wroci jako sukces, czyli
+  // dokladnie ten bol, przed ktorym ta linia broni. as<int>() konwertuje string.
   JsonDocument e;
   const bool parsed = deserializeJson(e, resp) == DeserializationError::Ok;
-  const int inner = parsed ? (e["statusCode"] | 0) : 0;
+  const int inner = parsed ? e["statusCode"].as<int>() : 0;
 
   if (code != 200 && code != 201 && code != 204) {
     const char* msg = parsed ? (e["message"] | e["error"] | "?") : "?";
@@ -240,7 +309,9 @@ bool apiGet(const String& path, JsonDocument& doc, JsonDocument* filter) {
     snprintf(gErr, sizeof(gErr), "brak polaczenia");
     return false;
   }
-  http.addHeader("Authorization", String("Bearer ") + gAccess);
+  String auth;
+  { Lock l; auth = String("Bearer ") + gAccess; }   // kopia pod blokada, TLS juz bez niej
+  http.addHeader("Authorization", auth);
   http.addHeader("Accept", "application/json");
   const int code = http.GET();
   if (code != 200) {
@@ -257,12 +328,37 @@ bool apiGet(const String& path, JsonDocument& doc, JsonDocument* filter) {
     return false;
   }
 
+  // Filtr wolajacego przepuszcza samo "data", wiec statusCode i message zniknelyby
+  // przy parsowaniu, a kontrola ponizej bylaby slepa. Dopisujemy je tutaj — filtr
+  // jest lokalny u wolajacego, wiec to nikomu nie ucieka.
+  if (filter != nullptr) {
+    (*filter)["statusCode"] = true;
+    (*filter)["message"] = true;
+    (*filter)["errorType"] = true;
+  }
+
   DeserializationError e =
       filter ? deserializeJson(doc, sink.data(), DeserializationOption::Filter(*filter))
              : deserializeJson(doc, sink.data());
   if (e != DeserializationError::Ok) {
     snprintf(gErr, sizeof(gErr), "JSON: %s (%u B)", e.c_str(),
              static_cast<unsigned>(sink.size()));
+    return false;
+  }
+
+  // TO SAMO, przed czym broni sie apiPost, tylko na odczycie: Viessmann odsyla
+  // HTTP 200 nawet wtedy, gdy zadania NIE wykonal — prawdziwy status siedzi w ciele
+  // ("statusCode": 502, "message": "gateway offline"; przy nieosiagalnej bramce to
+  // realny scenariusz, PyViCare broni sie przed tym rowniez na odczycie).
+  // Tu tej obrony brakowalo jako w jedynym miejscu: deserializeJson przechodzil,
+  // doc["data"] wychodzilo null, petla w fetch() krecila sie zero razy — i piec
+  // meldowal komplet zer jako swiezy pomiar.
+  // .as<int>() zamiast (| 0): patrz komentarz w apiPost — string "502" tez ma dzialac.
+  const int inner = doc["statusCode"].as<int>();
+  if (inner >= 400) {
+    const char* msg = doc["message"] | doc["errorType"] | "?";
+    snprintf(gErr, sizeof(gErr), "piec %d: %.36s", inner, msg);
+    LOG("Piec: API odrzucilo odczyt (HTTP 200, statusCode %d): %.60s", inner, msg);
     return false;
   }
   return true;
@@ -295,15 +391,27 @@ bool ensureIds() {
 
 float gCircuitTarget = 0.f;
 
-float propF(JsonObjectConst f, const char* prop) {
-  return f["properties"][prop]["value"] | 0.0f;
+// Zwraca "czy pole doszlo" OSOBNO od wartosci. Stare "| 0.0f" oddawalo po cichu zero
+// dla pola, ktorego nie ma — a Viessmann potrafi nie przyslac "value" wcale (feature
+// wylaczony przez isEnabled/isReady, czujnik notConnected) albo przyslac null.
+// "CWU 0,0 C" bylo wtedy nieodroznialne od zamarznietego bojlera.
+// Wartownik przez wartosc zwracana, nie przez NaN — NaN potrafi przeciec na ekran.
+bool propF(JsonObjectConst f, const char* prop, float& out) {
+  JsonVariantConst v = f["properties"][prop]["value"];
+  if (v.isNull() || !v.is<float>()) return false;   // is<float>() lapie tez liczby calkowite
+  out = v.as<float>();
+  return true;
 }
 
 }  // namespace
 
 String authUrl(const char* clientId, const char* redirectUri) {
-  makeVerifier();
-  const String ch = challengeFrom(gVerifier);
+  String ch;
+  {
+    Lock l;   // gVerifier zyje az do exchangeCode() — obie strony pod ta sama blokada
+    makeVerifier();
+    ch = challengeFrom(gVerifier);
+  }
   return String(kIam) + "/authorize?client_id=" + urlenc(clientId) +
          "&redirect_uri=" + urlenc(redirectUri) +
          "&response_type=code&code_challenge_method=S256&code_challenge=" + ch +
@@ -311,25 +419,33 @@ String authUrl(const char* clientId, const char* redirectUri) {
 }
 
 bool exchangeCode(const char* code, const char* redirectUri, char* errOut, size_t errLen) {
-  if (gVerifier[0] == '\0') {
-    snprintf(errOut, errLen, "najpierw wygeneruj link");
-    return false;
+  String body;
+  {
+    Lock l;
+    if (gVerifier[0] == '\0') {
+      snprintf(errOut, errLen, "najpierw wygeneruj link");
+      return false;
+    }
+    body = "grant_type=authorization_code&client_id=" + urlenc(settings().viClientId) +
+           "&redirect_uri=" + urlenc(redirectUri) + "&code_verifier=" + urlenc(gVerifier) +
+           "&code=" + urlenc(code);
   }
-  String body = "grant_type=authorization_code&client_id=" + urlenc(settings().viClientId) +
-                "&redirect_uri=" + urlenc(redirectUri) + "&code_verifier=" + urlenc(gVerifier) +
-                "&code=" + urlenc(code);
 
   JsonDocument doc;
   if (!postToken(body, doc, errOut, errLen)) return false;
 
-  storeTokens(doc);
-  if (settings().viRefresh[0] == '\0') {
-    snprintf(errOut, errLen, "brak refresh tokena (offline_access?)");
-    return false;
+  storeTokens(doc);   // bierze gMx sam — nie wolno tu trzymac blokady, mutex nie jest rekurencyjny
+
+  {
+    Lock l;   // sam RAM — zapis do flasha za blokada, patrz storeTokens()
+    if (settings().viRefresh[0] == '\0') {
+      snprintf(errOut, errLen, "brak refresh tokena (offline_access?)");
+      return false;
+    }
+    settings().viEnabled = true;
+    gVerifier[0] = '\0';
   }
-  settings().viEnabled = true;
   settings().viSave();
-  gVerifier[0] = '\0';
   LOG("Piec: autoryzacja OK");
   return true;
 }
@@ -344,6 +460,7 @@ int daysLeft() {
 }
 
 float circuitTarget() {
+  Lock l;
   return gCircuitTarget;
 }
 
@@ -377,14 +494,17 @@ bool setCircuitTemp(int celsius, char* errOut, size_t errLen) {
 }
 
 void forget() {
-  settings().viRefresh[0] = '\0';
-  settings().viInstallation[0] = '\0';
-  settings().viGateway[0] = '\0';
-  settings().viEnabled = false;
-  settings().viAuthAt = 0;
+  {
+    Lock l;   // sam RAM — zapis do flasha za blokada, patrz storeTokens()
+    settings().viRefresh[0] = '\0';
+    settings().viInstallation[0] = '\0';
+    settings().viGateway[0] = '\0';
+    settings().viEnabled = false;
+    settings().viAuthAt = 0;
+    gAccess[0] = '\0';
+    gAccessExpAt = 0;
+  }
   settings().viSave();
-  gAccess[0] = '\0';
-  gAccessExpAt = 0;
 }
 
 bool fetch(Model& out) {
@@ -414,43 +534,71 @@ bool fetch(Model& out) {
   }
 
   Model m{};
+  int hits = 0;
+  float v = 0.f;
   for (JsonObjectConst f : doc["data"].as<JsonArrayConst>()) {
     const char* name = f["feature"] | "";
     if (strcmp(name, "heating.dhw.sensors.temperature.dhwCylinder") == 0) {
-      m.dhwTempC = propF(f, "value");
+      if (propF(f, "value", v)) { m.dhwTempC = v; m.hasDhwTemp = true; }
     } else if (strcmp(name, "heating.dhw.temperature.main") == 0) {
-      m.dhwTargetC = propF(f, "value");
+      if (propF(f, "value", v)) { m.dhwTargetC = v; m.hasDhwTarget = true; }
     } else if (strcmp(name, "heating.dhw.operating.modes.active") == 0) {
       snprintf(m.dhwMode, sizeof(m.dhwMode), "%s", f["properties"]["value"]["value"] | "");
     } else if (strcmp(name, "heating.boiler.sensors.temperature.commonSupply") == 0) {
-      m.supplyTempC = propF(f, "value");
+      if (propF(f, "value", v)) { m.supplyTempC = v; m.hasSupplyTemp = true; }
     } else if (strcmp(name, "heating.burners.0") == 0) {
-      m.burnerActive = f["properties"]["active"]["value"] | false;
+      // Brakujace "active" dawalo false, czyli "palnik nie pracuje" — a to leci
+      // do BurnerHistory i zapisuje sie w profilu doby.
+      JsonVariantConst a = f["properties"]["active"]["value"];
+      if (a.is<bool>()) { m.burnerActive = a.as<bool>(); m.hasBurnerState = true; }
     } else if (strcmp(name, "heating.burners.0.modulation") == 0) {
-      m.modulationPct = static_cast<int>(propF(f, "value"));
+      if (propF(f, "value", v)) { m.modulationPct = static_cast<int>(v); m.hasModulation = true; }
     } else if (strcmp(name, "heating.burners.0.statistics") == 0) {
-      m.burnerHours = static_cast<uint32_t>(propF(f, "hours"));
-      m.burnerStarts = static_cast<uint32_t>(propF(f, "starts"));
+      if (propF(f, "hours", v)) m.burnerHours = static_cast<uint32_t>(v);
+      if (propF(f, "starts", v)) m.burnerStarts = static_cast<uint32_t>(v);
     } else if (strcmp(name, "heating.circuits.0.operating.modes.active") == 0) {
       snprintf(m.circuitMode, sizeof(m.circuitMode), "%s", f["properties"]["value"]["value"] | "");
     } else if (strcmp(name, "heating.circuits.0.operating.programs.normal") == 0) {
-      m.circuitTargetC = propF(f, "temperature");
-      gCircuitTarget = m.circuitTargetC;
+      if (propF(f, "temperature", v)) { m.circuitTargetC = v; m.hasCircuitTarget = true; }
     } else if (strcmp(name, "heating.gas.consumption.summary.dhw") == 0) {
-      m.gasDhwM3 = propF(f, "currentDay");
+      if (propF(f, "currentDay", v)) { m.gasDhwM3 = v; m.hasGas = true; }
     } else if (strcmp(name, "heating.gas.consumption.summary.heating") == 0) {
-      m.gasHeatM3 = propF(f, "currentDay");
+      if (propF(f, "currentDay", v)) { m.gasHeatM3 = v; m.hasGas = true; }
     } else if (strcmp(name, "heating.heat.production.summary.dhw") == 0) {
-      m.heatDhwKwh = propF(f, "currentDay");
+      if (propF(f, "currentDay", v)) { m.heatDhwKwh = v; m.hasHeat = true; }
     } else if (strcmp(name, "heating.heat.production.summary.heating") == 0) {
-      m.heatHeatKwh = propF(f, "currentDay");
+      if (propF(f, "currentDay", v)) { m.heatHeatKwh = v; m.hasHeat = true; }
     } else if (strcmp(name, "heating.power.consumption.summary.dhw") == 0) {
-      m.powerKwh += propF(f, "currentDay");
+      if (propF(f, "currentDay", v)) m.powerKwh += v;
     } else if (strcmp(name, "heating.power.consumption.summary.heating") == 0) {
-      m.powerKwh += propF(f, "currentDay");
+      if (propF(f, "currentDay", v)) m.powerKwh += v;
     } else if (strcmp(name, "tcu.wifi") == 0) {
-      m.wifiRssi = static_cast<int>(propF(f, "strength"));
+      if (propF(f, "strength", v)) { m.wifiRssi = static_cast<int>(v); m.hasWifiRssi = true; }
+    } else {
+      continue;   // nieznana cecha — nie liczy sie jako trafienie
     }
+    ++hits;
+  }
+
+  // Petla wyzej to JEDYNE miejsce, gdzie cokolwiek sie wypelnia — a nie bylo kontroli,
+  // czy trafila choc raz. Gdy "data" jest puste, brakujace albo zmieni sie nazwa pola,
+  // petla krecila sie zero razy, m zostawal wyzerowany, a kod i tak meldowal
+  // online = true, valid = true ze swiezym okAt. Ekran PIEC pokazywal wtedy CWU 0,0 C,
+  // cel 0 C, zasilanie 0,0 C, palnik off, gaz 0,0 m3 — z zielona kropka i bez slowa
+  // o bledzie. Wyglada dokladnie jak wychlodzony, wylaczony piec; zima to jest
+  // komunikat "kotlownia stoi" postawiony na niczym. Do tego BurnerHistory zapisywala
+  // "palnik nie pracowal" w slocie, w ktorym pracowal.
+  // CWU to naglowek tego ekranu. Jesli nie doszla, reszta nie jest warta pokazania —
+  // lepiej uczciwy blad niz wiarygodne zero.
+  if (!m.hasDhwTemp) {
+    snprintf(out.err, sizeof(out.err), "brak odczytu CWU (%d cech)", hits);
+    LOG("Piec: odpowiedz bez temperatury CWU (%d rozpoznanych cech) — nie ufam jej", hits);
+    return false;
+  }
+
+  if (m.hasCircuitTarget) {
+    Lock l;
+    gCircuitTarget = m.circuitTargetC;
   }
 
   m.online = true;

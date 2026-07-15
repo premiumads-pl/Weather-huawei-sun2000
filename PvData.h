@@ -29,6 +29,13 @@ struct PvModel {
 // Profil dnia bieżącego: 1 próbka co 10 minut (144 sloty).
 // Dwie serie, żeby wykres pokazywał nie tylko ile wyprodukowaliśmy, ale też ile
 // z tego zużyliśmy na miejscu i kiedy musieliśmy dobrać z sieci.
+//
+// TRWALOSC: ta struktura jest utrwalana w NVS - patrz pvHistoryLoad/Save
+// w Settings.cpp. NIE jest zapisywana bajt w bajt: idzie przez wlasna strukture
+// PvProfileBlob pod kluczem "prof1", z polem wersji. Kazda zmiana ukladu ALBO
+// znaczenia `watts`/`load` (np. przejscie z watow na dziesiatki watow - rozmiar
+// zostaje ten sam!) MUSI podbic PV_PROF_VER albo klucz, inaczej stary profil
+// wczyta sie jako nowy i wykres pokaze nieprawde bez zadnego ostrzezenia.
 struct PvHistory {
   static constexpr int SLOTS = 144;
   uint16_t watts[SLOTS] = {};  // produkcja PV [W]
@@ -112,7 +119,16 @@ inline const char* pvStatusLabel(uint16_t code) {
     case 0xA000:
       return "Brak słońca";
     default:
-      return "Praca";
+      // NIE "Praca". Zaszyta odpowiedz na "nie wiem" zamieniala KAZDY nieznany kod
+      // w uspokajajacy komunikat: falownik mogl zglaszac stan, ktorego nie znamy,
+      // a ekran twierdzil, ze wszystko gra. "Stan nieznany" mozna wygooglowac
+      // (numer rejestru jest w /api/state), "Praca" nie da sie podwazyc.
+      //
+      // Zwracamy literal, NIE bufor statyczny. Kusi, zeby wypisac tu kod szesnastkowo
+      // przez `static char[]` — to bylby wyscig miedzyrdzeniowy: ta funkcja jest
+      // wolana z MqttClient.cpp:553 (netTask, rdzen 0) i z WeatherUi.cpp:990
+      // (renderowanie, rdzen 1). Dwa watki, jeden bufor, rwany napis.
+      return "Stan nieznany";
   }
 }
 

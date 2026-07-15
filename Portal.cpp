@@ -7,6 +7,8 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <cstring>
 
 #include "Config.h"
@@ -29,6 +31,29 @@ DNSServer dns;
 bool apMode = false;
 bool started = false;
 bool wifiSaved = false;
+
+// Blokada skanu WiFi — patrz komentarz przy scanLock() w Portal.h.
+// Tworzona w konstruktorze globalnym, czyli PRZED setup() i przed startem obu
+// zadan: zaden skan nie moze jej wyprzedzic. Gdyby sterta padla przy tworzeniu,
+// uchwyt zostaje NULL i skan idzie bez blokady — tak jak dzialalo do tej pory.
+SemaphoreHandle_t gScanMx = xSemaphoreCreateMutex();
+
+// Termin waznosci flagi "panel testuje WiFi" (0 = nie testuje). Trzymamy TERMIN,
+// a nie zwykle true/false, zeby flaga wygasla sama nawet wtedy, gdy straznik
+// ponizej nie zdazy jej skasowac. netTask nigdy nie zostanie z niej na lodzie.
+volatile uint32_t gWifiCfgUntil = 0;
+constexpr uint32_t kWifiCfgBusyMs = 20000;   // test trwa do 14 s + zapas
+
+// Straznik RAII: podnosi flage na wejsciu, kasuje ja na KAZDEJ sciezce wyjscia
+// z apiWifi (takze przy wczesnym return).
+struct WifiCfgGuard {
+  WifiCfgGuard() {
+    uint32_t until = millis() + kWifiCfgBusyMs;
+    if (until == 0) until = 1;   // 0 znaczy "nie testuje" — nie kolidujmy
+    gWifiCfgUntil = until;
+  }
+  ~WifiCfgGuard() { gWifiCfgUntil = 0; }
+};
 void (*gScreenshot)(WiFiClient&) = nullptr;
 void (*gViewSet)(int) = nullptr;
 void (*gViewGet)(int&, int&) = nullptr;
@@ -395,6 +420,18 @@ void apiState() {
 }
 
 void apiScan() {
+  // Blokada obejmuje CALY cykl: skan, odczyt wynikow i scanDelete(). Bufor wynikow
+  // jest w rdzeniu JEDEN i wspolny z przegladem roamingowym w netTask, ktory tez
+  // bierze te blokade. Bez tego klikniecie "Wyszukaj sieci" w trakcie roamingu
+  // czytalo pamiec zwolniona przez cudzy scanDelete() — panic i restart.
+  // Czekamy do 8 s: netTask trzyma blokade na czas swojego skanu (1-2 s), wiec
+  // w praktyce zawsze zdazymy. Gdyby jednak nie — pusta lista i uzytkownik klika
+  // jeszcze raz. Panel na moment przymuli; to uczciwa cena za brak restartu.
+  if (!scanLock(8000)) {
+    server.send(200, "application/json", "[]");
+    return;
+  }
+
   const int n = WiFi.scanNetworks(false, true);
   JsonDocument d;
   JsonArray a = d.to<JsonArray>();
@@ -405,6 +442,8 @@ void apiScan() {
     o["e"] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
   }
   WiFi.scanDelete();
+  scanUnlock();
+
   String out;
   serializeJson(d, out);
   server.send(200, "application/json", out);
@@ -423,15 +462,34 @@ void apiWifi() {
     return;
   }
 
-  // sprobuj polaczyc zanim zapiszemy
+  // Sprobuj polaczyc ZANIM zapiszemy. Zeby ten test cokolwiek znaczyl, musza byc
+  // spelnione trzy rzeczy — kazda z nich zalatwia inna droge do falszywego "OK":
+  //  1) netTask nie moze w tym czasie wolac WiFi.begin() ze STARYMI danymi z NVS
+  //     (flaga ponizej) — inaczej test mierzy powrot na stara siec, nie nowe haslo;
+  //  2) stara asocjacja musi byc zerwana PRZED proba — inaczej przy zmianie samego
+  //     hasla (ta sama nazwa sieci) test zdaje sie od razu, nie sprawdzajac niczego;
+  //  3) na koncu sprawdzamy nie tylko "polaczony", ale "polaczony z TA nazwa".
+  const WifiCfgGuard cfgGuard;
+
   WiFi.mode(apMode ? WIFI_AP_STA : WIFI_STA);
+  WiFi.disconnect();
+  const uint32_t td = millis();
+  while (WiFi.status() == WL_CONNECTED && millis() - td < 2000) {
+    delay(50);
+  }
+
   WiFi.begin(s, p);
   const uint32_t t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 14000) {
+  while (millis() - t0 < 14000) {
+    if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == s) {
+      break;
+    }
     delay(200);
   }
 
-  if (WiFi.status() != WL_CONNECTED) {
+  if (WiFi.status() != WL_CONNECTED || WiFi.SSID() != s) {
+    // Nie zapisujemy niczego. netTask (gdy flaga wygasnie / straznik ja skasuje)
+    // sam odtworzy poprzednie polaczenie ze starych danych z NVS.
     server.send(200, "application/json",
                 "{\"ok\":false,\"msg\":\"Nie udało się połączyć — sprawdź hasło\"}");
     return;
@@ -644,11 +702,16 @@ void apiDiag() {
   j["psram"] = ESP.getPsramSize();
   j["cpu_temp"] = temperatureRead();
 
+  // JEDEN obiekt "wifi" — drugie j["wifi"].to<JsonObject>() zastapiloby go nowym,
+  // pustym (tak wlasnie ginely ssid/ip/connects). Nazwa sieci TAK, hasla NIGDY.
   JsonObject w = j["wifi"].to<JsonObject>();
   w["ssid"] = WiFi.SSID();
   w["ip"] = WiFi.localIP().toString();
   w["rssi"] = WiFi.RSSI();
   w["connects"] = d.wifiConnects;
+  w["bssid"] = WiFi.BSSIDstr();
+  w["channel"] = WiFi.channel();
+  w["roams"] = d.wifiRoams;
 
   JsonObject we = j["weather"].to<JsonObject>();
   we["ok_ago_s"] = ago(d.weatherOkAt);
@@ -687,12 +750,6 @@ void apiDiag() {
   mem["psram_free"] = ESP.getFreePsram();
   mem["stack_net_spare"] = d.stackNet;
   mem["stack_web_spare"] = d.stackWeb;
-
-  JsonObject wf = j["wifi"].to<JsonObject>();
-  wf["rssi"] = WiFi.RSSI();
-  wf["bssid"] = WiFi.BSSIDstr();
-  wf["channel"] = WiFi.channel();
-  wf["roams"] = d.wifiRoams;
 
   JsonObject gfx = j["gfx"].to<JsonObject>();
   gfx["draw_us"] = d.frameDrawUs;
@@ -816,10 +873,20 @@ void apiBleSet() {
   }
 
   const bool ok = settings().bleSet(mac, name, key);
-  server.send(200, "application/json",
-              ok ? "{\"ok\":true,\"msg\":\"Zapisano. Dane pojawią się po najbliższym "
-                   "nasłuchu (do 45 s).\"}"
-                 : "{\"ok\":false,\"msg\":\"Brak wolnego miejsca (maks. 4 czujniki)\"}");
+  if (ok) {
+    server.send(200, "application/json",
+                "{\"ok\":true,\"msg\":\"Zapisano. Dane pojawią się po najbliższym "
+                "nasłuchu (do 45 s).\"}");
+    return;
+  }
+  // Liczba MUSI pochodzic ze stalej, nie z literalu. Ten komunikat mowil "maks. 4"
+  // w czasach, gdy bleSet() odrzucal dopiero przy 8 — czyli byl nieosiagalny i
+  // nieprawdziwy naraz. Dzis limit to BLE_USABLE i tekst musi za nim nadazac sam.
+  char msg[96];
+  snprintf(msg, sizeof(msg),
+           "{\"ok\":false,\"msg\":\"Brak wolnego miejsca (maks. %d czujników)\"}",
+           Settings::BLE_USABLE);
+  server.send(200, "application/json", msg);
 }
 
 // Symulacja opadu — sztuczny front do obejrzenia wizualizacji, gdy nie pada.
@@ -913,7 +980,8 @@ void apiViState() {
   server.send(200, "application/json", out);
 }
 
-// Test zapisu: ustawia nastawe obiegu. Jawne, reczne — zaden automat tego nie wola.
+// Test zapisu: ustawia nastawe obiegu. Zaden NASZ automat tego nie wola — ale o cudzym
+// kodzie w domowej sieci to nic nie mowi, dlatego trasa jest tylko na POST (patrz routes()).
 void apiViSet() {
   const int t = server.hasArg("t") ? server.arg("t").toInt() : 0;
   char err[64] = {};
@@ -963,7 +1031,11 @@ void routes() {
   server.on("/api/vi", HTTP_GET, apiViState);
   server.on("/api/vi/link", HTTP_POST, apiViLink);
   server.on("/api/vi/forget", HTTP_POST, apiViForget);
-  server.on("/api/vi/set", apiViSet);
+  // POST, nie GET: zapytanie GET-em umie wywolac cudza strona otwarta w tej samej
+  // sieci (<img src="http://<ip>/api/vi/set?t=70">) i przestawic ogrzewanie.
+  // Przegladarka nie wysle POST-a z obcej strony bez zgody urzadzenia.
+  // Recznie: curl -X POST "http://<ip>/api/vi/set?t=45"
+  server.on("/api/vi/set", HTTP_POST, apiViSet);
   server.on("/vicare", apiViCallback);   // tu wraca autoryzacja
   server.onNotFound(sendPage);  // captive portal
   server.begin();
@@ -971,6 +1043,28 @@ void routes() {
 }
 
 }  // namespace
+
+bool wifiConfigBusy() {
+  const uint32_t until = gWifiCfgUntil;
+  if (until == 0) {
+    return false;
+  }
+  // Roznica ze znakiem — przezywa przekrecenie licznika millis().
+  return static_cast<int32_t>(millis() - until) < 0;
+}
+
+bool scanLock(uint32_t waitMs) {
+  if (gScanMx == nullptr) {
+    return true;   // mutexa nie ma — zachowujemy sie jak dawniej, bez blokady
+  }
+  return xSemaphoreTake(gScanMx, pdMS_TO_TICKS(waitMs)) == pdTRUE;
+}
+
+void scanUnlock() {
+  if (gScanMx != nullptr) {
+    xSemaphoreGive(gScanMx);
+  }
+}
 
 void setViewHandler(void (*setFn)(int), void (*getFn)(int&, int&)) {
   gViewSet = setFn;

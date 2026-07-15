@@ -33,7 +33,8 @@ namespace {
 constexpr int W = cfg::SCREEN_W;
 constexpr int CY = cfg::CONTENT_Y;                  // 34
 constexpr int CH = cfg::CONTENT_H;                  // 172
-constexpr int CB = cfg::CONTENT_Y + cfg::CONTENT_H; // 206 (poza obszarem)
+// CB usuniete — bylo martwe (zero uzyc) i bylo TRZECIM bytem opisujacym liczbe 206,
+// obok VIEW_H (jedyny zywy) i skasowanego juz cfg::FOOTER_Y, ktory twierdzil 208.
 
 float clampf(float v, float lo, float hi) {
   return v < lo ? lo : (v > hi ? hi : v);
@@ -728,19 +729,24 @@ void WeatherUi::drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& 
 }
 
 // --------------------------------------------------------- WIDOK 2: GODZINY --
-
 void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel& w) {
   const float e = easeOutCubic(t);
 
   viewHeader(spr, ox, "NAJBLIŻSZE 12 GODZIN", "TEMP / OPAD");
 
-  // 13 punktów: teraz + 12 godzin
-  float temp[13];
-  float rain[13];
-  int code[13];
-  int hourLbl[13];
-  bool ok[13];
-  bool day[13];   // is_day z API — bez tego o 22:00 swiecilo slonce
+  // N punktow: teraz + WX_HOURS godzin. Ta liczba MUSI byc wyprowadzona, nie wpisana.
+  // Wczesniej stalo tu "13", sprzezone z WX_HOURS=12 wylacznie przez wiare, a w petlach
+  // nizej lezaly gole 12 i 13. Zmiana WX_HOURS na 24 (calkiem realna: "chce prognoze
+  // na dobe") kompilowala sie bez ostrzezenia i pisala 12 elementow POZA koniec szesciu
+  // tablic na stosie rdzenia rysujacego. To nie cicha korupcja — to restart w petli
+  // na scianie, bez logu, bo log ginie razem z restartem.
+  constexpr int N = WX_HOURS + 1;
+  float temp[N];
+  float rain[N];
+  int code[N];
+  int hourLbl[N];
+  bool ok[N];
+  bool day[N];   // is_day z API — bez tego o 22:00 swiecilo slonce
 
   temp[0] = w.current.tempC;
   rain[0] = w.current.precipMm;
@@ -766,7 +772,7 @@ void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel
   const float mp = moon::phase(time(nullptr));
 
   float vmin = 1e9f, vmax = -1e9f, rmax = 0.f;
-  for (int i = 0; i < 13; ++i) {
+  for (int i = 0; i < N; ++i) {
     if (!ok[i]) continue;
     if (temp[i] < vmin) vmin = temp[i];
     if (temp[i] > vmax) vmax = temp[i];
@@ -786,7 +792,10 @@ void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel
   vmax += pad;
 
   const int yTop = 58, yBot = 124;
-  auto px = [&](int i) { return ox + 16 + i * 24; };
+  // Szerokosc na punkt liczona z WX_HOURS, nie zaszyta. Bylo 24, dobrane tak, zeby
+  // 16 + 12*24 = 304 zmiescilo sie w 320 — czyli liczba zalezna od WX_HOURS udajaca stala.
+  const int step = (W - 32) / WX_HOURS;
+  auto px = [&](int i) { return ox + 16 + i * step; };
   auto py = [&](int i) {
     const float f = (temp[i] - vmin) / (vmax - vmin);
     return yBot - static_cast<int>(f * (yBot - yTop));
@@ -801,7 +810,7 @@ void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel
   }
 
   // wypełnienie pod krzywą + linia
-  for (int i = 0; i < 12; ++i) {
+  for (int i = 0; i < WX_HOURS; ++i) {
     if (!ok[i] || !ok[i + 1]) continue;
     const int x0 = px(i), x1 = px(i + 1);
     const int y0 = py(i), y1 = py(i + 1);
@@ -816,7 +825,7 @@ void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel
   }
 
   // punkty + wartości co 2 godziny
-  for (int i = 0; i < 13; ++i) {
+  for (int i = 0; i < N; ++i) {
     if (!ok[i]) continue;
     const int x = px(i);
     const int y = yBot - static_cast<int>((yBot - py(i)) * e);
@@ -844,7 +853,7 @@ void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel
     plCenter(spr, PLF14, b, ox + W / 2, rBase - 6, col::TEXT_MUTE);
   } else {
     const float scale = rmax < 1.f ? 1.f : rmax;
-    for (int i = 1; i < 13; ++i) {
+    for (int i = 1; i < N; ++i) {
       if (!ok[i] || rain[i] <= 0.f) continue;
       const int h = static_cast<int>((rain[i] / scale) * 26.f * e);
       if (h < 1) continue;
@@ -858,7 +867,7 @@ void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel
   }
 
   // godziny + ikony
-  for (int i = 0; i <= 12; i += 2) {
+  for (int i = 0; i <= WX_HOURS; i += 2) {
     if (!ok[i]) continue;
     const int x = px(i);
     char h[8];
@@ -867,7 +876,6 @@ void WeatherUi::drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel
     wxico::draw(spr, code[i], x, 186, 24, !day[i], mp);
   }
 }
-
 // --------------------------------------------------------- WIDOK 3: 5 DNI ----
 
 void WeatherUi::drawViewDays(TFT_eSPI& spr, int ox, float t, const WeatherModel& w) {
@@ -1260,35 +1268,42 @@ bool WeatherUi::needsFlights(uint32_t nowMs) const {
 void WeatherUi::drawView(TFT_eSPI& spr, uint8_t view, int ox, float t, const WeatherModel& w,
                          const PvModel& pv, const PvHistory& hist, const FlightModel& fl,
                          uint32_t nowMs, uint32_t heapNow) {
+  // Golych "case 0:" tu juz nie ma. To bylo JEDYNE miejsce, gdzie mapowanie
+  // numer widoku -> funkcja bylo zapisane literalami, podczas gdy drawProgress(),
+  // render(), prevView() i holdFor() uzywaly cfg::VIEW_*. Skutek pominiecia tego
+  // switcha przy dodawaniu ekranu: czarny obraz przez 9 s, bez bledu — default
+  // nic nie rysuje, a pasek postepu pokazuje segment jakby wszystko gralo.
+  static_assert(cfg::VIEW_STATS == cfg::VIEW_COUNT - 1,
+                "ostatni widok musi byc VIEW_COUNT-1 — inaczej rotacja trafia w default");
   switch (view) {
-    case 0:
+    case cfg::VIEW_NOW:
       if (w.ready) drawViewNow(spr, ox, t, w);
       else drawNoData(spr, ox, "Pobieram prognozę...");
       break;
-    case 1:
+    case cfg::VIEW_HOURS:
       if (w.ready) drawViewHours(spr, ox, t, w);
       else drawNoData(spr, ox, "Pobieram prognozę...");
       break;
-    case 3:
+    case cfg::VIEW_DAYS:
       if (w.ready) drawViewDays(spr, ox, t, w);
       else drawNoData(spr, ox, "Pobieram prognozę...");
       break;
-    case 2:
+    case cfg::VIEW_RADAR:
       drawViewRadar(spr, ox, t, nowMs);
       break;
-    case 4:
+    case cfg::VIEW_HOME:
       drawViewHome(spr, ox, t, w);
       break;
-    case 5:
+    case cfg::VIEW_BOILER:
       drawViewBoiler(spr, ox, t);
       break;
-    case 6:
+    case cfg::VIEW_PV:
       drawViewPv(spr, ox, t, pv, hist);
       break;
-    case 7:
+    case cfg::VIEW_FLIGHTS:
       drawViewFlights(spr, ox, t, fl);
       break;
-    case 8:
+    case cfg::VIEW_STATS:
       drawViewStats(spr, ox, t, nowMs, heapNow);
       break;
     default:
@@ -2037,30 +2052,45 @@ void WeatherUi::drawViewBoiler(TFT_eSPI& spr, int ox, float t) {
     return;
   }
 
-  // Naglowek: stan palnika — jedyna rzecz, ktora zmienia sie z minuty na minute.
+  // Od tego miejsca w dol obowiazuje jedna zasada: KAZDA liczba z pieca jest
+  // rysowana tylko wtedy, gdy model potwierdza, ze ja dostal. Model oddaje flagi
+  // has* wlasnie po to — bez ich czytania ekran pokazywal "0.0°C" jako swiezy
+  // pomiar, gdy API nie przyslalo cechy. Zero jest tu nieodroznialne od prawdy,
+  // wiec brak odczytu musi wygladac jak brak odczytu: "--".
   char hdr[24];
-  if (b.burnerActive) {
+  if (!b.hasBurnerState) {
+    snprintf(hdr, sizeof(hdr), "palnik: brak odczytu");
+  } else if (b.burnerActive && b.hasModulation) {
     snprintf(hdr, sizeof(hdr), "palnik %d%%", b.modulationPct);
+  } else if (b.burnerActive) {
+    snprintf(hdr, sizeof(hdr), "palnik pracuje");
   } else {
     snprintf(hdr, sizeof(hdr), "palnik wyłączony");
   }
-  viewHeader(spr, ox, "PIEC", hdr, b.burnerActive ? col::PV_SOLAR : col::TEXT_MUTE,
-             b.burnerActive ? col::PV_SOLAR : col::TEXT_MUTE);
+  const bool hot = b.hasBurnerState && b.burnerActive;
+  viewHeader(spr, ox, "PIEC", hdr, hot ? col::PV_SOLAR : col::TEXT_MUTE,
+             hot ? col::PV_SOLAR : col::TEXT_MUTE);
 
   // --- CIEPLA WODA: najwazniejsza liczba na tym ekranie ---
   gl(spr, "CIEPŁA WODA", ox + 13, 56, col::TEXT_MUTE);
   char v[12];
-  snprintf(v, sizeof(v), "%.1f", b.dhwTempC);
+  snprintf(v, sizeof(v), b.hasDhwTemp ? "%.1f" : "--", b.dhwTempC);
   const int vw = bigStr(spr, &FreeSansBold24pt7b, v, ox + 12, 102,
-                        b.dhwTempC < 40.f ? col::PV_HOUSE : col::PV_IMPORT);
+                        !b.hasDhwTemp        ? col::TEXT_MUTE
+                        : b.dhwTempC < 40.f  ? col::PV_HOUSE
+                                             : col::PV_IMPORT);
   plStr(spr, PLF18, "°C", ox + 16 + vw, 76, col::TEXT_DIM);
 
   char sub[40];
-  snprintf(sub, sizeof(sub), "zadana %.0f°C · %s", b.dhwTargetC,
-           strcmp(b.dhwMode, "comfort") == 0   ? "komfort"
-           : strcmp(b.dhwMode, "eco") == 0     ? "eko"
-           : strcmp(b.dhwMode, "off") == 0     ? "wyłączona"
-                                               : b.dhwMode);
+  if (b.hasDhwTarget) {
+    snprintf(sub, sizeof(sub), "zadana %.0f°C · %s", b.dhwTargetC,
+             strcmp(b.dhwMode, "comfort") == 0   ? "komfort"
+             : strcmp(b.dhwMode, "eco") == 0     ? "eko"
+             : strcmp(b.dhwMode, "off") == 0     ? "wyłączona"
+                                                 : b.dhwMode);
+  } else {
+    snprintf(sub, sizeof(sub), "zadana: brak odczytu");
+  }
   plStr(spr, PLF14, sub, ox + 12, 120, col::TEXT_DIM);
 
   // --- obieg grzewczy (po prawej) ---
@@ -2068,15 +2098,21 @@ void WeatherUi::drawViewBoiler(TFT_eSPI& spr, int ox, float t) {
   glCenter(spr, "OBIEG GRZEWCZY", ox + 250, 56, col::TEXT_MUTE);
   plCenter(spr, PLF18, heating ? "grzeje" : "standby", ox + 250, 82,
            heating ? col::PV_IMPORT : col::TEXT_MUTE);
-  if (heating) {
+  if (heating && b.hasCircuitTarget) {
     char cs[20];
     snprintf(cs, sizeof(cs), "nastawa %.0f°C", b.circuitTargetC);
     glCenter(spr, cs, ox + 250, 92, col::TEXT_MUTE);
+  } else if (heating) {
+    glCenter(spr, "nastawa: brak odczytu", ox + 250, 92, col::TEXT_MUTE);
   } else {
     glCenter(spr, "lato — nie grzeje", ox + 250, 92, col::TEXT_MUTE);
   }
   char sup[24];
-  snprintf(sup, sizeof(sup), "zasilanie %.1f°C", b.supplyTempC);
+  if (b.hasSupplyTemp) {
+    snprintf(sup, sizeof(sup), "zasilanie %.1f°C", b.supplyTempC);
+  } else {
+    snprintf(sup, sizeof(sup), "zasilanie --");
+  }
   glCenter(spr, sup, ox + 250, 108, col::TEXT_MUTE);
 
   // --- 4 kafelki: zuzycie dzis ---
@@ -2087,11 +2123,15 @@ void WeatherUi::drawViewBoiler(TFT_eSPI& spr, int ox, float t) {
     uint16_t color;
   } cards[3];
 
-  cards[0] = {"Gaz dziś", {0}, "m³", col::PV_SOLAR};
-  snprintf(cards[0].value, sizeof(cards[0].value), "%.1f", b.gasDhwM3 + b.gasHeatM3);
+  // Te trzy kafelki tez musza czytac flagi has*, inaczej jeden ekran mowi uczciwe
+  // "--" przy CWU, a kafelek obok drukuje 0.0 m3 jako zmierzone zuzycie gazu.
+  cards[0] = {"Gaz dziś", {0}, "m³", b.hasGas ? col::PV_SOLAR : col::TEXT_MUTE};
+  snprintf(cards[0].value, sizeof(cards[0].value), b.hasGas ? "%.1f" : "--",
+           b.gasDhwM3 + b.gasHeatM3);
 
-  cards[1] = {"Ciepło", {0}, "kWh", col::PV_IMPORT};
-  snprintf(cards[1].value, sizeof(cards[1].value), "%.0f", b.heatDhwKwh + b.heatHeatKwh);
+  cards[1] = {"Ciepło", {0}, "kWh", b.hasHeat ? col::PV_IMPORT : col::TEXT_MUTE};
+  snprintf(cards[1].value, sizeof(cards[1].value), b.hasHeat ? "%.0f" : "--",
+           b.heatDhwKwh + b.heatHeatKwh);
 
   cards[2] = {"Prąd", {0}, "kWh", col::PV_HOUSE};
   snprintf(cards[2].value, sizeof(cards[2].value), "%.1f", b.powerKwh);
@@ -2433,7 +2473,7 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
   // "OK 8 min temu" zostawialy w srodku ~150 px pustki. 4 wiersze po 17 px koncza
   // sie na y=120, karty zaczynaja sie na 128.
   const int cellW = (W - 24) / 2;
-  for (int i = 0; i < 8; ++i) {
+  for (int i = 0; i < static_cast<int>(sizeof(src) / sizeof(src[0])); ++i) {
     const int cx = ox + 8 + (i % 2) * (cellW + 8);
     const int y0 = 52 + (i / 2) * 17;
     if (e < (i + 1) * 0.07f) continue;

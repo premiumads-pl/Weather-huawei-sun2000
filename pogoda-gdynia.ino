@@ -118,7 +118,9 @@ PvHistory uiHist{};
 FlightModel uiFlights{};
 
 AlertKind lastAlertKind = AlertKind::NONE;
-uint32_t lastAlertAt[8] = {};
+// Rozmiar z wartownika enuma, nie z literalu. Zaszyta osemka byla DOKLADNIE rowna
+// liczbie pozycji AlertKind — czyli tablica wygladala na zapasowa, a byla pelna.
+uint32_t lastAlertAt[static_cast<int>(AlertKind::COUNT)] = {};
 
 static void setBootMsg(const char* m) {
   strncpy(gBootMsg, m, sizeof(gBootMsg) - 1);
@@ -209,6 +211,16 @@ static void netTask(void*) {
     if (!settings().hasWifi()) {
       gBooting = false;
       vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
+
+    // Panel testuje wlasnie nowe dane WiFi — nie wchodzimy mu w droge. Nasze
+    // WiFi.begin() poszloby ze STARYMI danymi z NVS, zabiloby jego probe, a panel
+    // uznalby powrot na stara siec za dowod, ze nowe haslo dziala. Flaga wygasa
+    // sama (portal::wifiConfigBusy), wiec nie da sie tu zawisnac na stale.
+    if (portal::wifiConfigBusy()) {
+      gWifiOk = (WiFi.status() == WL_CONNECTED);
+      vTaskDelay(pdMS_TO_TICKS(250));
       continue;
     }
 
@@ -386,9 +398,15 @@ static void netTask(void*) {
         if (tt > 1700000000) {
           struct tm tmv{};
           localtime_r(&tt, &tmv);
-          gBurner.push(tmv.tm_yday, tmv.tm_hour, tmv.tm_min, tmp.modulationPct,
-                       tmp.burnerActive);
-          if (gGas.advance(static_cast<uint32_t>(tt))) {
+          // Do historii wpisujemy TYLKO to, co model potwierdza flaga. Bez tego
+          // brak cechy "heating.burners.0" w odpowiedzi API zapisywal "palnik nie
+          // pracowal" w slocie, w ktorym pracowal — a to jest zapis TRWALY, ktory
+          // potem klamie na wykresie doby. Zero jest tu nieodroznialne od pomiaru.
+          if (tmp.hasBurnerState) {
+            gBurner.push(tmv.tm_yday, tmv.tm_hour, tmv.tm_min,
+                         tmp.hasModulation ? tmp.modulationPct : 0, tmp.burnerActive);
+          }
+          if (tmp.hasGas && gGas.advance(static_cast<uint32_t>(tt))) {
             gGas.push(tmp.gasDhwM3 + tmp.gasHeatM3);
           }
         }
@@ -459,21 +477,41 @@ static void netTask(void*) {
       nextRoamAt = millis() + 180000;
       const int cur = WiFi.RSSI();
       if (cur < kRssiRoamBelow - 1) {
-        const int found = WiFi.scanNetworks(false, false, false, 250);
-        int best = -1, bestRssi = cur + kRssiRoamGain;
-        for (int i = 0; i < found; ++i) {
-          if (WiFi.SSID(i) != settings().ssid) continue;
-          if (WiFi.RSSI(i) > bestRssi) {
-            bestRssi = WiFi.RSSI(i);
-            best = i;
+        // Bufor wynikow skanu jest w rdzeniu JEDEN i wspolny z apiScan ("Wyszukaj
+        // sieci" w panelu), a scanNetworks() zaczyna od jego zwolnienia. Blokada musi
+        // objac skan, odczyt wynikow i scanDelete() — inaczej klikniecie skanu w tej
+        // chwili wywracalo urzadzenie. To, co potrzebne dalej (BSSID, kanal),
+        // kopiujemy do zmiennych lokalnych JESZCZE pod blokada; samo przelaczanie
+        // (disconnect + begin, kilka sekund) idzie juz bez niej.
+        uint8_t bssid[6] = {};
+        int32_t ch = 0;
+        int bestRssi = 0;
+        bool move = false;
+        const bool scanned = portal::scanLock(20000);
+        if (scanned) {
+          const int found = WiFi.scanNetworks(false, false, false, 250);
+          int best = -1;
+          bestRssi = cur + kRssiRoamGain;
+          for (int i = 0; i < found; ++i) {
+            if (WiFi.SSID(i) != settings().ssid) continue;
+            if (WiFi.RSSI(i) > bestRssi) {
+              bestRssi = WiFi.RSSI(i);
+              best = i;
+            }
           }
-        }
-        if (best >= 0) {
-          LOG("WiFi: przenosze sie na mocniejszy punkt (%d -> %d dBm)", cur, bestRssi);
-          uint8_t bssid[6];
-          memcpy(bssid, WiFi.BSSID(best), 6);
-          const int32_t ch = WiFi.channel(best);
+          if (best >= 0) {
+            memcpy(bssid, WiFi.BSSID(best), 6);
+            ch = WiFi.channel(best);
+            move = true;
+          }
           WiFi.scanDelete();
+          portal::scanUnlock();
+        }
+
+        if (!scanned) {
+          LOG("WiFi: skan zajety przez panel — przeglad roamingowy pomijam");
+        } else if (move) {
+          LOG("WiFi: przenosze sie na mocniejszy punkt (%d -> %d dBm)", cur, bestRssi);
           WiFi.disconnect();
           WiFi.begin(settings().ssid, settings().pass, ch, bssid);
           for (int i = 0; i < 60 && WiFi.status() != WL_CONNECTED; ++i) {
@@ -482,7 +520,6 @@ static void netTask(void*) {
           diag().wifiRoams++;
           LOG("WiFi: po przenosinach %d dBm", WiFi.RSSI());
         } else {
-          WiFi.scanDelete();
           LOG("WiFi: sygnal %d dBm, ale nic lepszego nie ma — zostajemy", cur);
         }
       }
@@ -719,6 +756,16 @@ void setup() {
   // inaczej ekran zamiera na czas wysylania BMP. Rysuje wlasna kopie klatki do
   // malego sprite'a, wiec bufora wyswietlacza w ogole nie dotyka. Czekamy tylko na
   // spokojna klatke, zeby nie zlapac ekranu w polowie przejscia miedzy widokami.
+  //
+  // SWIADOMA DECYZJA: czytamy uiWeather/uiPv/uiHist/uiFlights BEZ gLock, chociaz
+  // loop() (rdzen 1) przepisuje je pod gLock. Zrzut trwa setki ms, wiec sklada dane
+  // z kilku roznych chwil — podglad w panelu moze pokazac klatke, ktorej na TFT nie
+  // bylo. Crashu tu nie ma: wszystkie tablice w tych strukturach maja stala dlugosc,
+  // a liczniki (np. FlightModel::count) nie wyjda poza zakres nawet przy rozdarciu.
+  // Wziecie gLock na czas calego zrzutu zablokowaloby netTask i rysowanie na setki ms
+  // (panel ciagnie /api/screen co 700 ms) — zamienilibysmy niescisly podglad na
+  // zacinajace sie urzadzenie. Wniosek: zrzut to PODGLAD, nie dowod w diagnostyce.
+  // Od diagnostyki jest /api/diag i /api/log.
   portal::setScreenshotHandler([](WiFiClient& c) {
     // Nie w trakcie nasluchu BLE: zrzut alokuje sprite'y, a stos Bluetooth trzyma
     // wtedy 72 kB. Zbieg tych dwoch rzeczy zjechal sterta do 2 kB.

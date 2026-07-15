@@ -45,6 +45,25 @@ struct Model {
   float powerKwh = 0.f;         // prąd zżarty przez sam piec
 
   int wifiRssi = 0;
+
+  // "Przyszlo z API" osobno od "wynosi zero".
+  // ArduinoJson po cichu oddaje 0 dla brakujacego pola, a Viessmann potrafi nie
+  // przyslac "value" wcale: feature wylaczony (isEnabled/isReady), czujnik
+  // notConnected, nowy uklad pol. Bez tych flag "CWU 0,0 C" bylo nieodroznialne
+  // od zamarznietego bojlera. Dokladnie ta sama lekcja co ble::Sensor::hasTemp/
+  // hasHum — tam komentarz mowi wprost: "Bez tych flag rysowalismy 0.0 C, dopoki
+  // nie doszla ramka z temperatura — czyli klamalismy".
+  // UI ma pokazac "—" tam, gdzie flaga jest false, a nie zero.
+  bool hasDhwTemp = false;
+  bool hasDhwTarget = false;
+  bool hasSupplyTemp = false;
+  bool hasBurnerState = false;
+  bool hasModulation = false;
+  bool hasCircuitTarget = false;
+  bool hasGas = false;
+  bool hasHeat = false;
+  bool hasWifiRssi = false;
+
   bool online = false;
   bool valid = false;
   uint32_t okAt = 0;

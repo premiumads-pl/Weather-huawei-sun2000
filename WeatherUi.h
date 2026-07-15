@@ -16,7 +16,14 @@ enum class AlertKind : uint8_t {
   HEAT,
   HEAVY_RAIN,
   PV_FAULT,
-  PV_OFFLINE
+  PV_OFFLINE,
+  // Wartownik. lastAlertAt[] w .ino jest indeksowane wprost wartoscia tego enuma,
+  // a mialo zaszyte [8] — dokladnie tyle, ile jest pozycji, wiec tablica wygladala
+  // na zapasowa, a byla wypelniona co do miejsca. Dziewiaty alert (np. SNOW — kody
+  // WMO 71/73/75 sa juz obslugiwane w ikonach) zapisalby 4 bajty poza tablice
+  // globalna, wprost w sasiedni symbol w .bss. Objaw: losowo psujaca sie pogoda
+  // albo alert, ktory nie chce zgasnac. Nie do powiazania z przyczyna.
+  COUNT
 };
 
 struct Alert {

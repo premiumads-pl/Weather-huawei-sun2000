@@ -60,8 +60,24 @@ int pngDraw(PNGDRAW* draw) {
   }
   static uint16_t line[kTile];
   static uint8_t alpha[kTile];
-  png->getLineAsRGB565(draw, line, PNG_RGB565_BIG_ENDIAN, 0xffffffff);
-  png->getAlphaMask(draw, alpha, 1);
+  // MUSI byc LITTLE_ENDIAN. Przy PNG_RGB565_BIG_ENDIAN PNGdec robi na koniec
+  // __builtin_bswap16() (png.inl; na S3 to samo w SIMD: s3_simd_rgb565.S), a my
+  // czytamy line[x] jako uint16_t na procesorze little-endian — czyli dostawalismy
+  // wartosc z ZAMIENIONYMI bajtami i rozbieralismy ja ponizej tak, jakby bajty byly
+  // na miejscu. W bitach 11-15 nie siedzial wtedy czerwony, tylko trzy mlodsze bity
+  // zielonego sklejone z dwoma starszymi niebieskiego.
+  // Sprawdzone na palecie pobranej z realnych kafelkow: BIG dawal 2/8 kolorow
+  // poprawnie, LITTLE daje 8/8. Czerwien ulewy (255,68,0) wychodzila jako poziom 1
+  // ("mzawka") — poziom 5 byl nieosiagalny dla kazdego koloru z palety RainViewera.
+  png->getLineAsRGB565(draw, line, PNG_RGB565_LITTLE_ENDIAN, 0xffffffff);
+  // Prog 60, nie 1: getAlphaMask oddaje BIT (alpha >= prog), a nie wartosc, wiec
+  // ponizsze "a" jest zawsze 0 albo 255. Przy progu 1 warunek (a >= 60) ? 1 : 0
+  // w levelFromRgba nie mogl juz nigdy zwrocic 0 i rozroznienie "bez polprzezroczysty
+  // = slad vs mzawka" nie istnialo — piksel o alfie 3 (artefakt na krawedzi echa)
+  // szedl jako mzawka. Prog 60 przenosi te granice tam, gdzie ja opisuje paleta.
+  // Sprawdzone na realnych kafelkach: alfe czesciowa ma WYLACZNIE bez; niebieski,
+  // zolty, pomaranczowy i czerwony maja zawsze 255, wiec prog ich nie dotyka.
+  png->getAlphaMask(draw, alpha, 60);
 
   for (int dx = -kRadiusPx; dx <= kRadiusPx; ++dx) {
     const int x = gWantX + dx;
@@ -78,6 +94,57 @@ int pngDraw(PNGDRAW* draw) {
   }
   return 1;
 }
+
+// Zbiornik na kafelek. Do v51 bralismy http.getSize() + getStreamPtr()->readBytes()
+// — a to jest dokladnie ta sama mina, ktora kosztowala nas miesiace przy Viessmannie:
+//   1. getSize() zwraca -1 przy Transfer-Encoding: chunked -> "size <= 0" -> cichy
+//      return false, zanim ktokolwiek dotknie strumienia;
+//   2. getStreamPtr() oddaje SUROWY strumien, razem z naglowkami porcji
+//      ("1f4a\r\n\x89PNG..."), wiec openRAM i tak odrzucilby to jako zly PNG.
+// Dzialalo wylacznie dlatego, ze RainViewer wysyla dzis Content-Length. Zmiana CDN-a
+// po ich stronie albo proxy po drodze i radar milknie, a komunikat wskazuje na siec.
+// writeToStream() rozpakowuje porcje za nas i radzi sobie z obiema postaciami.
+// writeToStream() chce Stream*, nie Print* — stad puste metody odczytu.
+class PngSink : public Stream {
+ public:
+  PngSink() : psram_(psramFound()) {}
+  ~PngSink() { free(buf_); }
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  void flush() override {}
+  size_t write(uint8_t c) override { return write(&c, 1); }
+  size_t write(const uint8_t* d, size_t n) override {
+    if (len_ + n > cap_) {
+      size_t want = cap_ ? cap_ * 2 : 8192;   // realny kafelek to ~0,5-5 kB
+      while (want < len_ + n) want *= 2;
+      if (want > kMaxPng) want = kMaxPng;
+      if (len_ + n > want) return 0;   // twardy limit — zwrot 0 przerywa transfer
+      uint8_t* p = static_cast<uint8_t*>(
+          buf_ ? (psram_ ? ps_realloc(buf_, want) : realloc(buf_, want))
+               : (psram_ ? ps_malloc(want) : malloc(want)));
+      if (p == nullptr) return 0;
+      buf_ = p;
+      cap_ = want;
+    }
+    memcpy(buf_ + len_, d, n);
+    len_ += n;
+    return n;
+  }
+  // oddaje wlasnosc bufora wolajacemu (zwalnia go free())
+  uint8_t* take() {
+    uint8_t* p = buf_;
+    buf_ = nullptr;
+    cap_ = len_ = 0;
+    return p;
+  }
+  size_t size() const { return len_; }
+
+ private:
+  uint8_t* buf_ = nullptr;
+  size_t cap_ = 0, len_ = 0;
+  bool psram_ = false;
+};
 
 // RainViewer serwuje wszystko po zwyklym HTTP. Rezygnacja z TLS oszczedza ~40 kB
 // sterty — dokladnie tyle, ile brakowalo dekoderowi PNG.
@@ -104,26 +171,24 @@ bool httpGet(const char* url, uint8_t** buf, size_t* len, String* text) {
     return true;
   }
 
+  // getSize() == -1 przy chunked; to nie jest blad, tylko brak Content-Length.
+  // Sprawdzamy limit tylko wtedy, gdy serwer w ogole podal rozmiar — reszte
+  // przypilnuje sam PngSink.
   const int size = http.getSize();
-  if (size <= 0 || static_cast<size_t>(size) > kMaxPng) {
+  if (size > 0 && static_cast<size_t>(size) > kMaxPng) {
     http.end();
     return false;
   }
-  *buf = static_cast<uint8_t*>(malloc(size));
-  if (*buf == nullptr) {
-    http.end();
-    return false;
-  }
-  Stream* s = http.getStreamPtr();
-  const int got = s->readBytes(*buf, size);
+
+  PngSink sink;
+  const int written = http.writeToStream(&sink);
   http.end();
-  if (got != size) {
-    free(*buf);
-    *buf = nullptr;
+  if (written <= 0 || sink.size() == 0) {
     return false;
   }
-  *len = size;
-  return true;
+  *len = sink.size();
+  *buf = sink.take();
+  return *buf != nullptr;
 }
 
 }  // namespace
@@ -188,10 +253,14 @@ bool RadarClient::fetch(RadarSnapshot& out) {
     strncpy(out.errorMsg, "Radar: brak klatek", sizeof(out.errorMsg) - 1);
     return false;
   }
+  // API zwraca host ZE SCHEMATEM ("https://tilecache..."). Bez obciecia budowalismy
+  // adres "http://https://..." i zaden kafelek nie dochodzil. Obcinamy tez "http://"
+  // i znosimy brak schematu — RadarMap robi tak od dawna, tu zostal rozjazd dwoch
+  // kopii tej samej logiki. Kafelek bierzemy po czystym HTTP: bez TLS starcza
+  // RAM-u na dekoder.
   const char* host = doc["host"] | "https://tilecache.rainviewer.com";
-  if (strncmp(host, "https://", 8) == 0) {
-    host += 8;   // pobieramy kafelek po HTTP — bez TLS starcza RAM-u na dekoder
-  }
+  if (strncmp(host, "https://", 8) == 0) host += 8;
+  else if (strncmp(host, "http://", 7) == 0) host += 7;
   JsonObjectConst last = past[past.size() - 1];
   const char* path = last["path"];
   const uint32_t frameTime = last["time"] | 0;

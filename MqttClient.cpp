@@ -214,7 +214,12 @@ bool publishConfig(const Ent& e) {
 // od razu, jeszcze przed powrotem.
 int sendBleDiscovery() {
   int ok = 0;
-  for (int i = 0; i < 4; ++i) {
+  // BLE_USABLE, nie "4". Zaszyta czworka byla TRZECIA kopia tej samej petli
+  // (ekran i .ino juz poprawione) i jedyna, ktora zostala: czujnik nr 5 pojawilby
+  // sie na wyswietlaczu, ale NIGDY nie dostalby encji w Home Assistancie — bez
+  // zadnego komunikatu. Objaw "na ekranie jest, w HA go nie ma" jest gorszy niz
+  // brak wszedzie, bo nie wskazuje przyczyny.
+  for (int i = 0; i < Settings::BLE_USABLE; ++i) {
     const Settings::BleCfg& c = settings().ble[i];
     if (c.mac[0] == '\0') continue;
 
@@ -486,34 +491,45 @@ void publishBle() {
     return;
   }
 
-  char p[224];
+  // PULAPKA, ktora sama nie wybuchla tylko dzieki limitowi 4 — i wybuchlaby przy
+  // naiwnym podniesieniu go na 6:
+  //   snprintf() zwraca dlugosc, jaka BY zapisal, a nie ile zapisal. Przy obcieciu
+  //   `n` przekracza sizeof(p). Wtedy `sizeof(p) - n` (size_t minus int!) przekreca
+  //   sie na ogromna liczbe, a `p + n` wskazuje POZA bufor. Domykajaca klamra za
+  //   petla pisala by wprost w stos netTask.
+  // Dlatego: rezerwujemy miejsce PRZED rekordem, zamiast sprawdzac szkode po fakcie.
+  // Najdluzszy rekord: ,"s5t":-12.3,"s5h":100.0,"s5b":100,"s5r":-100 = 46 B.
+  constexpr int kRec = 64;    // zapas na jeden komplet pol czujnika
+  char p[384];
+  const int cap = static_cast<int>(sizeof(p));
   int n = snprintf(p, sizeof(p), "{");
   bool any = false;
 
-  for (int i = 0; i < ble::count() && i < 4; ++i) {
+  for (int i = 0; i < ble::count(); ++i) {
+    if (n > cap - kRec) break;   // nie zaczynamy rekordu, na ktory nie ma miejsca
+
     const ble::Sensor s = ble::get(i);
     if (!s.valid) continue;
 
     const Settings::BleCfg* cfg = settings().bleFind(s.mac);
-    if (cfg == nullptr) continue;  // niesknfigurowany — nie ma dla niego encji w HA
+    if (cfg == nullptr) continue;  // nieskonfigurowany — nie ma dla niego encji w HA
 
     // slot musi sie zgadzac z tym z discovery (indeks w settings, nie w ble::)
     int slot = -1;
-    for (int k = 0; k < 4; ++k) {
+    for (int k = 0; k < Settings::BLE_USABLE; ++k) {
       if (&settings().ble[k] == cfg) slot = k;
     }
     if (slot < 0) continue;
 
-    if (any) n += snprintf(p + n, sizeof(p) - n, ",");
-    if (s.hasTemp) n += snprintf(p + n, sizeof(p) - n, "\"s%dt\":%.1f,", slot, s.tempC);
-    if (s.hasHum) n += snprintf(p + n, sizeof(p) - n, "\"s%dh\":%.1f,", slot, s.humidity);
-    n += snprintf(p + n, sizeof(p) - n, "\"s%db\":%d,\"s%dr\":%d", slot, s.batteryPct,
+    if (any) n += snprintf(p + n, cap - n, ",");
+    if (s.hasTemp) n += snprintf(p + n, cap - n, "\"s%dt\":%.1f,", slot, s.tempC);
+    if (s.hasHum) n += snprintf(p + n, cap - n, "\"s%dh\":%.1f,", slot, s.humidity);
+    n += snprintf(p + n, cap - n, "\"s%db\":%d,\"s%dr\":%d", slot, s.batteryPct,
                   slot, s.rssi);
     any = true;
-    if (n >= static_cast<int>(sizeof(p)) - 8) break;
   }
 
-  n += snprintf(p + n, sizeof(p) - n, "}");
+  n += snprintf(p + n, cap - n, "}");
   if (any && n > 0 && n < static_cast<int>(sizeof(p))) {
     pubState("ble", p, n);
   }
