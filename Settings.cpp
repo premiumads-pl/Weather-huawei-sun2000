@@ -288,11 +288,15 @@ void pvHistoryClear() {
 // Zapisujemy CALY bufor razem z numerem slotu; bez niego po restarcie nie dalo by
 // sie stwierdzic, ktore probki sa jeszcze wazne.
 
+// PULAPKA: klucz to "rh2", nie "rh". Uklad v1 (4 pokoje: temperatura + wilgotnosc)
+// i v2 (6 pokoi: sama temperatura) maja PRZYPADKIEM identyczny rozmiar — 1736 B.
+// Kontrola getBytesLength() przepuscilaby stary blob i wczytala wilgotnosc jako
+// temperature pokoi 4-5. Nowy klucz = stara historia jest po prostu ignorowana.
 void roomHistoryLoad(RoomHistory& h) {
   prefs.begin(NS_PV, true);
   const size_t need = sizeof(RoomHistory);
-  if (prefs.getBytesLength("rh") == need) {
-    prefs.getBytes("rh", &h, need);
+  if (prefs.getBytesLength("rh2") == need) {
+    prefs.getBytes("rh2", &h, need);
     Serial.printf("BLE: wczytano historie 24 h (slot %lu)\n",
                   static_cast<unsigned long>(h.lastSlot));
   } else {
@@ -303,6 +307,6 @@ void roomHistoryLoad(RoomHistory& h) {
 
 void roomHistorySave(const RoomHistory& h) {
   prefs.begin(NS_PV, false);
-  prefs.putBytes("rh", &h, sizeof(RoomHistory));
+  prefs.putBytes("rh2", &h, sizeof(RoomHistory));
   prefs.end();
 }

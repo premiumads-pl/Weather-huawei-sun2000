@@ -426,9 +426,12 @@ static void netTask(void*) {
           if (!bs.valid) continue;
           const Settings::BleCfg* bc = settings().bleFind(bs.mac);
           if (bc == nullptr) continue;
-          for (int k = 0; k < 4; ++k) {
+          // ROOMS, nie "4" — Settings ma osiem slotow BLE, historia szesc.
+          // Zaszyta czworka oznaczala, ze piaty czujnik dalo sie skonfigurowac
+          // w panelu, ale nie trafial ani do historii, ani na ekran.
+          for (int k = 0; k < RoomHistory::ROOMS; ++k) {
             if (&settings().ble[k] == bc) {
-              gRooms.push(k, bs.hasTemp, bs.tempC, bs.hasHum, bs.humidity);
+              gRooms.push(k, bs.hasTemp, bs.tempC);
             }
           }
         }

@@ -14,31 +14,28 @@
 // wystarczy przewinac bufor o roznice slotow i wyczyscic to, co przespalismy.
 struct RoomHistory {
   static constexpr int SLOTS = 144;  // 24 h / 10 min
-  static constexpr int ROOMS = 4;
+
+  // Szesc pokoi, sama temperatura. Wilgotnosc wylecial z historii swiadomie:
+  // na wykresie dawala druga linie na kazdy pokoj (przy 4 czujnikach osiem linii
+  // na 26 px), a na kafelkach i tak pokazujemy wartosc biezaca prosto z czujnika.
+  // Zwolnione 4*144 B kupilo dwa dodatkowe pokoje — struktura ma identyczny rozmiar.
+  static constexpr int ROOMS = 6;
   static constexpr int16_t NO_T = INT16_MIN;
-  static constexpr uint8_t NO_H = 255;
 
   int16_t t10[ROOMS][SLOTS];  // temperatura * 10
-  uint8_t hum[ROOMS][SLOTS];  // wilgotnosc w %
   uint32_t lastSlot = 0;      // numer slotu pod indeksem `head`
   int16_t head = 0;
 
   void reset() {
     for (int r = 0; r < ROOMS; ++r) {
-      for (int i = 0; i < SLOTS; ++i) {
-        t10[r][i] = NO_T;
-        hum[r][i] = NO_H;
-      }
+      for (int i = 0; i < SLOTS; ++i) t10[r][i] = NO_T;
     }
     lastSlot = 0;
     head = 0;
   }
 
   void clearSlot(int idx) {
-    for (int r = 0; r < ROOMS; ++r) {
-      t10[r][idx] = NO_T;
-      hum[r][idx] = NO_H;
-    }
+    for (int r = 0; r < ROOMS; ++r) t10[r][idx] = NO_T;
   }
 
   // Przewija bufor do biezacego slotu, zerujac przespane. Zwraca false, gdy czas
@@ -69,10 +66,9 @@ struct RoomHistory {
     return true;
   }
 
-  void push(int room, bool hasT, float t, bool hasH, float h) {
+  void push(int room, bool hasT, float t) {
     if (room < 0 || room >= ROOMS) return;
     if (hasT) t10[room][head] = static_cast<int16_t>(t * 10.f);
-    if (hasH) hum[room][head] = static_cast<uint8_t>(h < 0 ? 0 : (h > 100 ? 100 : h));
   }
 
   // i = 0 to najstarsza probka, i = SLOTS-1 to biezaca

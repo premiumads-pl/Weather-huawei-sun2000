@@ -2172,9 +2172,12 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
   }
   viewHeader(spr, ox, "W DOMU", hdr);
 
-  // Kolor pokoju = jego kolor na wykresie. Bez tego wykres z dwiema liniami
-  // wymagalby legendy, na ktora nie ma tu miejsca.
-  const uint16_t roomCol[4] = {col::ACCENT, col::PV_SOLAR, col::PV_EXPORT, col::PV_IMPORT};
+  // Kolor kafelka = kolor jego linii na wykresie. TO JEST CALA LEGENDA — dlatego
+  // pod wykresem nie ma juz zadnego napisu. Kolejnosc musi zostac zgodna z
+  // RoomHistory::ROOMS, bo indeksem jest slot z Settings.
+  const uint16_t roomCol[RoomHistory::ROOMS] = {col::ACCENT,     col::PV_SOLAR,
+                                                col::PV_EXPORT,  col::PV_IMPORT,
+                                                col::STORM,      col::HUMID};
 
   struct Room {
     const char* name;
@@ -2184,17 +2187,19 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     bool hasHum;
     int slot;  // indeks w Settings — po nim idzie historia i kolor
     uint32_t ageS;
-  } rooms[4];
+  } rooms[RoomHistory::ROOMS];
   int n = 0;
 
-  for (int i = 0; i < ble::count() && n < 4; ++i) {
+  for (int i = 0; i < ble::count() && n < RoomHistory::ROOMS; ++i) {
     const ble::Sensor s = ble::get(i);
     if (!s.valid) continue;
     const Settings::BleCfg* cfg = settings().bleFind(s.mac);
     if (cfg == nullptr) continue;
 
+    // Sloty 6-7 z Settings nie maja ani koloru, ani miejsca w historii — pomijamy
+    // je swiadomie zamiast wyjechac poza tablice.
     int slot = -1;
-    for (int k = 0; k < 4; ++k) {
+    for (int k = 0; k < RoomHistory::ROOMS; ++k) {
       if (&settings().ble[k] == cfg) slot = k;
     }
     if (slot < 0) continue;
@@ -2213,13 +2218,16 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
   // Uklad zalezy od liczby czujnikow. Zmierzone: przy 4 kafelkach w jednym rzedzie
   // kazdy ma 69 px, a sama liczba "23.8" w duzej czcionce potrzebuje ~90 px.
   // Wiec: 1-2 czujniki -> rzad z wielka liczba, 3-4 -> siatka 2x2 mniejsza czcionka.
+  // 5-6 czujnikow -> trzy kolumny. Kafelek chudnie ze 146 do 94 px i wtedy
+  // "23.8" + "°C" + "53%" w PLF18 juz sie nie mieszcza (zmierzone: ~3 px nachodzenia),
+  // wiec przy trzech kolumnach wilgotnosc schodzi do PLF14.
   const bool grid = n > 2;
-  const int cols = grid ? 2 : n;
-  const int rows = grid ? 2 : 1;
+  const int cols = grid ? (n > 4 ? 3 : 2) : n;
   const int gap = 8;
   const int cw = (W - 20 - (cols - 1) * gap) / cols;
   const int ch = grid ? 38 : 80;
   const int cy = 54;
+  const bool tight = cols == 3;
 
   for (int i = 0; i < n; ++i) {
     const Room& r = rooms[i];
@@ -2241,7 +2249,7 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     snprintf(hs, sizeof(hs), r.hasHum ? "%.0f%%" : "--", r.hum);
     const uint16_t hc = !r.hasHum ? col::TEXT_MUTE
                         : (r.hum > 65.f || r.hum < 30.f) ? col::WARN : col::PV_HOUSE;
-    plRight(spr, PLF18, hs, x + cw - 10, y + (grid ? 32 : 20), hc);
+    plRight(spr, tight ? PLF14 : PLF18, hs, x + cw - 10, y + (grid ? 32 : 20), hc);
 
     char v[12];
     snprintf(v, sizeof(v), r.hasTemp ? "%.1f" : "--", r.tempC);
@@ -2266,17 +2274,15 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     }
   }
 
-  // Przy siatce wykres 24 h zaczyna sie nizej — kafelki zjadaja dwa rzedy.
   // ------------------------------------------------- wykres z ostatnich 24 h ---
-  // Dwie osie: lewa = temperatura (skala dobrana do danych), prawa = wilgotnosc
-  // (stale 20-90%, bo w domu i tak nie wychodzi poza ten zakres).
-  // Przy siatce 2x2 kafelki siegaja y=136, wiec wykres schodzi nizej i jest nizszy.
-  const int chartTop = grid ? 152 : 138;
-  gl(spr, "GRUBA = TEMPERATURA    CIENKA = WILGOTNOSC", ox + 32, chartTop, col::TEXT_MUTE);
-
-  const int gx0 = ox + 32, gx1 = ox + W - 34;
-  const int gy0 = chartTop + 12, gy1 = 190;
-  const float hMin = 20.f, hMax = 90.f;
+  // SAMA TEMPERATURA. Wilgotnosc byla tu druga linia na kazdy pokoj — przy czterech
+  // czujnikach osiem linii na 26 px wysokosci. Zeby to w ogole rozroznic, trzeba bylo
+  // legendy "GRUBA = TEMPERATURA / CIENKA = WILGOTNOSC", ktora nie miala gdzie stanac
+  // i wlazila na ramke wykresu. Usuniecie serii rozwiazuje jedno i drugie: legenda
+  // jest zbedna (kolor paska kafelka = kolor linii), a wykres urosl z 26 do 42 px
+  // i odzyskal 22 px szerokosci po osi procentow.
+  const int gx0 = ox + 32, gx1 = ox + W - 12;
+  const int gy0 = 148, gy1 = 190;
 
   float tMin = 1e9f, tMax = -1e9f;
   bool any = false;
@@ -2307,10 +2313,6 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     return gy1 - static_cast<int>(clampf((v - tMin) / (tMax - tMin), 0.f, 1.f) *
                                   (gy1 - gy0));
   };
-  auto yH = [&](float v) {
-    return gy1 - static_cast<int>(clampf((v - hMin) / (hMax - hMin), 0.f, 1.f) *
-                                  (gy1 - gy0));
-  };
   auto xAt = [&](int k) {
     return gx0 + (k * (gx1 - gx0)) / (RoomHistory::SLOTS - 1);
   };
@@ -2320,50 +2322,53 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     const int x = xAt(RoomHistory::SLOTS - 1 - hh * 6);
     spr.drawFastVLine(x, gy0, gy1 - gy0, col::GRID);
   }
+  // ...i linia w polowie skali. Przy czterech liniach w zakresie ~3°C samo min/max
+  // nie wystarcza, zeby ocenic o ile pokoje sie roznia.
+  const int yMid = (gy0 + gy1) / 2;
+  spr.drawFastHLine(gx0, yMid, gx1 - gx0, col::GRID);
 
   // --- linie ---
   for (int i = 0; i < n; ++i) {
     const int r = rooms[i].slot;
     const uint16_t rc = roomCol[r];
-    const uint16_t hc = lerp565(col::BG, rc, 0.45f);  // wilgotnosc — ta sama barwa, przygaszona
 
-    int px = -1, pyT = 0, pyH = 0;
+    int px = -1, pyT = 0;
+    int lastX = -1, lastY = 0;
     for (int k = 0; k < RoomHistory::SLOTS; ++k) {
-      const int id = rh.idx(k);
-      const int16_t tv = rh.t10[r][id];
-      const uint8_t hv = rh.hum[r][id];
-      if (tv == RoomHistory::NO_T && hv == RoomHistory::NO_H) {
+      const int16_t tv = rh.t10[r][rh.idx(k)];
+      if (tv == RoomHistory::NO_T) {
         px = -1;  // dziura w danych (urzadzenie nie dzialalo) — nie laczymy przez nia
         continue;
       }
       const int x = xAt(k);
-      const int cyT = tv != RoomHistory::NO_T ? yT(tv / 10.f) : -1;
-      const int cyH = hv != RoomHistory::NO_H ? yH(hv) : -1;
-
+      const int cyT = yT(tv / 10.f);
       if (px >= 0) {
-        if (cyH >= 0 && pyH > 0) spr.drawLine(px, pyH, x, cyH, hc);
-        if (cyT >= 0 && pyT > 0) {
-          spr.drawLine(px, pyT, x, cyT, rc);
-          spr.drawLine(px, pyT + 1, x, cyT + 1, rc);  // 2 px — temperatura jest wazniejsza
-        }
+        spr.drawLine(px, pyT, x, cyT, rc);
+        spr.drawLine(px, pyT + 1, x, cyT + 1, rc);  // 2 px — czytelne z drugiego konca lazienki
       }
       px = x;
-      if (cyT >= 0) pyT = cyT;
-      if (cyH >= 0) pyH = cyH;
+      pyT = cyT;
+      lastX = x;
+      lastY = cyT;
     }
+    // Kropka na koncu linii — kotwiczy "ta barwa = ten kafelek" w miejscu, w ktorym
+    // linie sa najgestsze, czyli przy prawej krawedzi.
+    if (lastX >= 0) spr.fillCircle(lastX, lastY, 2, rc);
   }
 
-  // --- osie ---
+  // --- os temperatury ---
   // PlFont, nie GLCD — znak stopnia. CZWARTY raz ta sama pulapka; komentarz zostaje
   // jako ostrzezenie: cokolwiek ma "°", "ą", "ł" — NIE moze isc przez gl()/glRight().
+  // "%.0f", nie "%.1f": na os zostaje 27 px (do gx0-5), a "24.5°" w PLF14 ma ~38 px
+  // i wyjechaloby poza lewa krawedz. Wykres sluzy do POROWNANIA pokoi, dokladne
+  // wartosci sa na kafelkach wyzej — grubsza podzialka niczego tu nie kosztuje.
   char ax[10];
   snprintf(ax, sizeof(ax), "%.0f°", tMax);
   plRight(spr, PLF14, ax, gx0 - 5, gy0 + 4, col::TEXT_MUTE);
+  snprintf(ax, sizeof(ax), "%.0f°", (tMin + tMax) / 2.f);
+  plRight(spr, PLF14, ax, gx0 - 5, yMid + 5, col::TEXT_MUTE);
   snprintf(ax, sizeof(ax), "%.0f°", tMin);
   plRight(spr, PLF14, ax, gx0 - 5, gy1, col::TEXT_MUTE);
-
-  gl(spr, "90%", gx1 + 4, gy0 - 3, col::TEXT_MUTE);
-  gl(spr, "20%", gx1 + 4, gy1 - 5, col::TEXT_MUTE);
 
   gl(spr, "-24h", gx0 - 2, gy1 + 5, col::TEXT_MUTE);
   glCenter(spr, "-12h", xAt(RoomHistory::SLOTS - 1 - 72), gy1 + 5, col::TEXT_MUTE);
