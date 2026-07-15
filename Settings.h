@@ -40,6 +40,20 @@ struct Settings {
     bool hasKey = false;
   } ble[4];
 
+  // --- Viessmann (piec) ---
+  // Client ID jest PUBLICZNY (siedzi w kazdej instalacji PyViCare) — ale refresh
+  // token juz nie: przez 180 dni daje pelny dostep do ogrzewania. Dlatego oba leza
+  // wylacznie w NVS, nigdy w repo, i /api/state nie zwraca tokena — tylko flage.
+  char viClientId[40] = {};
+  char viRefresh[600] = {};      // JWT bywa dlugi
+  char viInstallation[12] = {};  // cache — zeby nie pytac o to co odczyt
+  char viGateway[20] = {};
+  uint32_t viAuthAt = 0;         // epoch autoryzacji — refresh token zyje 180 dni
+  bool viEnabled = false;
+
+  bool hasViessmann() const { return viEnabled && viClientId[0] != '\0' && viRefresh[0] != '\0'; }
+  void viSave();
+
   const BleCfg* bleFind(const char* mac) const;
   bool bleSet(const char* mac, const char* name, const char* keyHex);  // keyHex: 32 znaki lub ""
 

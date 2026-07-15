@@ -40,6 +40,10 @@ struct Diag {
   uint32_t frameDrawUs = 0;   // rysowanie klatki do bufora (PSRAM)
   uint32_t framePushUs = 0;   // wypchniecie bufora na SPI
   uint32_t framePeriodUs = 0; // RZECZYWISTY okres klatki (z pauzami)
+  uint32_t viOkAt = 0;        // piec: ostatni udany odczyt
+  char viErr[56] = {};
+  float viDhwC = 0.f;
+  float viSupplyC = 0.f;
   int radarFrame = -1;        // ktora klatka animacji radaru jest rysowana
   int radarFrameMin = 0;      // jej przesuniecie czasowe (min)
   uint32_t radarSkips = 0;   // ile razy radar odpuścił z braku pamięci

@@ -33,6 +33,7 @@
 #include "BleSensors.h"
 #include "OtaGuard.h"
 #include "RadarMap.h"
+#include "Viessmann.h"
 #include "RoomHistory.h"
 #include "Touch.h"
 
@@ -60,6 +61,8 @@ WeatherModel gWeather{};
 PvModel gPv{};
 PvHistory gHist{};
 RoomHistory gRooms{};
+vi::Model gVi{};
+vi::Model uiVi{};
 RoomHistory uiRooms{};
 FlightModel gFlights{};
 volatile bool gWifiOk = false;
@@ -188,6 +191,7 @@ static void netTask(void*) {
   uint32_t nextRoomSaveAt = 0;
   uint32_t nextRoamAt = 120000;   // pierwszy przeglad po 2 min od startu
   uint32_t nextRadarMapAt = 25000;
+  uint32_t nextViAt = 35000;
   bool firstWeather = false;
 
   for (;;) {
@@ -353,6 +357,28 @@ static void netTask(void*) {
         LOG("Radar mapa BLAD: %s", radarmap::lastError());
         nextRadarMapAt = millis() + 120000;
       }
+    }
+
+    // ---- piec Viessmann (chmura ViCare) ----
+    // Co 3 minuty = 480 zapytan na dobe. Limit Viessmanna to 1450/dobe i 120 na
+    // 10 minut, wiec mamy zapas takze na odswiezanie tokena (co ~55 min).
+    if (settings().hasViessmann() && static_cast<int32_t>(millis() - nextViAt) >= 0) {
+      vi::Model tmp{};
+      const bool ok = vi::fetch(tmp);
+      xSemaphoreTake(gLock, portMAX_DELAY);
+      if (ok) {
+        gVi = tmp;
+        diag().viOkAt = millis();
+        diag().viErr[0] = '\0';
+        diag().viDhwC = tmp.dhwTempC;
+        diag().viSupplyC = tmp.supplyTempC;
+      } else {
+        gVi.valid = false;
+        snprintf(diag().viErr, sizeof(diag().viErr), "%s", tmp.err);
+        LOG("Piec BLAD: %s", tmp.err);
+      }
+      xSemaphoreGive(gLock);
+      nextViAt = millis() + (ok ? 180000UL : 120000UL);
     }
 
     // ---- nasłuch czujników BLE (Xiaomi) ----
@@ -647,6 +673,7 @@ void setup() {
   pvHistoryLoad(gHist);
   roomHistoryLoad(gRooms);
   uiRooms = gRooms;
+  uiVi = gVi;
   ui.setRoomHistory(&uiRooms);
 
   if (!settings().hasWifi()) {

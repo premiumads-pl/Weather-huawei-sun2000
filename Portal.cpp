@@ -16,6 +16,7 @@
 #include "OtaGuard.h"
 #include "BleSensors.h"
 #include "RadarMap.h"
+#include "Viessmann.h"
 #include "Settings.h"
 #include "Version.h"
 
@@ -136,6 +137,27 @@ nie opuszcza sieci domowej.</div>
 </div>
 
 <div class=c>
+<h2>Piec Viessmann</h2>
+<div class=hint>Twój Vitodens nie wystawia niczego w sieci lokalnej (sprawdzone: zero
+otwartych portów) — jedyna droga to chmura ViCare. Client ID weź z
+<a href="https://app.developer.viessmann-climatesolutions.com" target=_blank
+ style="color:#00dcf0">portalu deweloperskiego</a>. Jest publiczny; token dostępu
+zostaje wyłącznie w pamięci urządzenia.</div>
+<label>Client ID</label><input id=vicid autocapitalize=off autocorrect=off
+ placeholder="np. 962d...b35ce">
+<button class=s onclick=viLink()>1. Zapisz i wygeneruj link autoryzacyjny</button>
+<div class=hint id=vimsg></div>
+<div id=viauth style="display:none">
+ <a id=vihref target=_blank style="color:#00dcf0;font-weight:600">
+  2. Otwórz i zaloguj się do Viessmann →</a>
+ <div class=hint>Po zalogowaniu przeglądarka wróci tutaj sama i zapisze dostęp.
+ Kod autoryzacyjny żyje 20 sekund, więc nie zwlekaj.</div>
+</div>
+<div class=hint id=vistat></div>
+<button class=s onclick=viForget()>Odłącz piec</button>
+</div>
+
+<div class=c>
 <h2>Radar opadów</h2>
 <div class=hint>Ekran radaru pojawia się w rotacji tylko wtedy, gdy realnie pada.
 Symulacja pokazuje sztuczny front — do obejrzenia, jak wygląda wizualizacja.</div>
@@ -218,6 +240,30 @@ async function saveBle(mac,i){
  $('bmsg').textContent=r.msg;
  bles();
 }
+async function viLink(){
+ $('vimsg').textContent='...';
+ const r=await(await fetch('/api/vi/link',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({cid:$('vicid').value.trim()})})).json();
+ $('vimsg').className='hint '+(r.ok?'ok':'err');
+ $('vimsg').textContent=r.msg;
+ if(r.ok){$('vihref').href=r.url;$('viauth').style.display='block';}
+}
+async function viForget(){
+ if(!confirm('Odłączyć piec? Trzeba będzie autoryzować od nowa.'))return;
+ await fetch('/api/vi/forget',{method:'POST'});
+ location.reload();
+}
+async function viStat(){
+ try{
+  const r=await(await fetch('/api/vi')).json();
+  $('vicid').value=r.cid||'';
+  if(!r.auth){$('vistat').textContent='Nie autoryzowano.';return;}
+  $('vistat').className='hint ok';
+  $('vistat').textContent=r.ok
+    ? `Połączono. CWU ${r.dhw.toFixed(1)}°C, zasilanie ${r.sup.toFixed(1)}°C. Autoryzacja ważna jeszcze ${r.days} dni.`
+    : `Autoryzowano (ważne ${r.days} dni), ale: ${r.err}`;
+ }catch(e){}
+}
 async function demo(on){
  $('dmsg').textContent='...';
  const r=await(await fetch('/api/radardemo?on='+on)).json();
@@ -295,7 +341,7 @@ async function fgt(){
 }
 (async()=>{
  try{const r=await(await fetch('/api/view')).json();pin=r.pin;}catch(e){}
- tabs();nextShot();await load();bles();setInterval(bles,20000);
+ tabs();nextShot();await load();bles();viStat();setInterval(bles,20000);setInterval(viStat,30000);
 })();
 </script></html>)HTML";
 
@@ -764,6 +810,78 @@ void apiRadarDemo() {
                  : "{\"ok\":true,\"msg\":\"Symulacja wyłączona.\"}");
 }
 
+// --- Viessmann ---
+// Redirect URI musi byc DOKLADNIE ten sam przy generowaniu linku i przy wymianie
+// kodu — inaczej Viessmann odrzuca. Budujemy go z biezacego IP.
+String viRedirect() {
+  return String("http://") + WiFi.localIP().toString() + "/vicare";
+}
+
+void apiViLink() {
+  JsonDocument b;
+  deserializeJson(b, server.arg("plain"));
+  const char* cid = b["cid"] | "";
+  if (strlen(cid) < 8) {
+    server.send(200, "application/json", "{\"ok\":false,\"msg\":\"Wklej Client ID z portalu\"}");
+    return;
+  }
+  snprintf(settings().viClientId, sizeof(settings().viClientId), "%s", cid);
+  settings().viSave();
+
+  const String url = vi::authUrl(cid, viRedirect().c_str());
+  JsonDocument o;
+  o["ok"] = true;
+  o["url"] = url;
+  o["msg"] = String("Zapisano. Redirect URI w portalu musi zawierać: ") + viRedirect();
+  String out;
+  serializeJson(o, out);
+  server.send(200, "application/json", out);
+}
+
+// Tu wraca przegladarka po autoryzacji — z kodem w query.
+void apiViCallback() {
+  const String code = server.arg("code");
+  const String err = server.arg("error");
+  char msg[80] = {};
+
+  if (err.length() > 0) {
+    snprintf(msg, sizeof(msg), "Viessmann odmówił: %s", err.c_str());
+  } else if (code.length() == 0) {
+    snprintf(msg, sizeof(msg), "Brak kodu w odpowiedzi");
+  } else if (vi::exchangeCode(code.c_str(), viRedirect().c_str(), msg, sizeof(msg))) {
+    snprintf(msg, sizeof(msg), "Połączono z piecem. Możesz zamknąć tę kartę.");
+  }
+
+  String h = "<!doctype html><meta charset=utf-8><body style=\"background:#070d18;color:#e9f0f8;"
+             "font:16px system-ui;padding:40px;text-align:center\"><h2>";
+  h += msg;
+  h += "</h2><p><a href=\"/\" style=\"color:#00dcf0\">Wróć do panelu</a></p>";
+  server.send(200, "text/html; charset=utf-8", h);
+}
+
+void apiViState() {
+  JsonDocument o;
+  o["cid"] = settings().viClientId;       // publiczny — mozna zwracac
+  o["auth"] = settings().viRefresh[0] != '\0';   // TOKENA nigdy nie zwracamy
+  o["days"] = vi::daysLeft();
+
+  const Diag& d = diag();
+  o["ok"] = d.viOkAt != 0 && d.viErr[0] == '\0';
+  o["err"] = d.viErr;
+  o["dhw"] = d.viDhwC;
+  o["sup"] = d.viSupplyC;
+
+  String out;
+  serializeJson(o, out);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", out);
+}
+
+void apiViForget() {
+  vi::forget();
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
 void apiForget() {
   settings().clearWifi();
   server.send(200, "application/json", "{\"ok\":true}");
@@ -790,6 +908,10 @@ void routes() {
   server.on("/api/ble", HTTP_GET, apiBleList);
   server.on("/api/ble", HTTP_POST, apiBleSet);
   server.on("/api/radardemo", apiRadarDemo);
+  server.on("/api/vi", HTTP_GET, apiViState);
+  server.on("/api/vi/link", HTTP_POST, apiViLink);
+  server.on("/api/vi/forget", HTTP_POST, apiViForget);
+  server.on("/vicare", apiViCallback);   // tu wraca autoryzacja
   server.onNotFound(sendPage);  // captive portal
   server.begin();
   started = true;

@@ -37,6 +37,17 @@ void Settings::load() {
   mqttPort = prefs.getUShort("mqport", 1883);
   mqttEnabled = prefs.getBool("mqen", false);
 
+  String vc = prefs.getString("vicid", "");
+  String vr = prefs.getString("viref", "");
+  String vi = prefs.getString("viinst", "");
+  String vg = prefs.getString("vigw", "");
+  viAuthAt = prefs.getUInt("viat", 0);
+  viEnabled = prefs.getBool("vien", false);
+  strncpy(viClientId, vc.c_str(), sizeof(viClientId) - 1);
+  strncpy(viRefresh, vr.c_str(), sizeof(viRefresh) - 1);
+  strncpy(viInstallation, vi.c_str(), sizeof(viInstallation) - 1);
+  strncpy(viGateway, vg.c_str(), sizeof(viGateway) - 1);
+
   // czujniki BLE — bindkey jako blob (16 B), nigdy jako tekst w logach/API
   for (int i = 0; i < 4; ++i) {
     char k[8];
@@ -84,6 +95,19 @@ void Settings::save() {
   prefs.putString("mqpre", mqttPrefix);
   prefs.putUShort("mqport", mqttPort);
   prefs.putBool("mqen", mqttEnabled);
+  prefs.end();
+}
+
+// Osobno od save(): refresh token zmienia sie co 180 dni, a IDy raz. Nie ma po co
+// przepisywac calej konfiguracji przy kazdym odswiezeniu.
+void Settings::viSave() {
+  prefs.begin(NS_CFG, false);
+  prefs.putString("vicid", viClientId);
+  prefs.putString("viref", viRefresh);
+  prefs.putString("viinst", viInstallation);
+  prefs.putString("vigw", viGateway);
+  prefs.putUInt("viat", viAuthAt);
+  prefs.putBool("vien", viEnabled);
   prefs.end();
 }
 
