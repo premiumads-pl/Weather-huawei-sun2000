@@ -62,6 +62,9 @@ struct Settings {
   bool meterDel(uint32_t day);
   void meterSave();
 
+  // Bramka BLE (Shelly) — druga para uszu dla czujnikow poza zasiegiem wyswietlacza.
+  char bleGwHost[24] = {};
+
   const BleCfg* bleFind(const char* mac) const;
   bool bleSet(const char* mac, const char* name, const char* keyHex);  // keyHex: 32 znaki lub ""
 

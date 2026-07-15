@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 // Nasluch czujnikow Xiaomi (LYWSD03MMC "Mi Temperature and Humidity Monitor 2")
@@ -33,6 +34,7 @@ struct Sensor {
   bool hasHum = false;
   bool encrypted = false;
   bool needsKey = false;  // widzimy czujnik, ale brakuje bindkeya (albo jest zly)
+  bool viaGw = false;     // odczyt przyszedl przez bramke, nie z wlasnego radia
 };
 
 void begin();
@@ -45,6 +47,11 @@ Sensor get(int i);
 
 bool ready();
 bool scanning();  // trwa nasluch — inni maja nie brac duzych blokow
+
+// Wstrzykniecie surowej ramki MiBeacon (0xFE95) z BRAMKI — np. Shelly stojacego
+// bliżej czujnika. Bramka NIE odszyfrowuje niczego: przekazuje szyfrogram, a klucze
+// zostaja tutaj, w NVS. Przetwarzanie jest identyczne jak dla wlasnego radia.
+bool feedRaw(const char* mac, const uint8_t* data, size_t len, int rssi);
 const char* lastError();
 
 }  // namespace ble

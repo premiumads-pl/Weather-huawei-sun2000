@@ -102,7 +102,7 @@ bool parse181A(const uint8_t* d, size_t len, const char* mac, int rssi) {
 // Nonce = MAC(6) + productId(2) + licznik(1) + licznik rozszerzony(3) = 12 B
 // AAD = 0x11, szyfr = AES-CCM, tag 4 B. Klucz (bindkey) pochodzi z chmury Xiaomi
 // i lezy w NVS — nigdy w repo.
-bool parseMiBeacon(const uint8_t* d, size_t len, const char* mac, int rssi) {
+bool parseMiBeacon(const uint8_t* d, size_t len, const char* mac, int rssi, bool gw = false) {
   if (len < 5) return false;
 
   const uint16_t fc = static_cast<uint16_t>(d[0] | (d[1] << 8));
@@ -121,6 +121,7 @@ bool parseMiBeacon(const uint8_t* d, size_t len, const char* mac, int rssi) {
       s->seenAt = millis();
       s->encrypted = true;
       s->needsKey = true;
+      s->viaGw = gw;
     }
     xSemaphoreGive(gMx);
     return true;
@@ -177,6 +178,7 @@ bool parseMiBeacon(const uint8_t* d, size_t len, const char* mac, int rssi) {
     s->needsKey = false;
     s->rssi = rssi;
     s->seenAt = millis();
+    s->viaGw = gw;
 
     switch (type) {
       case 0x1004:  // temperatura, 0,1 C
@@ -289,6 +291,14 @@ void scan(int seconds) {
 
 bool scanning() {
   return gScanning;
+}
+
+// Ramka z bramki. Ta sama sciezka co wlasny odbior — wiec i to samo odszyfrowanie,
+// te same progi, ten sam log. Bramka jest tylko innym uchem, nie innym urzadzeniem.
+bool feedRaw(const char* mac, const uint8_t* data, size_t len, int rssi) {
+  if (gMx == nullptr) gMx = xSemaphoreCreateMutex();
+  if (mac == nullptr || data == nullptr || len < 6) return false;
+  return parseMiBeacon(data, len, mac, rssi, true);
 }
 
 int count() {

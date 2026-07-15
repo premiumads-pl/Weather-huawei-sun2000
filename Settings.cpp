@@ -43,6 +43,8 @@ void Settings::load() {
   String vi = prefs.getString("viinst", "");
   String vg = prefs.getString("vigw", "");
   viAuthAt = prefs.getUInt("viat", 0);
+  String bg = prefs.getString("blegw", "");
+  strncpy(bleGwHost, bg.c_str(), sizeof(bleGwHost) - 1);
   if (prefs.getBytesLength("mets") == sizeof(meters)) {
     prefs.getBytes("mets", meters, sizeof(meters));
   }
@@ -99,6 +101,7 @@ void Settings::save() {
   prefs.putString("mqpre", mqttPrefix);
   prefs.putUShort("mqport", mqttPort);
   prefs.putBool("mqen", mqttEnabled);
+  prefs.putString("blegw", bleGwHost);
   prefs.end();
 }
 

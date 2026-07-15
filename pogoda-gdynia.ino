@@ -30,6 +30,7 @@
 #include "Log.h"
 #include "MqttClient.h"
 #include "Ota.h"
+#include "BleGateway.h"
 #include "BleSensors.h"
 #include "OtaGuard.h"
 #include "RadarMap.h"
@@ -192,6 +193,7 @@ static void netTask(void*) {
   uint32_t nextStoreAt = 0;
   uint32_t nextRadarAt = 0;
   uint32_t nextBleAt = 20000;  // po WiFi i pierwszej pogodzie
+  uint32_t nextGwAt = 12000;
   uint32_t nextRoomSaveAt = 0;
   uint32_t nextRoamAt = 120000;   // pierwszy przeglad po 2 min od startu
   uint32_t nextRadarMapAt = 25000;
@@ -397,6 +399,14 @@ static void netTask(void*) {
       }
       xSemaphoreGive(gLock);
       nextViAt = millis() + (ok ? 180000UL : 120000UL);
+    }
+
+    // ---- bramka BLE (Shelly slyszy to, czego my nie slyszymy) ----
+    // Co 20 s, bo to tanie: jeden GET po WiFi, kilkaset bajtow. Nasze wlasne radio
+    // dziala dalej — bramka tylko dokłada uszu, nie zastepuje ich.
+    if (settings().bleGwHost[0] != '\0' && static_cast<int32_t>(millis() - nextGwAt) >= 0) {
+      blegw::poll();
+      nextGwAt = millis() + 20000;
     }
 
     // ---- nasłuch czujników BLE (Xiaomi) ----

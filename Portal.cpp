@@ -14,6 +14,7 @@
 #include "MqttClient.h"
 #include "Ota.h"
 #include "OtaGuard.h"
+#include "BleGateway.h"
 #include "BleSensors.h"
 #include "RadarMap.h"
 #include "Viessmann.h"
@@ -134,6 +135,13 @@ jest klucz (bindkey) z chmury Xiaomi. Klucz zostaje w pamięci urządzenia i nig
 nie opuszcza sieci domowej.</div>
 <ul id=bles></ul>
 <div class=hint id=bmsg></div>
+<label>Bramka BLE — adres Shelly (opcjonalnie)</label>
+<input id=blegw placeholder="np. 192.168.0.102" autocapitalize=off autocorrect=off>
+<button class=s onclick=saveGw()>Zapisz bramkę</button>
+<div class=hint id=gmsg></div>
+<div class=hint>Bluetooth nie ma sieci kratowej — czujnik musi dosięgnąć odbiornika.
+Shelly stojący bliżej przekazuje ramki przez WiFi. Klucze zostają tutaj: bramka
+widzi wyłącznie szyfrogram.</div>
 </div>
 
 <div class=c>
@@ -220,9 +228,10 @@ async function bles(){
  $('bles').innerHTML=r.map((s,i)=>{
   const st = s.valid ? `${s.t.toFixed(1)}°C · ${s.h.toFixed(0)}% · bat ${s.bat}%`
        : (s.needsKey ? '<span class=err>brak klucza</span>' : 'czekam na dane');
+  const src = s.gw ? ' <span style="color:#00dcf0">· przez bramkę</span>' : '';
   return `<li style="display:block">
    <div style="display:flex;justify-content:space-between">
-    <b>${s.name||s.mac}</b><span class=sig>${st} · ${s.rssi} dBm</span></div>
+    <b>${s.name||s.mac}</b><span class=sig>${st} · ${s.rssi} dBm${src}</span></div>
    <div class=row style="margin-top:8px">
     <input id=bn${i} placeholder="nazwa (np. Łazienka)" value="${s.name||''}">
     <input id=bk${i} placeholder="${s.hasKey?'klucz zapisany':'bindkey (32 znaki hex)'}"
@@ -231,6 +240,12 @@ async function bles(){
    <button class=s onclick="saveBle('${s.mac}',${i})">Zapisz</button>
    <div class=sig style="margin-top:6px">${s.mac}</div></li>`;
  }).join('');
+}
+async function saveGw(){
+ $('gmsg').textContent='...';
+ const r=await(await fetch('/api/blegw',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({host:$('blegw').value.trim()})})).json();
+ $('gmsg').className='hint '+(r.ok?'ok':'err');$('gmsg').textContent=r.msg;
 }
 async function saveBle(mac,i){
  $('bmsg').textContent='Zapisuję…';
@@ -281,6 +296,7 @@ async function load(){
  $('ssid').value=r.ssid||'';$('mb').value=r.mb||'';$('peak').value=(r.peak/1000).toFixed(1);
  $('mqen').checked=!!r.mq_en;$('mqhost').value=r.mq_host||'';$('mqport').value=r.mq_port||1883;
  $('mqpre').value=r.mq_pre||'';$('mquser').value=r.mq_user||'';$('mqpass').value='';
+ $('blegw').value=r.blegw||'';
  // hasla brokera NIE zwracamy — tylko informacje, ze jakies jest zapisane
  $('mqpass').placeholder=r.mq_pass_set?'(zapisane — zostaw puste, aby nie zmieniać)':'(brak)';
 }
@@ -768,6 +784,7 @@ void apiBleList() {
     o["bat"] = s.batteryPct;
     o["rssi"] = s.rssi;
     o["age_s"] = s.seenAt ? (millis() - s.seenAt) / 1000 : -1;
+    o["gw"] = s.viaGw;
   }
 
   String out;
@@ -815,6 +832,20 @@ void apiRadarDemo() {
 // kodu — inaczej Viessmann odrzuca. Budujemy go z biezacego IP.
 String viRedirect() {
   return String("http://") + WiFi.localIP().toString() + "/vicare";
+}
+
+void apiBleGw() {
+  JsonDocument b;
+  deserializeJson(b, server.arg("plain"));
+  const char* h = b["host"] | "";
+  snprintf(settings().bleGwHost, sizeof(settings().bleGwHost), "%s", h);
+  settings().save();
+  JsonDocument o;
+  o["ok"] = true;
+  o["msg"] = h[0] ? "Zapisano. Pierwszy odczyt w ciągu 20 s." : "Bramka wyłączona.";
+  String out;
+  serializeJson(o, out);
+  server.send(200, "application/json", out);
 }
 
 void apiViLink() {
@@ -922,6 +953,7 @@ void routes() {
   server.on("/api/view", apiView);
   server.on("/api/ble", HTTP_GET, apiBleList);
   server.on("/api/ble", HTTP_POST, apiBleSet);
+  server.on("/api/blegw", HTTP_POST, apiBleGw);
   server.on("/api/radardemo", apiRadarDemo);
   server.on("/api/vi", HTTP_GET, apiViState);
   server.on("/api/vi/link", HTTP_POST, apiViLink);
