@@ -387,6 +387,7 @@ void apiState() {
   d["mq_pre"] = settings().mqttPrefix;
   d["mq_user"] = settings().mqttUser;
   d["mq_pass_set"] = settings().mqttPass[0] != '\0';
+  d["blegw"] = settings().bleGwHost;
 
   String out;
   serializeJson(d, out);

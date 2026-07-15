@@ -39,11 +39,13 @@ void poll() {
   snprintf(url, sizeof(url), "http://%s/script/1/ble", settings().bleGwHost);
   if (!http.begin(client, url)) {
     snprintf(gErr, sizeof(gErr), "brak polaczenia");
+    LOG("Bramka BLE: nie moge otworzyc %s", url);
     return;
   }
   const int code = http.GET();
   if (code != 200) {
     snprintf(gErr, sizeof(gErr), "HTTP %d", code);
+    LOG("Bramka BLE: %s -> HTTP %d", url, code);
     http.end();
     return;
   }
@@ -78,6 +80,11 @@ void poll() {
   gCount = n;
   gOkAt = millis();
   gErr[0] = '\0';
+  static int lastN = -1;
+  if (n != lastN) {   // logujemy tylko zmiany — inaczej zalejemy bufor
+    LOG("Bramka BLE: %d ramek przyjetych", n);
+    lastN = n;
+  }
 }
 
 uint32_t lastOkAt() { return gOkAt; }
