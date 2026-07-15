@@ -215,6 +215,62 @@ bool parseMiBeacon(const uint8_t* d, size_t len, const char* mac, int rssi, bool
   return true;
 }
 
+// --- Qingping (0xFDCD), np. cgllc.sensor_ht.qpg1 ---
+// Zero szyfrowania — dane leca otwartym tekstem, wiec zaden bindkey nie jest
+// potrzebny (mimo ze chmura Xiaomi go dla tego czujnika wydaje).
+//
+// Uklad, rozebrany na prawdziwej ramce 8816e97f11342d5801040e01b101020164:
+//   [0]    flagi
+//   [1]    id produktu
+//   [2..7] MAC, odwrocony
+//   [8..]  rekordy typ/dlugosc/wartosc:
+//            0x01, len 4: temperatura (int16 LE, 0.1 C) + wilgotnosc (uint16 LE, 0.1 %)
+//            0x02, len 1: bateria [%]
+bool parseQingping(const uint8_t* d, size_t len, const char* mac, int rssi, bool gw) {
+  if (len < 10) return false;
+
+  float t = 0.f, h = 0.f;
+  int batt = -1;
+  bool hasT = false, hasH = false;
+
+  size_t i = 8;
+  while (i + 2 <= len) {
+    const uint8_t type = d[i];
+    const uint8_t ln = d[i + 1];
+    if (i + 2 + ln > len) break;
+    const uint8_t* v = d + i + 2;
+
+    if (type == 0x01 && ln >= 4) {
+      t = static_cast<int16_t>(v[0] | (v[1] << 8)) / 10.f;
+      h = static_cast<uint16_t>(v[2] | (v[3] << 8)) / 10.f;
+      hasT = hasH = true;
+    } else if (type == 0x02 && ln >= 1) {
+      batt = v[0];
+    }
+    i += 2 + ln;
+  }
+  if (!hasT && !hasH) return false;
+  if (t < -40.f || t > 85.f || h < 0.f || h > 100.f) return false;
+
+  xSemaphoreTake(gMx, portMAX_DELAY);
+  Sensor* s = slotFor(mac);
+  if (s != nullptr) {
+    s->tempC = t;
+    s->humidity = h;
+    s->hasTemp = hasT;
+    s->hasHum = hasH;
+    if (batt >= 0) s->batteryPct = batt;
+    s->rssi = rssi;
+    s->seenAt = millis();
+    s->encrypted = false;
+    s->needsKey = false;
+    s->viaGw = gw;
+    s->valid = true;
+  }
+  xSemaphoreGive(gMx);
+  return true;
+}
+
 class Cb : public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice dev) override {
     if (!dev.haveServiceData()) return;
@@ -238,6 +294,9 @@ class Cb : public BLEAdvertisedDeviceCallbacks {
 
       // Fabryczny Xiaomi — zaszyfrowany MiBeacon, potrzebny bindkey z NVS.
       if (u16 == 0xFE95 && parseMiBeacon(d, len, mac, dev.getRSSI())) return;
+
+      // Qingping — otwarty tekst, bez klucza.
+      if (u16 == 0xFDCD && parseQingping(d, len, mac, dev.getRSSI(), false)) return;
 
       // Cokolwiek innego — surowo do logu, zeby dalo sie rozpoznac zdalnie.
       if (u16 == 0xFE95 || u16 == 0x181A) {
@@ -299,6 +358,12 @@ bool feedRaw(const char* mac, const uint8_t* data, size_t len, int rssi) {
   if (gMx == nullptr) gMx = xSemaphoreCreateMutex();
   if (mac == nullptr || data == nullptr || len < 6) return false;
   return parseMiBeacon(data, len, mac, rssi, true);
+}
+
+bool feedRawQingping(const char* mac, const uint8_t* data, size_t len, int rssi) {
+  if (gMx == nullptr) gMx = xSemaphoreCreateMutex();
+  if (mac == nullptr || data == nullptr || len < 10) return false;
+  return parseQingping(data, len, mac, rssi, true);
 }
 
 int count() {

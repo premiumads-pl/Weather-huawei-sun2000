@@ -10,7 +10,8 @@
 // Formaty ramek (service data), ktore rozpoznajemy:
 //   0x181A, 15 B  — firmware pvvx (custom), otwarty tekst
 //   0x181A, 13 B  — firmware ATC (custom), otwarty tekst
-//   0xFE95        — MiBeacon (fabryczny); czesto ZASZYFROWANY -> potrzebny bindkey
+//   0xFE95        — MiBeacon (fabryczny Xiaomi); ZASZYFROWANY -> potrzebny bindkey
+//   0xFDCD        — Qingping (cgllc.sensor_ht.qpg1); OTWARTY TEKST, bez klucza
 //
 // Nieznane ramki trafiaja do logu w postaci szesnastkowej, zeby dalo sie je
 // rozpoznac ZDALNIE (urzadzenie wisi na scianie, bez USB).
@@ -54,6 +55,9 @@ bool scanning();  // trwa nasluch — inni maja nie brac duzych blokow
 // bliżej czujnika. Bramka NIE odszyfrowuje niczego: przekazuje szyfrogram, a klucze
 // zostaja tutaj, w NVS. Przetwarzanie jest identyczne jak dla wlasnego radia.
 bool feedRaw(const char* mac, const uint8_t* data, size_t len, int rssi);
+
+// Ramka Qingping (0xFDCD) z bramki — inny format niz MiBeacon, wiec osobna droga.
+bool feedRawQingping(const char* mac, const uint8_t* data, size_t len, int rssi);
 const char* lastError();
 
 }  // namespace ble

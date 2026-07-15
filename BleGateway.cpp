@@ -63,6 +63,7 @@ void poll() {
     const char* mac = kv.key().c_str();
     const int rssi = kv.value()["r"] | 0;
     const char* hex = kv.value()["d"] | "";
+    const char* uuid = kv.value()["u"] | "fe95";   // starsza bramka slala tylko MiBeacon
     const size_t hl = strlen(hex);
     if (hl < 12 || hl > 64 || (hl & 1)) continue;
 
@@ -74,7 +75,13 @@ void poll() {
       raw[i] = static_cast<uint8_t>((hi << 4) | lo);
     }
     if (!ok) continue;
-    if (ble::feedRaw(mac, raw, hl / 2, rssi)) ++n;
+
+    // Dwa formaty, dwie drogi: Xiaomi szyfruje (bindkey z NVS), Qingping nadaje
+    // otwartym tekstem. Bramka nie rozumie zadnego z nich — tylko przekazuje.
+    const bool fed = (strcmp(uuid, "fdcd") == 0)
+                         ? ble::feedRawQingping(mac, raw, hl / 2, rssi)
+                         : ble::feedRaw(mac, raw, hl / 2, rssi);
+    if (fed) ++n;
   }
 
   gCount = n;
