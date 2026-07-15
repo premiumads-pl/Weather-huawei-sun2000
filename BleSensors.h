@@ -28,7 +28,15 @@ struct Sensor {
   float humidity = 0.f;
   int batteryPct = 0;
   int batteryMv = 0;
-  int rssi = 0;
+  // DWA zrodla, DWA pomiary. Trzymanie jednego "rssi" bylo bledem: bramka i wlasne
+  // radio nadpisywaly sie nawzajem, wiec /api/ble pokazywalo raz jedno, raz drugie —
+  // a narzedzie do pomiaru zasiegu porownywalo Shelly sam ze soba.
+  int rssiOwn = 0;       // z naszego radia (0 = nie slyszymy)
+  int rssiGw = 0;        // z bramki
+  uint32_t ownAt = 0;
+  uint32_t gwAt = 0;
+
+  int rssi = 0;          // zrodlo, ktore dalo ostatni odczyt — do zgodnosci
   uint32_t seenAt = 0;   // millis() ostatniej ramki
   bool valid = false;    // mamy JAKIKOLWIEK odczyt
   // Czujnik nadaje temperature i wilgotnosc w OSOBNYCH ramkach. Bez tych flag

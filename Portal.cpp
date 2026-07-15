@@ -786,6 +786,10 @@ void apiBleList() {
     o["rssi"] = s.rssi;
     o["age_s"] = s.seenAt ? (millis() - s.seenAt) / 1000 : -1;
     o["gw"] = s.viaGw;
+    o["rssi_own"] = s.rssiOwn;      // 0 = nasze radio go nie slyszy
+    o["rssi_gw"] = s.rssiGw;
+    o["own_age"] = s.ownAt ? (millis() - s.ownAt) / 1000 : -1;
+    o["gw_age"] = s.gwAt ? (millis() - s.gwAt) / 1000 : -1;
   }
 
   String out;

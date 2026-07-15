@@ -79,6 +79,8 @@ bool parse181A(const uint8_t* d, size_t len, const char* mac, int rssi) {
     s->batteryPct = bp;
     s->batteryMv = bm;
     s->rssi = rssi;
+    s->rssiOwn = rssi;
+    s->ownAt = millis();
     s->seenAt = millis();
     s->hasTemp = true;
     s->hasHum = true;
@@ -118,6 +120,8 @@ bool parseMiBeacon(const uint8_t* d, size_t len, const char* mac, int rssi, bool
     Sensor* s = slotFor(mac);
     if (s != nullptr) {
       s->rssi = rssi;
+      if (gw) { s->rssiGw = rssi; s->gwAt = millis(); }
+      else    { s->rssiOwn = rssi; s->ownAt = millis(); }
       s->seenAt = millis();
       s->encrypted = true;
       s->needsKey = true;
@@ -177,6 +181,8 @@ bool parseMiBeacon(const uint8_t* d, size_t len, const char* mac, int rssi, bool
     s->encrypted = true;
     s->needsKey = false;
     s->rssi = rssi;
+    if (gw) { s->rssiGw = rssi; s->gwAt = millis(); }
+    else    { s->rssiOwn = rssi; s->ownAt = millis(); }
     s->seenAt = millis();
     s->viaGw = gw;
 
@@ -261,6 +267,8 @@ bool parseQingping(const uint8_t* d, size_t len, const char* mac, int rssi, bool
     s->hasHum = hasH;
     if (batt >= 0) s->batteryPct = batt;
     s->rssi = rssi;
+    if (gw) { s->rssiGw = rssi; s->gwAt = millis(); }
+    else    { s->rssiOwn = rssi; s->ownAt = millis(); }
     s->seenAt = millis();
     s->encrypted = false;
     s->needsKey = false;
