@@ -33,6 +33,43 @@ struct PsramAlloc : ArduinoJson::Allocator {
 };
 PsramAlloc gAlloc;
 
+// Duze odpowiedzi API leca jako Transfer-Encoding: chunked (sprawdzone: /features
+// = chunked, male bledy = Content-Length). http.getStream() oddaje SUROWY strumien,
+// razem z naglowkami porcji ("1f4a\r\n{...") — ArduinoJson slusznie odrzucal to
+// jako InvalidInput. writeToStream() rozpakowuje porcje za nas; zbieramy calosc
+// do PSRAM i dopiero parsujemy.
+// writeToStream() chce Stream*, nie Print* — stad puste metody odczytu.
+class PsramSink : public Stream {
+ public:
+  ~PsramSink() { free(buf_); }
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  void flush() override {}
+  size_t write(uint8_t c) override { return write(&c, 1); }
+  size_t write(const uint8_t* d, size_t n) override {
+    if (len_ + n + 1 > cap_) {
+      size_t want = cap_ ? cap_ * 2 : 16384;
+      while (want < len_ + n + 1) want *= 2;
+      if (want > 400000) return 0;   // bezpiecznik — /features ma ~53 kB
+      char* p = static_cast<char*>(buf_ ? ps_realloc(buf_, want) : ps_malloc(want));
+      if (p == nullptr) return 0;
+      buf_ = p;
+      cap_ = want;
+    }
+    memcpy(buf_ + len_, d, n);
+    len_ += n;
+    buf_[len_] = '\0';
+    return n;
+  }
+  const char* data() const { return buf_ ? buf_ : ""; }
+  size_t size() const { return len_; }
+
+ private:
+  char* buf_ = nullptr;
+  size_t cap_ = 0, len_ = 0;
+};
+
 // base64url bez wypelnienia — tego wymaga PKCE
 void b64url(const uint8_t* in, size_t inLen, char* out, size_t outLen) {
   size_t n = 0;
@@ -159,6 +196,7 @@ bool apiGet(const String& path, JsonDocument& doc, JsonDocument* filter) {
     return false;
   }
   http.addHeader("Authorization", String("Bearer ") + gAccess);
+  http.addHeader("Accept", "application/json");
   const int code = http.GET();
   if (code != 200) {
     snprintf(gErr, sizeof(gErr), "API HTTP %d", code);
@@ -166,12 +204,20 @@ bool apiGet(const String& path, JsonDocument& doc, JsonDocument* filter) {
     return false;
   }
 
-  DeserializationError e =
-      filter ? deserializeJson(doc, http.getStream(), DeserializationOption::Filter(*filter))
-             : deserializeJson(doc, http.getStream());
+  PsramSink sink;
+  const int got = http.writeToStream(&sink);
   http.end();
+  if (got <= 0 || sink.size() == 0) {
+    snprintf(gErr, sizeof(gErr), "pusta odpowiedz (%d)", got);
+    return false;
+  }
+
+  DeserializationError e =
+      filter ? deserializeJson(doc, sink.data(), DeserializationOption::Filter(*filter))
+             : deserializeJson(doc, sink.data());
   if (e != DeserializationError::Ok) {
-    snprintf(gErr, sizeof(gErr), "JSON: %s", e.c_str());
+    snprintf(gErr, sizeof(gErr), "JSON: %s (%u B)", e.c_str(),
+             static_cast<unsigned>(sink.size()));
     return false;
   }
   return true;
