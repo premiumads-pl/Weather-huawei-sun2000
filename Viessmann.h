@@ -63,6 +63,15 @@ bool exchangeCode(const char* code, const char* redirectUri, char* errOut, size_
 // Ile dni zostalo do wygasniecia refresh tokena (180 dni od autoryzacji).
 int daysLeft();
 
+// --- sterowanie ---
+// UWAGA: to ZMIENIA ustawienia ogrzewania w domu. Wolane tylko jawnie, nigdy
+// automatycznie — automat krzywej grzewczej dostanie osobny wlacznik i tryb suchy.
+// Zakres wymuszany przez piec: 2..80 C, krok 1.
+bool setCircuitTemp(int celsius, char* errOut, size_t errLen);
+
+// Ostatnio odczytana nastawa obiegu (do porownania "wyliczam X, piec ma Y").
+float circuitTarget();
+
 // --- dane ---
 bool fetch(Model& out);        // wolane z netTask
 void forget();                 // kasuje tokeny

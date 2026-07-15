@@ -877,6 +877,21 @@ void apiViState() {
   server.send(200, "application/json", out);
 }
 
+// Test zapisu: ustawia nastawe obiegu. Jawne, reczne — zaden automat tego nie wola.
+void apiViSet() {
+  const int t = server.hasArg("t") ? server.arg("t").toInt() : 0;
+  char err[64] = {};
+  const bool ok = vi::setCircuitTemp(t, err, sizeof(err));
+  JsonDocument o;
+  o["ok"] = ok;
+  o["set"] = t;
+  o["was"] = vi::circuitTarget();
+  o["err"] = err;
+  String out;
+  serializeJson(o, out);
+  server.send(200, "application/json", out);
+}
+
 void apiViForget() {
   vi::forget();
   server.send(200, "application/json", "{\"ok\":true}");
@@ -911,6 +926,7 @@ void routes() {
   server.on("/api/vi", HTTP_GET, apiViState);
   server.on("/api/vi/link", HTTP_POST, apiViLink);
   server.on("/api/vi/forget", HTTP_POST, apiViForget);
+  server.on("/api/vi/set", apiViSet);
   server.on("/vicare", apiViCallback);   // tu wraca autoryzacja
   server.onNotFound(sendPage);  // captive portal
   server.begin();

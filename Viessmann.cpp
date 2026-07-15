@@ -184,6 +184,39 @@ bool ensureAccess() {
   return true;
 }
 
+// POST komendy. Zwraca true tylko przy HTTP 200/201 — piec potrafi odpowiedziec
+// 200 z bledem w ciele, wiec sprawdzamy tez tresc.
+bool apiPost(const String& path, const String& body, char* errOut, size_t errLen) {
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(20);
+
+  HTTPClient http;
+  http.setTimeout(20000);
+  if (!http.begin(client, String(kApi) + path)) {
+    snprintf(errOut, errLen, "brak polaczenia");
+    return false;
+  }
+  http.addHeader("Authorization", String("Bearer ") + gAccess);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Accept", "application/vnd.siren+json");
+
+  const int code = http.POST(body);
+  String resp = http.getString();
+  http.end();
+
+  if (code != 200 && code != 201 && code != 204) {
+    JsonDocument e;
+    const char* msg = "?";
+    if (deserializeJson(e, resp) == DeserializationError::Ok) {
+      msg = e["message"] | e["error"] | "?";
+    }
+    snprintf(errOut, errLen, "HTTP %d: %.30s", code, msg);
+    return false;
+  }
+  return true;
+}
+
 bool apiGet(const String& path, JsonDocument& doc, JsonDocument* filter) {
   WiFiClientSecure client;
   client.setInsecure();
@@ -248,6 +281,8 @@ bool ensureIds() {
   return true;
 }
 
+float gCircuitTarget = 0.f;
+
 float propF(JsonObjectConst f, const char* prop) {
   return f["properties"][prop]["value"] | 0.0f;
 }
@@ -294,6 +329,39 @@ int daysLeft() {
   const int32_t used = static_cast<int32_t>(now - settings().viAuthAt) / 86400;
   const int32_t left = static_cast<int32_t>(kRefreshTtlDays) - used;
   return left < 0 ? 0 : left;
+}
+
+float circuitTarget() {
+  return gCircuitTarget;
+}
+
+bool setCircuitTemp(int celsius, char* errOut, size_t errLen) {
+  if (celsius < 2 || celsius > 80) {
+    snprintf(errOut, errLen, "poza zakresem 2..80");
+    return false;
+  }
+  if (!settings().hasViessmann()) {
+    snprintf(errOut, errLen, "piec nieskonfigurowany");
+    return false;
+  }
+  if (!ensureAccess() || !ensureIds()) {
+    snprintf(errOut, errLen, "%s", gErr);
+    return false;
+  }
+
+  String path = String("/features/installations/") + settings().viInstallation + "/gateways/" +
+                settings().viGateway +
+                "/devices/0/features/heating.circuits.0.operating.programs.normal/commands/"
+                "setTemperature";
+  char body[48];
+  snprintf(body, sizeof(body), "{\"targetTemperature\":%d}", celsius);
+
+  if (!apiPost(path, body, errOut, errLen)) {
+    LOG("Piec: ZAPIS nastawy %d C PADL: %s", celsius, errOut);
+    return false;
+  }
+  LOG("Piec: zapisano nastawe obiegu %d C", celsius);
+  return true;
 }
 
 void forget() {
@@ -355,6 +423,7 @@ bool fetch(Model& out) {
       snprintf(m.circuitMode, sizeof(m.circuitMode), "%s", f["properties"]["value"]["value"] | "");
     } else if (strcmp(name, "heating.circuits.0.operating.programs.normal") == 0) {
       m.circuitTargetC = propF(f, "temperature");
+      gCircuitTarget = m.circuitTargetC;
     } else if (strcmp(name, "heating.gas.consumption.summary.dhw") == 0) {
       m.gasDhwM3 = propF(f, "currentDay");
     } else if (strcmp(name, "heating.gas.consumption.summary.heating") == 0) {
