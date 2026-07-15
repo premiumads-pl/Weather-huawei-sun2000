@@ -205,15 +205,27 @@ bool apiPost(const String& path, const String& body, char* errOut, size_t errLen
   String resp = http.getString();
   http.end();
 
+  // KLUCZOWE: Viessmann odsyla HTTP 200 nawet gdy komenda zostala ODRZUCONA —
+  // prawdziwy status siedzi w ciele ("statusCode": 400/502...). Sprawdzanie samego
+  // kodu HTTP dawalo falszywy sukces: meldowalem "zapisano", a piec nie drgnal.
+  // PyViCare broni sie przed tym tak samo (__handle_command_error).
+  JsonDocument e;
+  const bool parsed = deserializeJson(e, resp) == DeserializationError::Ok;
+  const int inner = parsed ? (e["statusCode"] | 0) : 0;
+
   if (code != 200 && code != 201 && code != 204) {
-    JsonDocument e;
-    const char* msg = "?";
-    if (deserializeJson(e, resp) == DeserializationError::Ok) {
-      msg = e["message"] | e["error"] | "?";
-    }
-    snprintf(errOut, errLen, "HTTP %d: %.30s", code, msg);
+    const char* msg = parsed ? (e["message"] | e["error"] | "?") : "?";
+    snprintf(errOut, errLen, "HTTP %d: %.34s", code, msg);
+    LOG("Piec: komenda odrzucona, HTTP %d, cialo: %.120s", code, resp.c_str());
     return false;
   }
+  if (inner >= 400) {
+    const char* msg = e["message"] | e["errorType"] | "?";
+    snprintf(errOut, errLen, "piec: %.40s", msg);
+    LOG("Piec: komenda odrzucona (HTTP 200, statusCode %d): %.140s", inner, resp.c_str());
+    return false;
+  }
+  LOG("Piec: komenda OK, odpowiedz: %.100s", resp.c_str());
   return true;
 }
 
