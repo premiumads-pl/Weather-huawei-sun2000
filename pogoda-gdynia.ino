@@ -33,6 +33,7 @@
 #include "BleSensors.h"
 #include "OtaGuard.h"
 #include "RadarMap.h"
+#include "GasMeter.h"
 #include "Viessmann.h"
 #include "RoomHistory.h"
 #include "Touch.h"
@@ -63,6 +64,9 @@ PvHistory gHist{};
 RoomHistory gRooms{};
 vi::Model gVi{};
 vi::Model uiVi{};
+BurnerHistory gBurner{};
+BurnerHistory uiBurner{};
+GasHistory gGas{};
 RoomHistory uiRooms{};
 FlightModel gFlights{};
 volatile bool gWifiOk = false;
@@ -372,6 +376,20 @@ static void netTask(void*) {
         diag().viErr[0] = '\0';
         diag().viDhwC = tmp.dhwTempC;
         diag().viSupplyC = tmp.supplyTempC;
+
+        // Profil doby palnika + wlasny log zuzycia gazu. Log jest wlasny, bo
+        // liczniki miesieczne/roczne pieca sa zepsute (currentMonth < lastSevenDays,
+        // currentYear = 5.3 m3 po 4 latach) — ufamy tylko currentDay.
+        const time_t tt = time(nullptr);
+        if (tt > 1700000000) {
+          struct tm tmv{};
+          localtime_r(&tt, &tmv);
+          gBurner.push(tmv.tm_yday, tmv.tm_hour, tmv.tm_min, tmp.modulationPct,
+                       tmp.burnerActive);
+          if (gGas.advance(static_cast<uint32_t>(tt))) {
+            gGas.push(tmp.gasDhwM3 + tmp.gasHeatM3);
+          }
+        }
       } else {
         gVi.valid = false;
         snprintf(diag().viErr, sizeof(diag().viErr), "%s", tmp.err);
@@ -675,6 +693,7 @@ void setup() {
   uiRooms = gRooms;
   ui.setRoomHistory(&uiRooms);
   ui.setBoiler(&uiVi);
+  ui.setBurnerHistory(&uiBurner);
 
   if (!settings().hasWifi()) {
     portal::beginAp();
@@ -808,6 +827,7 @@ void loop() {
   uiHist = gHist;
   uiRooms = gRooms;
   uiVi = gVi;
+  uiBurner = gBurner;
   uiFlights = gFlights;
   xSemaphoreGive(gLock);
 

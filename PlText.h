@@ -3,6 +3,7 @@
 #include <TFT_eSPI.h>
 #include <pgmspace.h>
 
+#include "PlFont10.h"
 #include "PlFont14.h"
 #include "PlFont18.h"
 
@@ -15,6 +16,10 @@ struct FontSet {
   uint8_t count;
   int ascent;
 };
+
+inline FontSet font10() {
+  return {PlFont10Bitmaps, PlFont10Glyphs, PlFont10Codepoints, PlFont10Count, PlFont10Ascent};
+}
 
 inline FontSet font14() {
   return {PlFont14Bitmaps, PlFont14Glyphs, PlFont14Codepoints, PlFont14Count, PlFont14Ascent};

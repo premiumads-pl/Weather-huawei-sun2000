@@ -10,6 +10,7 @@
 #include "Config.h"
 #include "MapData.h"
 #include "Moon.h"
+#include "GasMeter.h"
 #include "Viessmann.h"
 #include "MapDataWide.h"
 #include "RadarMap.h"
@@ -111,28 +112,22 @@ void plRight(TFT_eSPI& s, const pltxt::FontSet& f, const char* t, int right, int
   plStr(s, f, t, right - pltxt::stringWidth(f, t), baseline, c);
 }
 
+// Male podpisy. Do v81 szly przez wbudowany GLCD (font 1) — a ten nie ma polskich
+// znakow ani stopnia, wiec w kolko wracalo "CIEP A WODA", "52.4[]C", "m-|".
+// Teraz to PlFont10 z pelnym zestawem. GLCD zniknal z projektu i blad razem z nim.
+// Kotwica zostaje u GORY (jak TL_DATUM), zeby nie przestawiac 58 miejsc w ukladzie.
 void gl(TFT_eSPI& s, const char* t, int x, int y, uint16_t c) {
-  s.setTextFont(1);
-  s.setTextSize(1);
-  s.setTextDatum(TL_DATUM);
-  s.setTextColor(c);
-  s.drawString(t, x, y);
+  pltxt::drawString(s, pltxt::font10(), t, x, y + PlFont10Ascent, c, c);
 }
 
 void glCenter(TFT_eSPI& s, const char* t, int cx, int y, uint16_t c) {
-  s.setTextFont(1);
-  s.setTextSize(1);
-  s.setTextDatum(TC_DATUM);
-  s.setTextColor(c);
-  s.drawString(t, cx, y);
+  const int w = pltxt::stringWidth(pltxt::font10(), t);
+  pltxt::drawString(s, pltxt::font10(), t, cx - w / 2, y + PlFont10Ascent, c, c);
 }
 
 void glRight(TFT_eSPI& s, const char* t, int right, int y, uint16_t c) {
-  s.setTextFont(1);
-  s.setTextSize(1);
-  s.setTextDatum(TR_DATUM);
-  s.setTextColor(c);
-  s.drawString(t, right, y);
+  const int w = pltxt::stringWidth(pltxt::font10(), t);
+  pltxt::drawString(s, pltxt::font10(), t, right - w, y + PlFont10Ascent, c, c);
 }
 
 int bigStr(TFT_eSPI& s, const GFXfont* f, const char* t, int x, int baseline, uint16_t c) {
@@ -2089,7 +2084,7 @@ void WeatherUi::drawViewBoiler(TFT_eSPI& spr, int ox, float t) {
     char value[12];
     const char* unit;
     uint16_t color;
-  } cards[4];
+  } cards[3];
 
   cards[0] = {"Gaz dziś", {0}, "m³", col::PV_SOLAR};
   snprintf(cards[0].value, sizeof(cards[0].value), "%.1f", b.gasDhwM3 + b.gasHeatM3);
@@ -2100,41 +2095,62 @@ void WeatherUi::drawViewBoiler(TFT_eSPI& spr, int ox, float t) {
   cards[2] = {"Prąd", {0}, "kWh", col::PV_HOUSE};
   snprintf(cards[2].value, sizeof(cards[2].value), "%.1f", b.powerKwh);
 
-  cards[3] = {"Palnik", {0}, "h", col::TEXT_DIM};
-  snprintf(cards[3].value, sizeof(cards[3].value), "%lu",
-           static_cast<unsigned long>(b.burnerHours));
+  // Licznik uruchomien i sila WiFi pieca — wyrzucone. Ekran ma pokazywac to, co
+  // sprawdza sie codziennie, a nie wszystko, co API potrafi oddac.
 
-  const int cy0 = 131, chh = 45;
-  for (int i = 0; i < 4; ++i) {
-    const int x = ox + 6 + i * 78;
+  const int cy0 = 128, chh = 40;
+  for (int i = 0; i < 3; ++i) {
+    const int x = ox + 8 + i * 102;
     const int grow = static_cast<int>(chh * clampf(e * 1.3f - i * 0.08f, 0.f, 1.f));
     if (grow < 4) continue;
-    spr.fillRoundRect(x, cy0 + (chh - grow), 74, grow, 6, col::BG_CARD);
+    spr.fillRoundRect(x, cy0 + (chh - grow), 98, grow, 6, col::BG_CARD);
     if (grow < chh - 2) continue;
     spr.fillRoundRect(x, cy0, 3, chh, 1, cards[i].color);
-    plStr(spr, PLF14, cards[i].label, x + 8, cy0 + 15, col::TEXT_DIM);
-    const int w2 = pltxt::drawString(spr, PLF18, cards[i].value, x + 8, cy0 + 40,
+    plStr(spr, PLF14, cards[i].label, x + 9, cy0 + 15, col::TEXT_DIM);
+    const int w2 = pltxt::drawString(spr, PLF18, cards[i].value, x + 9, cy0 + 36,
                                      cards[i].color, cards[i].color);
-    gl(spr, cards[i].unit, x + 11 + w2, cy0 + 33, col::TEXT_MUTE);
+    gl(spr, cards[i].unit, x + 12 + w2, cy0 + 26, col::TEXT_MUTE);
   }
 
-  // --- pasek dolny: uruchomienia + wiek autoryzacji ---
-  const int by = 196;
-  char st[40];
-  snprintf(st, sizeof(st), "uruchomień %lu", static_cast<unsigned long>(b.burnerStarts));
-  plStr(spr, PLF14, st, ox + 12, by, col::TEXT_MUTE);
+  drawGasChart(spr, ox, e);
 
+  // Refresh token zyje 180 dni — bez ostrzezenia piec pewnego dnia po prostu
+  // znika z ekranu i nikt nie wie dlaczego.
   const int dleft = vi::daysLeft();
   if (dleft >= 0 && dleft < 21) {
-    // Refresh token zyje 180 dni. Bez ostrzezenia piec pewnego dnia po prostu
-    // zniknalby z ekranu i nikt by nie wiedzial dlaczego.
     char au[32];
     snprintf(au, sizeof(au), "autoryzacja: %d dni!", dleft);
-    plRight(spr, PLF14, au, ox + W - 12, by, col::ERR);
-  } else {
-    char wf[20];
-    snprintf(wf, sizeof(wf), "piec %d dBm", b.wifiRssi);
-    plRight(spr, PLF14, wf, ox + W - 12, by, col::TEXT_MUTE);
+    plRight(spr, PLF14, au, ox + W - 12, 196, col::ERR);
+  }
+}
+
+// Profil doby: modulacja palnika. Uklad i skala jak sparkline na ekranie PV —
+// ten sam jezyk wizualny dla "ile urzadzenie teraz pracuje".
+void WeatherUi::drawGasChart(TFT_eSPI& spr, int ox, float e) {
+  static const BurnerHistory kEmpty{};
+  const BurnerHistory& h = burner_ ? *burner_ : kEmpty;
+
+  gl(spr, "PRACA PALNIKA DZIŚ", ox + 12, 172, col::TEXT_MUTE);
+  glRight(spr, "modulacja %", ox + W - 12, 172, col::TEXT_MUTE);
+
+  const int sx = ox + 12, sy = 184, sw = W - 24, sh = 20;
+  spr.fillRoundRect(sx, sy, sw, sh, 3, col::CHART_SPARK_BG);
+
+  const int s0 = 0, s1 = BurnerHistory::SLOTS - 1;   // cala doba
+  const int base = sy + sh - 1;
+
+  for (int s = s0; s <= s1; ++s) {
+    if (!h.filled[s] || h.mod[s] == 0) continue;
+    const int x = sx + ((s - s0) * (sw - 2)) / (s1 - s0);
+    int hh = static_cast<int>((h.mod[s] / 100.f) * (sh - 3) * e);
+    if (hh < 1) hh = 1;
+    // Ten sam zolty co "Gaz dziś" — kolor laczy liczbe z wykresem.
+    spr.drawFastVLine(x, base - hh, hh, col::PV_SOLAR);
+    spr.drawFastVLine(x + 1, base - hh, hh, col::PV_SOLAR_DK);
+  }
+  for (int hh = 6; hh <= 18; hh += 6) {
+    const int x = sx + ((hh * 6 - s0) * (sw - 2)) / (s1 - s0);
+    spr.drawFastVLine(x, sy + sh - 3, 3, col::GRID_HI);
   }
 }
 

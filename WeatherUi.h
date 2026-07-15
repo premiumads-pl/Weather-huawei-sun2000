@@ -80,6 +80,7 @@ class WeatherUi {
   // do jednego widoku, zasmiecaloby cztery sygnatury.
   void setRoomHistory(const struct RoomHistory* rh) { rooms_ = rh; }
   void setBoiler(const vi::Model* b) { boiler_ = b; }
+  void setBurnerHistory(const struct BurnerHistory* h) { burner_ = h; }
   void viewState(int& cur, int& pin) const {
     cur = view_;
     pin = pinned_;
@@ -151,6 +152,7 @@ class WeatherUi {
   uint8_t view_ = 0;
   const struct RoomHistory* rooms_ = nullptr;
   const vi::Model* boiler_ = nullptr;
+  const struct BurnerHistory* burner_ = nullptr;
   int8_t pinned_ = -1;  // >=0: ekran zablokowany z panelu WWW
   uint8_t prevView_ = 0;
   uint32_t viewStart_ = 0;
@@ -194,6 +196,7 @@ class WeatherUi {
   void drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs);
   void drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
   void drawViewBoiler(TFT_eSPI& spr, int ox, float t);
+  void drawGasChart(TFT_eSPI& spr, int ox, float e);
   void drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs, uint32_t heapNow);
   void drawAlert(TFT_eSPI& spr, float t);
   // Podtytuł (sub) niesie powód ciszy falownika — noc, nie awaria.

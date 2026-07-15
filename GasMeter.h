@@ -84,3 +84,42 @@ struct MeterRead {
   uint32_t day = 0;    // epoch/86400
   float m3 = 0.f;      // stan licznika, z czescia dziesietna
 };
+
+
+// Profil doby palnika — dokladnie jak PvHistory, tylko zamiast watow modulacja.
+//
+// DLACZEGO MODULACJA, A NIE GAZ:
+// Piec nie oddaje chwilowego przeplywu gazu. Ma currentDay z rozdzielczoscia
+// 0.1 m3 — przy odpycie co 3 min przyrost to ~0.002 m3, piecdziesiat razy ponizej
+// rozdzielczosci. Wykres z tego bylby schodkami z szumu. Modulacja palnika (0-100%)
+// to za to jego realna moc chwilowa — odpowiednik kW z fotowoltaiki. Pole pod
+// wykresem = zuzyty gaz.
+struct BurnerHistory {
+  static constexpr int SLOTS = 144;   // doba co 10 minut
+  uint8_t mod[SLOTS] = {};            // 0..100 %
+  bool filled[SLOTS] = {};
+  int day = -1;                       // tm_yday — kasujemy o polnocy, jak PV
+
+  void reset(int yday) {
+    for (int i = 0; i < SLOTS; ++i) { mod[i] = 0; filled[i] = false; }
+    day = yday;
+  }
+
+  void push(int yday, int hour, int minute, int modPct, bool active) {
+    if (yday != day) reset(yday);
+    const int slot = (hour * 60 + minute) / 10;
+    if (slot < 0 || slot >= SLOTS) return;
+    // W slocie moze byc kilka probek — bierzemy najwyzsza, zeby krotki zaplon
+    // nie zniknal miedzy odpytami.
+    const uint8_t v = active ? static_cast<uint8_t>(modPct < 0 ? 0 : (modPct > 100 ? 100 : modPct))
+                             : 0;
+    if (!filled[slot] || v > mod[slot]) mod[slot] = v;
+    filled[slot] = true;
+  }
+
+  uint8_t peak() const {
+    uint8_t m = 0;
+    for (int i = 0; i < SLOTS; ++i) if (filled[i] && mod[i] > m) m = mod[i];
+    return m;
+  }
+};
