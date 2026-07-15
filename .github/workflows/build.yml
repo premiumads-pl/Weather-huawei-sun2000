@@ -1,12 +1,18 @@
 name: Build firmware
 
 # Compiles the sketch exactly like tools/release.sh does, and enforces the
-# same static-RAM ceiling. This board has no PSRAM, so a build that quietly
-# grows past the ceiling leaves too little heap for TLS/OTA — see
-# CONTRIBUTING.md for why that's a "won't boot its own updater" bug, not a
-# style nitpick.
+# same static-RAM ceiling. A build that quietly grows past the ceiling leaves
+# too little heap for TLS/OTA — see CONTRIBUTING.md for why that's a
+# "won't boot its own updater" bug, not a style nitpick.
+#
+# Only on pull requests and manual runs. Pushes to main come from
+# tools/release.sh, which already compiles and enforces the same ceiling
+# locally — re-running it here duplicated the work and mailed the maintainer
+# on every single release.
 
-on: [push, pull_request]
+on:
+  pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: build-${{ github.ref }}
@@ -47,11 +53,17 @@ jobs:
       # build flags. tools/release.sh assumes this has already been done
       # once on the maintainer's machine (see README "Wiring" section for
       # the manual step); CI has to do it fresh every run.
+      # Deliberately no jq on `lib list --format json`: that output is a dict
+      # ({"installed_libraries": [...]}) on arduino-cli 1.5 but a bare array on
+      # other versions, so the query broke on CI while working locally. The
+      # sketchbook path is stable across versions.
       - name: Drop in this repo's TFT_eSPI User_Setup.h
         run: |
-          LIB_DIR=$(arduino-cli lib list TFT_eSPI --format json | jq -r '.installed_libraries[0].library.install_dir')
-          echo "TFT_eSPI installed at: $LIB_DIR"
+          USER_DIR=$(arduino-cli config get directories.user)
+          LIB_DIR="$USER_DIR/libraries/TFT_eSPI"
+          test -d "$LIB_DIR" || { echo "::error::TFT_eSPI not found at $LIB_DIR"; exit 1; }
           cp User_Setup.h "$LIB_DIR/User_Setup.h"
+          echo "User_Setup.h -> $LIB_DIR"
 
       - name: Compile
         run: |
@@ -66,7 +78,7 @@ jobs:
             exit 1
           fi
           if [ "$STATIC" -gt "$RAM_LIMIT_BYTES" ]; then
-            echo "::error::Static RAM ${STATIC} B exceeds the ${RAM_LIMIT_BYTES} B ceiling. With no PSRAM this leaves too little heap for TLS/OTA (see CONTRIBUTING.md)."
+            echo "::error::Static RAM ${STATIC} B exceeds the ${RAM_LIMIT_BYTES} B ceiling — too little heap left for TLS/OTA (see CONTRIBUTING.md)."
             exit 1
           fi
 
