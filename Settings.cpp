@@ -55,7 +55,7 @@ void Settings::load() {
   strncpy(viGateway, vg.c_str(), sizeof(viGateway) - 1);
 
   // czujniki BLE — bindkey jako blob (16 B), nigdy jako tekst w logach/API
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < BLE_SLOTS; ++i) {
     char k[8];
     snprintf(k, sizeof(k), "b%dmac", i);
     String bm = prefs.getString(k, "");
@@ -170,7 +170,7 @@ bool Settings::meterDel(uint32_t day) {
 }
 
 const Settings::BleCfg* Settings::bleFind(const char* mac) const {
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < BLE_SLOTS; ++i) {
     if (ble[i].mac[0] != '\0' && strcasecmp(ble[i].mac, mac) == 0) return &ble[i];
   }
   return nullptr;
@@ -182,14 +182,14 @@ bool Settings::bleSet(const char* mac, const char* name, const char* keyHex) {
   if (mac == nullptr || mac[0] == '\0') return false;
 
   int slot = -1;
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < BLE_SLOTS; ++i) {
     if (strcasecmp(ble[i].mac, mac) == 0) {
       slot = i;
       break;
     }
   }
   if (slot < 0) {
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < BLE_SLOTS; ++i) {
       if (ble[i].mac[0] == '\0') {
         slot = i;
         break;

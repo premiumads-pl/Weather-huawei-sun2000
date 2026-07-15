@@ -17,7 +17,9 @@
 
 namespace ble {
 
-constexpr int MAX_SENSORS = 4;
+// 8, nie 4: uzytkownik ma 2 czujniki i dokłada kolejne 2, a obce nadajniki w bloku
+// tez potrafia zajac slot. Kazdy slot to ~60 B — nie ma po co oszczedzac.
+constexpr int MAX_SENSORS = 8;
 
 struct Sensor {
   char mac[18] = {};

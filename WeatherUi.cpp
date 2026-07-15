@@ -2210,60 +2210,72 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
   }
 
   // ------------------------------------------------------------- kafelki ------
-  // Karta ma 150 px szerokosci — nie zmiesci sie w niej wiecej niz: nazwa,
-  // wilgotnosc w rogu, wielka temperatura i JEDNO zdanie o roznicy. Wczesniej
-  // upchalem tu tez podpisy i wszystko na siebie nachodzilo.
+  // Uklad zalezy od liczby czujnikow. Zmierzone: przy 4 kafelkach w jednym rzedzie
+  // kazdy ma 69 px, a sama liczba "23.8" w duzej czcionce potrzebuje ~90 px.
+  // Wiec: 1-2 czujniki -> rzad z wielka liczba, 3-4 -> siatka 2x2 mniejsza czcionka.
+  const bool grid = n > 2;
+  const int cols = grid ? 2 : n;
+  const int rows = grid ? 2 : 1;
   const int gap = 8;
-  const int cw = (W - 20 - (n - 1) * gap) / n;
-  const int cy = 52, ch = 80;
+  const int cw = (W - 20 - (cols - 1) * gap) / cols;
+  const int ch = grid ? 38 : 80;
+  const int cy = 54;
 
   for (int i = 0; i < n; ++i) {
     const Room& r = rooms[i];
-    const int x = ox + 10 + i * (cw + gap);
+    const int cxi = i % cols, cyi = i / cols;
+    const int x = ox + 10 + cxi * (cw + gap);
+    const int y = cy + cyi * (ch + 6);
     const uint16_t rc = roomCol[r.slot];
 
-    const int grow = static_cast<int>(ch * clampf(e * 1.6f - i * 0.18f, 0.f, 1.f));
+    const int grow = static_cast<int>(ch * clampf(e * 1.6f - i * 0.14f, 0.f, 1.f));
     if (grow < 6) continue;
-    spr.fillRoundRect(x, cy + (ch - grow), cw, grow, 8, col::BG_CARD);
+    spr.fillRoundRect(x, y + (ch - grow), cw, grow, 8, col::BG_CARD);
     if (grow < ch - 2) continue;
 
-    const bool stale = r.ageS > 900;  // 15 minut ciszy = dane nieaktualne
-    spr.fillRoundRect(x, cy, 3, ch, 1, stale ? col::TEXT_MUTE : rc);
-    plStr(spr, PLF14, r.name, x + 10, cy + 18, stale ? col::TEXT_MUTE : col::TEXT);
+    const bool stale = r.ageS > 900;   // 15 minut ciszy = dane nieaktualne
+    spr.fillRoundRect(x, y, 3, ch, 1, stale ? col::TEXT_MUTE : rc);
+    plStr(spr, PLF14, r.name, x + 10, y + 15, stale ? col::TEXT_MUTE : col::TEXT);
 
-    // wilgotnosc — prawy gorny rog, zeby nie wchodzila w duza liczbe
     char hs[10];
     snprintf(hs, sizeof(hs), r.hasHum ? "%.0f%%" : "--", r.hum);
     const uint16_t hc = !r.hasHum ? col::TEXT_MUTE
                         : (r.hum > 65.f || r.hum < 30.f) ? col::WARN : col::PV_HOUSE;
-    plRight(spr, PLF18, hs, x + cw - 10, cy + 20, hc);
+    plRight(spr, PLF18, hs, x + cw - 10, y + (grid ? 32 : 20), hc);
 
-    // temperatura — kreska, dopoki nie doszla ramka (nie zero!)
     char v[12];
     snprintf(v, sizeof(v), r.hasTemp ? "%.1f" : "--", r.tempC);
-    const int vw = bigStr(spr, &FreeSansBold24pt7b, v, x + 10, cy + 58,
-                          r.hasTemp && !stale ? tempColor(r.tempC) : col::TEXT_MUTE);
-    plStr(spr, PLF14, "°C", x + 14 + vw, cy + 40, col::TEXT_DIM);
+    const uint16_t tc = r.hasTemp && !stale ? tempColor(r.tempC) : col::TEXT_MUTE;
 
-    // Roznica wzgledem dworu — PELNYM ZDANIEM. Samo "+8.2°" nikomu nic nie mowilo.
-    if (stale) {
-      plStr(spr, PLF14, "brak łączności", x + 10, cy + 74, col::TEXT_MUTE);
-    } else if (haveOut && r.hasTemp) {
-      const float d = r.tempC - w.current.tempC;
-      char ds[28];
-      snprintf(ds, sizeof(ds), d >= 0 ? "cieplej o %.1f°" : "chłodniej o %.1f°",
-               d >= 0 ? d : -d);
-      plStr(spr, PLF14, ds, x + 10, cy + 74, d > 0 ? col::PV_IMPORT : col::PV_HOUSE);
+    if (grid) {
+      // ciasno — temperatura w PLF18 zamiast wielkiej czcionki
+      const int vw = pltxt::drawString(spr, PLF18, v, x + 10, y + 32, tc, tc);
+      gl(spr, "°C", x + 13 + vw, y + 22, col::TEXT_DIM);
+    } else {
+      const int vw = bigStr(spr, &FreeSansBold24pt7b, v, x + 10, y + 58, tc);
+      plStr(spr, PLF14, "°C", x + 14 + vw, y + 40, col::TEXT_DIM);
+      if (stale) {
+        plStr(spr, PLF14, "brak łączności", x + 10, y + 74, col::TEXT_MUTE);
+      } else if (haveOut && r.hasTemp) {
+        const float d = r.tempC - w.current.tempC;
+        char ds[28];
+        snprintf(ds, sizeof(ds), d >= 0 ? "cieplej o %.1f°" : "chłodniej o %.1f°",
+                 d >= 0 ? d : -d);
+        plStr(spr, PLF14, ds, x + 10, y + 74, d > 0 ? col::PV_IMPORT : col::PV_HOUSE);
+      }
     }
   }
 
+  // Przy siatce wykres 24 h zaczyna sie nizej — kafelki zjadaja dwa rzedy.
   // ------------------------------------------------- wykres z ostatnich 24 h ---
   // Dwie osie: lewa = temperatura (skala dobrana do danych), prawa = wilgotnosc
   // (stale 20-90%, bo w domu i tak nie wychodzi poza ten zakres).
-  gl(spr, "GRUBA = TEMPERATURA    CIENKA = WILGOTNOSC", ox + 32, 138, col::TEXT_MUTE);
+  // Przy siatce 2x2 kafelki siegaja y=136, wiec wykres schodzi nizej i jest nizszy.
+  const int chartTop = grid ? 152 : 138;
+  gl(spr, "GRUBA = TEMPERATURA    CIENKA = WILGOTNOSC", ox + 32, chartTop, col::TEXT_MUTE);
 
   const int gx0 = ox + 32, gx1 = ox + W - 34;
-  const int gy0 = 150, gy1 = 190;
+  const int gy0 = chartTop + 12, gy1 = 190;
   const float hMin = 20.f, hMax = 90.f;
 
   float tMin = 1e9f, tMax = -1e9f;

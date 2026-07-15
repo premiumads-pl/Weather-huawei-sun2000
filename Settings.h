@@ -38,7 +38,7 @@ struct Settings {
     char name[24] = {};  // "Łazienka Góra" — UTF-8, wiec 2 B na znak z ogonkiem
     uint8_t key[16] = {};
     bool hasKey = false;
-  } ble[4];
+  } ble[8];
 
   // --- Viessmann (piec) ---
   // Client ID jest PUBLICZNY (siedzi w kazdej instalacji PyViCare) — ale refresh
@@ -65,6 +65,7 @@ struct Settings {
   // Bramka BLE (Shelly) — druga para uszu dla czujnikow poza zasiegiem wyswietlacza.
   char bleGwHost[24] = {};
 
+  static constexpr int BLE_SLOTS = 8;
   const BleCfg* bleFind(const char* mac) const;
   bool bleSet(const char* mac, const char* name, const char* keyHex);  // keyHex: 32 znaki lub ""
 
