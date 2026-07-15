@@ -673,7 +673,6 @@ void setup() {
   pvHistoryLoad(gHist);
   roomHistoryLoad(gRooms);
   uiRooms = gRooms;
-  uiVi = gVi;
   ui.setRoomHistory(&uiRooms);
   ui.setBoiler(&uiVi);
 
@@ -808,6 +807,7 @@ void loop() {
   uiPv = gPv;
   uiHist = gHist;
   uiRooms = gRooms;
+  uiVi = gVi;
   uiFlights = gFlights;
   xSemaphoreGive(gLock);
 
