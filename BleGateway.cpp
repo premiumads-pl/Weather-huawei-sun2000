@@ -38,7 +38,9 @@ void poll() {
   char url[80];
   snprintf(url, sizeof(url), "http://%s/script/1/ble", settings().bleGwHost);
   if (!http.begin(client, url)) {
-    snprintf(gErr, sizeof(gErr), "brak polaczenia");
+    // "nie odpowiada", nie "brak polaczenia" — na ekranie statystyk przy nazwie
+    // "Bramka" zostaje 76 px, a tamten napis mial 77. Przegrywal o jeden piksel.
+    snprintf(gErr, sizeof(gErr), "nie odpowiada");
     LOG("Bramka BLE: nie moge otworzyc %s", url);
     return;
   }

@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <ctime>
 
+#include "BleGateway.h"
 #include "Colors.h"
 #include "Config.h"
 #include "MapData.h"
@@ -2407,44 +2408,100 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
     const char* err;
     bool off;
     const char* offMsg;
-  } src[5] = {
+  } src[8] = {
+      // Kolejnosc jest wierszami: {lewa, prawa}, {lewa, prawa}...
       {"Pogoda", d.weatherOkAt, d.weatherErr, false, ""},
-      {"Falownik", d.pvOkAt, d.pvErr, d.pvAsleep, "uśpiony (noc)"},
       {"Radar", d.radarOkAt, d.radarErr, false, ""},
+
+      {"Falownik", d.pvOkAt, d.pvErr, d.pvAsleep, "uśpiony"},
+      // Piec byl mierzony od poczatku (viOkAt/viErr) i wystawiany w /api/state,
+      // ale nikt go tu nie rysowal.
+      {"Piec", d.viOkAt, d.viErr, !settings().hasViessmann(), "wyłączony"},
+
       {"Samoloty", d.flightOkAt, d.flightErr, false, ""},
       {"MQTT", d.mqttOkAt, d.mqttErr, !settings().hasMqtt(), "wyłączony"},
+
+      {"Bramka", blegw::lastOkAt(), blegw::lastError(),
+       settings().bleGwHost[0] == '\0', "wyłączona"},
+      // OTA: err zawsze puste. otaMsg NIE nadaje sie na blad — tym samym kanalem
+      // leci postep ("Pobieram nową wersję"), wiec czerwona kropka zapalalaby sie
+      // w trakcie poprawnej aktualizacji. Tu wystarczy wiek ostatniego sprawdzenia.
+      {"OTA", d.otaOkAt, "", false, ""},
   };
 
-  // 5 wierszy po 15 px zamiast 4 po 17 — karty niżej muszą się zmieścić.
-  for (int i = 0; i < 5; ++i) {
-    const int y0 = 52 + i * 15;
-    if (e < (i + 1) * 0.11f) continue;
+  // Dwie kolumny po 148 px zamiast jednej na 300 — w jednym rzedzie "Pogoda" i
+  // "OK 8 min temu" zostawialy w srodku ~150 px pustki. 4 wiersze po 17 px koncza
+  // sie na y=120, karty zaczynaja sie na 128.
+  const int cellW = (W - 24) / 2;
+  for (int i = 0; i < 8; ++i) {
+    const int cx = ox + 8 + (i % 2) * (cellW + 8);
+    const int y0 = 52 + (i / 2) * 17;
+    if (e < (i + 1) * 0.07f) continue;
 
     const bool off = src[i].off;
     const bool bad = !off && src[i].err[0] != '\0';
     const bool never = !off && src[i].okAt == 0;
     const uint16_t dot = off ? col::TEXT_MUTE : (bad ? col::ERR : (never ? col::WARN : col::OK));
 
-    spr.fillCircle(ox + 12, y0 + 6, 4, dot);
-    plStr(spr, PLF14, src[i].name, ox + 24, y0 + 11, off ? col::TEXT_MUTE : col::TEXT);
+    spr.fillCircle(cx + 5, y0 + 6, 4, dot);
+    const int nameW =
+        pltxt::drawString(spr, PLF14, src[i].name, cx + 15, y0 + 11,
+                          off ? col::TEXT_MUTE : col::TEXT,
+                          off ? col::TEXT_MUTE : col::TEXT);
 
+    // Ile miejsca zostalo na status PO nazwie. Bez tego dluzszy blad ("brak
+    // polaczenia") wchodzil w nazwe — na 148 px nie ma marginesu na zgadywanie.
+    const int avail = cellW - 19 - nameW - 4;
+
+    const char* txt = nullptr;
+    uint16_t tc = col::TEXT_DIM;
     if (off) {
-      // PlFont, nie GLCD: "wyłączony" i "uśpiony" mają polskie znaki, których
-      // GLCD nie zna (wychodziło "wy czony").
-      plRight(spr, PLF14, src[i].offMsg, ox + W - 10, y0 + 11, col::TEXT_MUTE);
+      txt = src[i].offMsg;
+      tc = col::TEXT_MUTE;
     } else if (bad) {
-      glRight(spr, src[i].err, ox + W - 10, y0 + 3, col::ERR);
+      txt = src[i].err;
+      tc = col::ERR;
     } else if (never) {
-      glRight(spr, "czekam...", ox + W - 10, y0 + 3, col::TEXT_MUTE);
+      txt = "czekam...";
+      tc = col::TEXT_MUTE;
     } else {
+      // Bez "OK" na przedzie. Zmierzone na tablicach glifow: "OK 8 min temu" = 72 px,
+      // a przy "Falowniku" zostaje 69, przy "Samolotach" 66 — wiec kazdy taki wiersz
+      // bylby przyciety. Zielona kropka obok i tak juz mowi "OK"; wartosc niesie wiek.
+      // Powyzej 90 minut przechodzimy na godziny, inaczej "120 min temu" (65 px)
+      // ociera sie o limit 66 px.
       const uint32_t ago = (now - src[i].okAt) / 1000;
       if (ago < 90) {
-        snprintf(b, sizeof(b), "OK  %lus temu", static_cast<unsigned long>(ago));
+        snprintf(b, sizeof(b), "%lus temu", static_cast<unsigned long>(ago));
+      } else if (ago < 5400) {
+        snprintf(b, sizeof(b), "%lu min temu", static_cast<unsigned long>(ago / 60));
       } else {
-        snprintf(b, sizeof(b), "OK  %lu min temu", static_cast<unsigned long>(ago / 60));
+        snprintf(b, sizeof(b), "%lu h temu", static_cast<unsigned long>(ago / 3600));
       }
-      glRight(spr, b, ox + W - 10, y0 + 3, col::TEXT_DIM);
+      txt = b;
     }
+
+    // Status idzie przez gl() = PlFont10. Od v81 ten font ZNA polskie znaki, wiec
+    // "wyłączony" i "uśpiony" nie potrzebuja juz wiekszego PLF14.
+    // Przycinanie to siatka bezpieczenstwa dla bledow z sieci — te potrafia miec
+    // dowolna dlugosc ("HTTP 500 Internal Server Error"). Znacznik urwania to "..",
+    // a NIE "…" — PlFont10 nie ma glifu U+2026, wiec wielokropek zniknalby po cichu
+    // (glyphIndex zwraca -1, znak jest pomijany) i nie bylo by widac, ze tekst urwano.
+    char cut[52];
+    snprintf(cut, sizeof(cut), "%s", txt);
+    if (pltxt::stringWidth(pltxt::font10(), cut) > avail) {
+      size_t len = strlen(cut);
+      while (len > 1) {
+        cut[--len] = '\0';
+        char probe[56];
+        snprintf(probe, sizeof(probe), "%s..", cut);
+        if (pltxt::stringWidth(pltxt::font10(), probe) <= avail) {
+          snprintf(cut, sizeof(cut), "%s", probe);
+          break;
+        }
+      }
+    }
+    glRight(spr, cut, cx + cellW - 4, y0 + 3, tc);
   }
 
   // --- zdrowie: temperatura / RAM / czas pracy ---
