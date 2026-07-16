@@ -889,14 +889,15 @@ void setup() {
 
   ledBegin();
 
-  // Czujniki v100 (test): PIR cyfrowy + LDR analog.
-  // PULLDOWN, nie goly INPUT: SR505 jest push-pull (sam steruje oba stany, wiec
-  // pulldown 45k mu nie przeszkadza), ale gdyby OUT byl kiedys odlaczony/floatujacy
-  // (zly lut), pulldown daje czysty LOW zamiast losowego "ruchu". Do testu nieznanego
-  // modulu to eliminuje jeden tryb bledu.
+  // Czujniki: PIR cyfrowy + LDR analog.
+  // GOLY INPUT, nie INPUT_PULLDOWN. Poczatkowo dalem pulldown "na wszelki wypadek",
+  // ale pomiar na urzadzeniu (v100) pokazal, ze przekombinowalem: spoczynek jest
+  // stabilnie LOW (SR505 sam trzyma low, wiec floating nie grozi), za to pulldown 45k
+  // sciagal stan WYSOKI ponizej progu VIH i czesc machniec nie wyzwalala PIR
+  // (pir_last_s rosl do 100+ mimo ciaglego ruchu). Bez pulldownu SR505 steruje sam.
   // analogRead na GPIO1 = ADC1 dziala przy WiFi; ADC_11db daje pelny zakres ~0-3,1V
   // pod dzielnik 3,3V. Nastawy sa domyslne, ustawiamy je jawnie dla pewnosci.
-  pinMode(cfg::PIN_PIR, INPUT_PULLDOWN);
+  pinMode(cfg::PIN_PIR, INPUT);
   analogSetPinAttenuation(cfg::PIN_LDR, ADC_11db);
 
   pvHistoryLoad(gHist);

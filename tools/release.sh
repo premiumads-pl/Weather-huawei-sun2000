@@ -27,9 +27,33 @@ TMPDIR=/tmp arduino-cli compile --fqbn "$FQBN" --output-dir build . 2>&1 | tee b
 # Bufor ekranu to 150 kB. Jeśli statyczny RAM przekroczy ~75 kB, na stertę nie
 # zostaje dość miejsca na TLS i urządzenie przestaje umieć cokolwiek pobrać —
 # łącznie z własną aktualizacją. Dokładnie tak zabiłem v14 (PNGdec: +47 kB).
-STATIC=$(grep -oE 'Global variables use [0-9]+' build.log | grep -oE '[0-9]+' || echo 0)
+# Odporne na jezyk arduino-cli. Linia RAM zawiera "dynamic"/"dynamicznej" w obu
+# jezykach; bierzemy pierwsza liczbe przed bytes/bajt (= zmienne globalne).
+#
+# UWAGA — sprostowanie, zeby ktos tego nie cofnal w dobrej wierze:
+# stary wzorzec 'Global variables use' NIE byl zepsuty na maszynie, na ktorej to repo
+# jest wydawane. Sprawdzone 16.07.2026: arduino-cli mowi tam po ANGIELSKU i stary grep
+# trafial poprawnie. Bariera nie byla slepa i v100 NIE przeszlo z zerem — takie
+# twierdzenie pojawilo sie w pierwszej wersji tego komentarza i bylo bledne (autor
+# zdiagnozowal wlasne, polskojezyczne srodowisko i przypisal to wydaniu).
+# Zmiana zostaje, bo jest OBRONA NA PRZYSZLOSC: wystarczy inna lokalizacja, inna wersja
+# arduino-cli albo zmiana formatu wyjscia, zeby wzorzec przestal trafiac. A wtedy
+# STATIC=0 i warunek "0 > 76000" przepuscilby dowolnie duzy firmware — czyli bariera
+# umarlaby po cichu. Stad dwie rzeczy naraz: luzniejszy wzorzec I bezpiecznik nizej.
+STATIC=$(grep -iE 'dynamic|dynamicznej' build.log | grep -oE '[0-9]+ (bytes|bajt)' | grep -oE '^[0-9]+' | head -1 || true)
+if [ -z "$STATIC" ]; then STATIC=0; fi   # pusty wynik (zmiana formatu) => 0 => bezpiecznik nizej
 LIMIT=76000
 echo "==> statyczny RAM: ${STATIC} B (limit ${LIMIT} B)"
+# Bezpiecznik: STATIC=0 znaczy "nie odczytalem", NIE "zero RAM". Bez tego bariera
+# jest slepa przy kazdej zmianie formatu/jezyka wyjscia. Zatrzymujemy i cofamy wersje.
+if [ "$STATIC" -eq 0 ]; then
+  echo ""
+  echo "!!! STOP: nie odczytalem statycznego RAM z build.log (format/jezyk arduino-cli?)."
+  echo "!!! Bariera bylaby slepa — nie ryzykuje wydania. Cofam podniesienie wersji."
+  sed -i '' "s/#define FW_VERSION ${NEW}/#define FW_VERSION ${CUR}/" Version.h
+  rm -f build.log
+  exit 1
+fi
 if [ "$STATIC" -gt "$LIMIT" ]; then
   echo ""
   echo "!!! STOP: statyczny RAM ${STATIC} B > ${LIMIT} B."

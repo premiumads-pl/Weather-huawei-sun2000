@@ -754,7 +754,12 @@ void apiDiag() {
   const Diag& d = diag();
   const uint32_t now = millis();
   auto ago = [&](uint32_t at) -> int {
-    return at == 0 ? -1 : static_cast<int>((now - at) / 1000);
+    if (at == 0) return -1;
+    // Signed: `at` bywa SWIEZSZE niz `now`, gdy pisze je inny rdzen (pirLastAt z loop()
+    // na rdzeniu 1) juz PO zlapaniu `now` w tym watku. Bez tego (now - at) na uint32
+    // przekreca sie w ~4294967 (0xFFFFFFFF/1000). Przyszlosc traktujemy jak "teraz".
+    const int32_t d = static_cast<int32_t>(now - at);
+    return d < 0 ? 0 : d / 1000;
   };
 
   JsonDocument j;
