@@ -104,18 +104,26 @@ struct Diag {
   uint32_t pvFailHist[6] = {};
   uint32_t pvExtraHist[6] = {};
 
-  // --- czujniki v100 (surowy odczyt do testu; jeszcze bez logiki) ---
+  // --- czujniki: LDR (GPIO1, ADC1) + PIR AM312 (GPIO13) ---
   // Bez sekretow: LDR to jasnosc otoczenia, PIR to obecnosc — nic prywatnego.
-  uint16_t ldrRaw = 0;       // surowy ADC1 z GPIO1 (0-4095), usredniony
-  uint16_t ldrMv = 0;        // to samo w mV (kalibracja eFuse) — jasno = wyzej
+  // Od v103 ldrMv NIE jest juz samym podgladem: steruje podswietleniem (progi w Config.h).
+  // Oba pola sa usredniane z 8 odczytow w tej samej petli — do v102 usredniany byl TYLKO
+  // ldrRaw, a ldrMv bral pojedyncza probke, wiec dwa pola opisujace ten sam pomiar
+  // pochodzily z roznych chwil.
+  uint16_t ldrRaw = 0;       // surowy ADC1 z GPIO1 (0-4095), usredniony z 8
+  uint16_t ldrMv = 0;        // to samo w mV (kalibracja eFuse), usredniony z 8 — jasno = wyzej
   bool pirState = false;     // biezacy stan AM312 na GPIO13 (HIGH = ruch); odswieza loop()
   // volatile, bo od v101 pisze to ISR, a nie loop() — czytelnik jest w innym watku.
   volatile uint32_t pirLastAt = 0;  // millis() ostatniego zbocza W GORE (0 = od startu nic)
 
   // --- PIR: pomiar zachowania AM312 w lazience (liczniki z pirIsr()) ---
   // PO CO: nie wiemy, jak ten czujnik realnie zachowuje sie w TYM pomieszczeniu, a od
-  // tego zalezy cala przyszla logika podswietlenia (dzis: goly zegar NIGHT_FROM_H/TO_H).
-  // Dwa pytania do rozstrzygniecia: (1) czy mozna na tym oprzec podswietlenie,
+  // tego zalezy DRUGA polowa logiki podswietlenia. Pierwsza polowa jest juz zrobiona:
+  // od v103 poziom jasnosci wybiera LDR (zegar NIGHT_FROM_H/TO_H zostal USUNIETY,
+  // patrz Config.h). PIR ma dolozyc to, czego swiatlo nie powie: gaszenie ekranu do
+  // ZERA, gdy nikogo nie ma, i budzenie, gdy ktos wejdzie po ciemku.
+  // Dwa pytania do rozstrzygniecia: (1) ile wynosi timeout "nikogo nie ma" — pierwszy
+  // pomiar (33 min) dal DZIEWIEC przerw w pasmie 60-300 s, wiec 60 s byloby bledem,
   // (2) czy para z prysznica go wyzwala.
   // Tego NIE DA sie zmierzyc przez /api/log: to bufor KOLOWY 3072 B (Log.cpp:7), czyli
   // ~47 linii — okno rzedu SZESCIU MINUT. Czujnik wyzwalany co chwile zalalby log i

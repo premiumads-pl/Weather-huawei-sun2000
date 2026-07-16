@@ -69,13 +69,52 @@ constexpr int CONTENT_H = 172;
 // stala, nie zobaczylby ZADNEGO efektu. Jedyne zrodlo prawdy o stopce to
 // WeatherUi::VIEW_H (= CONTENT_Y + CONTENT_H) i wysokosc liczona w drawFooterTo().
 
-// ---------- Podświetlenie / tryb nocny ----------
+// ---------- Podświetlenie — steruje nim OPTOREZYSTOR, nie zegar ----------
 constexpr uint32_t BL_PWM_FREQ = 5000;
 constexpr uint8_t BL_PWM_BITS = 8;
-constexpr uint8_t BL_DAY = 255;
-constexpr uint8_t BL_NIGHT = 45;
-constexpr int NIGHT_FROM_H = 22;
-constexpr int NIGHT_TO_H = 6;
+constexpr uint8_t BL_DAY = 255;   // światło zapalone
+constexpr uint8_t BL_DIM = 130;   // półmrok
+constexpr uint8_t BL_NIGHT = 45;  // ciemno
+
+// NIGHT_FROM_H/NIGHT_TO_H (22/6) tu NIE MA i niech tak zostanie — patrz notatka
+// przy FOOTER_Y wyżej, to ta sama pułapka. Miały DOKŁADNIE JEDNEGO odbiorcę:
+// linię podświetlenia w loop(), którą zastąpił LDR. Nocne milczenie falownika ich
+// NIE używa — pvMayBeAsleep() (WeatherData.h) liczy okno ze wschodu/zachodu
+// z prognozy, więc ta zmiana go nie dotyka. Zostawienie ich „na zapas" dałoby
+// gałąź wykonywaną praktycznie nigdy, czyli kod nietestowany i gnijący; historia
+// gita pamięta te liczby lepiej niż martwa stała, która wygląda na żywą.
+//
+// ---------- Progi jasności (LDR na GPIO1) ----------
+// Dzielnik: 3,3V -[LDR]- GPIO1 -[7,93 kΩ]- GND. Jasno => R_LDR małe => napięcie WYŻSZE.
+// ZMIERZONE W TEJ ŁAZIENCE 16.07.2026, nie wzięte z noty katalogowej LDR-a:
+//   ciemno 251 mV (~96 kΩ) · półmrok 1050 mV (~16 kΩ) · światło 3164 mV (~0,3 kΩ)
+// Rozdzielenie stanów jest ~12-krotne, więc progi mają ogromny luz.
+//
+// Każda granica ma DWA progi (histereza). Bez tego odczyt drgający wokół pojedynczego
+// progu przerzucałby poziom w kółko przez cały zmierzch i świt — a rampa w WeatherUi
+// dochodzi do celu krokami, więc ekran nie mrugałby, tylko pulsował w tę i we w tę.
+//
+// Dobrane PARAMI tak, żeby środek PASMA histerezy trafiał w środek przerwy między
+// zmierzonymi stanami. Środek liczony GEOMETRYCZNIE, bo LDR jest logarytmiczny —
+// arytmetyczny (650 i 2107) siedziałby nieszczerze blisko stanu ciemniejszego:
+//   pasmo 400-650   -> sqrt(400*650)  = 510  wobec przerwy sqrt(251*1050)  = 513
+//   pasmo 1500-2200 -> sqrt(1500*2200)= 1817 wobec przerwy sqrt(1050*3164) = 1823
+// Szerokość pasm ~1,6x i ~1,5x; do najbliższego ZMIERZONEGO stanu zostaje z każdej
+// strony ~1,4-1,6x zapasu, czyli żaden próg nie stoi blisko czegokolwiek realnego.
+constexpr uint16_t LDR_DIM_UP_MV = 650;     // ciemno  -> półmrok
+constexpr uint16_t LDR_DIM_DOWN_MV = 400;   // półmrok -> ciemno
+constexpr uint16_t LDR_DAY_UP_MV = 2200;    // półmrok -> światło
+constexpr uint16_t LDR_DAY_DOWN_MV = 1500;  // światło -> półmrok
+
+// Awaria czujnika: odłączony LDR / zimny lut zostawia GPIO1 ściągnięty do masy
+// przez 7,93 kΩ, czyli ~0 mV — „ciemno na zawsze". Prawdziwa ciemność to 251 mV,
+// czyli 5x więcej (50 mV to R_LDR ~515 kΩ wobec zmierzonych 96 kΩ), więc uparty
+// odczyt poniżej progu jest fizycznie niemożliwy w tym pomieszczeniu.
+// Odwrotna awaria (przerwa w rezystorze 7,93 kΩ => odczyt przy 3,3 V => „jasno na
+// zawsze") jest NIEODRÓŻNIALNA od zapalonego światła i celowo nie jest wykrywana:
+// sama się zgłasza — ekran świeci pełnią w nocy.
+constexpr uint16_t LDR_BROKEN_MV = 50;
+constexpr uint32_t LDR_BROKEN_MS = 60000;  // musi trwać, żeby jedno drgnięcie ADC nie liczyło
 
 // ---------- Czasy ----------
 constexpr uint32_t WEATHER_REFRESH_MS = 15UL * 60UL * 1000UL;

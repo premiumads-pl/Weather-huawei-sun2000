@@ -1100,10 +1100,18 @@ void loop() {
     static uint32_t nextSensorAt = 0;
     if (static_cast<int32_t>(now - nextSensorAt) >= 0) {
       nextSensorAt = now + 250;
-      uint32_t acc = 0;
-      for (int i = 0; i < 8; ++i) acc += analogRead(cfg::PIN_LDR);  // usredniamy szum ADC
+      // Oba pola usredniamy z 8 odczytow. Wczesniej ldrRaw bylo srednia z osmiu, ale
+      // ldrMv brala POJEDYNCZY analogReadMilliVolts() — czyli dwa pola /api/diag,
+      // ktore maja opisywac ten sam pomiar, pochodzily z roznych probek i moglyby sie
+      // rozjechac. Od v103 ldrMv steruje podswietleniem, wiec niech bedzie tak stabilne,
+      // jak zawsze twierdzil opis. Kosztuje 8 dodatkowych konwersji na 250 ms (mikrosekundy).
+      uint32_t acc = 0, accMv = 0;
+      for (int i = 0; i < 8; ++i) {
+        acc += analogRead(cfg::PIN_LDR);              // usredniamy szum ADC
+        accMv += analogReadMilliVolts(cfg::PIN_LDR);
+      }
       diag().ldrRaw = static_cast<uint16_t>(acc / 8);
-      diag().ldrMv = static_cast<uint16_t>(analogReadMilliVolts(cfg::PIN_LDR));
+      diag().ldrMv = static_cast<uint16_t>(accMv / 8);
       diag().pirState = digitalRead(cfg::PIN_PIR) != 0;
     }
   }
@@ -1203,16 +1211,100 @@ void loop() {
 
   gFlightsNeeded = ui.needsFlights(now);
 
-  // --- tryb nocny + dioda RGB (bilans z siecią) ---
-  bool night = false;
-  const time_t t = time(nullptr);
-  if (t > 1700000000) {
-    struct tm tmv{};
-    localtime_r(&t, &tmv);
-    night = (tmv.tm_hour >= cfg::NIGHT_FROM_H) || (tmv.tm_hour < cfg::NIGHT_TO_H);
-    ui.setBacklightTarget(night ? cfg::BL_NIGHT : cfg::BL_DAY);
+  // --- jasnosc otoczenia -> podswietlenie + dioda RGB (bilans z siecia) ---
+  // Do v102 decydowal ZEGAR (22:00-6:00). Mylil sie w obie strony, bo nie wie ani czy
+  // ktos jest, ani czy pali sie swiatlo: o 23:00 przy zapalonym swietle trzymal ekran
+  // przygaszony, a o 14:00 przy zgaszonym swiecil na maksa. Teraz decyduje LDR, czyli
+  // to samo, co widzi czlowiek. Efekt uboczny, ktory jest czysta wygrana: dziala od
+  // PIERWSZEJ SEKUNDY, bez NTP i bez WiFi — a stary blok caly siedzial w
+  // `if (czas ustawiony)`, wiec do pierwszej synchronizacji podswietlenie nie bylo
+  // ustawiane w ogole (ratowal to blTarget_ = BL_DAY z WeatherUi::begin()).
+  // Nic innego z tamtego `if` nie zginelo: `night` szlo wylacznie tutaj i do diody.
+  // Nocne milczenie falownika liczy sobie osobno pvMayBeAsleep() ze wschodu/zachodu.
+  //
+  // SPRZEZENIA ZWROTNEGO NIE MA — i to jest POMIAR, nie zalozenie. Naturalny strach
+  // brzmi: podswietlenie oswietli wlasny czujnik, LDR zobaczy "jasno", ekran rozjasni
+  // sie jeszcze bardziej i uklad sie rozhusta. Dowod, ze nie: odczyt 251 mV ("ciemno")
+  // padl ok. 19:30, czyli PRZED 22:00 starej granicy — ekran swiecil wtedy pelnia 255,
+  // a LDR i tak widzial ciemnosc. Ilosciowo: 251 mV to ~96 kOhm, czyli ulamek luksa;
+  // podswietlenie 320x240 na 255 w polu widzenia czujnika dawaloby o rzedy wielkosci
+  // wiecej. Czujnik po prostu nie patrzy na ekran. Do progu LDR_DIM_UP_MV (650) brakuje
+  // 400 mV, wiec petla nie ma jak sie domknac.
+  // NIE DOKLADAJ tu obrony przed oscylacja (opoznien, blokad, gaszenia na czas pomiaru):
+  // bronilaby przed zjawiskiem, ktore pomiar wyklucza, i kosztowala kod, ktorego nikt
+  // nie umialby przetestowac.
+  //
+  // 0 = ciemno, 1 = polmrok, 2 = swiatlo zapalone. Start na 1: przy pierwszym przebiegu
+  // odczyt LDR jest juz swiezy (blok czujnikow stoi na gorze loop(), przed wszystkimi
+  // wczesnymi return-ami), wiec ta wartosc i tak zyje jedna klatke.
+  static uint8_t blLevel = 1;
+  static uint32_t ldrLowSince = 0;   // 0 = odczyt w zakresie fizycznym
+  const uint16_t ldrMv = diag().ldrMv;
+
+  // Awaria czujnika. Warunek musi TRWAC — pojedyncze drgniecie ADC to nie awaria.
+  if (ldrMv >= cfg::LDR_BROKEN_MV) {
+    ldrLowSince = 0;                 // powrot natychmiastowy: jeden zdrowy odczyt wystarczy
+  } else if (ldrLowSince == 0) {
+    ldrLowSince = now ? now : 1;     // 0 jest zarezerwowane na "odczyt zdrowy"
   }
-  ledShowGrid(uiPv.data.gridPowerW, uiPv.online, night);
+  const bool ldrBroken =
+      ldrLowSince != 0 &&
+      static_cast<int32_t>(now - ldrLowSince) >= static_cast<int32_t>(cfg::LDR_BROKEN_MS);
+
+  if (ldrBroken) {
+    // Nie wierzymy czujnikowi -> SRODEK skali i tyle. Swiadomie NIE ma tu odwrotu do
+    // zegara, mimo ze kusi. Powod: prog 50 mV opiera sie na wnioskowaniu optycznym,
+    // a nie na pomiarze ciemnosci przy podswietleniu 45 (nikt go nie zrobil), wiec
+    // falszywy alarm jest mozliwy — a wtedy zegar o 14:00 w ciemnej lazience walnalby
+    // BL_DAY, czyli doklada dokladnie ten blad, dla ktorego usuwamy zegar. BL_DIM myli
+    // sie najwyzej o polowe skali i to w obie strony: nigdy niewidoczny, nigdy oslepia.
+    // Poza tym awaria sama daje sie rozpoznac bez nowego pola w /api/diag: ldr_mv
+    // pokazuje ~0, a ekran przestaje reagowac na wlacznik swiatla.
+    blLevel = 1;
+  } else {
+    // Histereza na obu granicach. Kolejnosc kaskady jest CELOWA i robi dwie rzeczy:
+    // (1) zapalenie swiatla (251 -> 3164 mV) przechodzi 0->1->2 w JEDNYM przebiegu,
+    //     wiec nie ma schodkowania po jednym poziomie na klatke;
+    // (2) skok przez cale pasmo do wnetrza przeciwnej histerezy nie zostawia poziomu
+    //     nieprzylegajacego. Gdyby to byl lancuch else-if na przedzialach, poziom 2
+    //     przy odczycie 500 mV (w pasmie 400-650) utknalby na 2, bo "srodek pasma
+    //     histerezy = zostaw jak bylo" — ekran swiecilby pelnia po zgaszeniu swiatla.
+    //     Tu 2 spada na 1, a potem 1 na 0.
+    if (blLevel == 0 && ldrMv >= cfg::LDR_DIM_UP_MV) blLevel = 1;    // ciemno  -> polmrok
+    if (blLevel == 1 && ldrMv >= cfg::LDR_DAY_UP_MV) blLevel = 2;    // polmrok -> swiatlo
+    if (blLevel == 2 && ldrMv < cfg::LDR_DAY_DOWN_MV) blLevel = 1;   // swiatlo -> polmrok
+    if (blLevel == 1 && ldrMv < cfg::LDR_DIM_DOWN_MV) blLevel = 0;   // polmrok -> ciemno
+  }
+
+  // Log tylko przy ZMIANIE — w petli 30 fps kazdy inny wariant zalalby bufor logu
+  // (3072 B = ~47 linii = ~6 minut) i wymiotl z niego wszystko inne.
+  // Awaria jest osobnym warunkiem, a nie tylko dopiskiem do zmiany poziomu: gdy
+  // czujnik pada, blLevel jest przypinany do 1, wiec jesli akurat JUZ byl na 1, samo
+  // `blLevel != lastBlLevel` nie zlapaloby niczego i komunikat o awarii nigdy by nie
+  // padl — czyli dokladnie w tym przypadku, dla ktorego go piszemy.
+  static uint8_t lastBlLevel = 0xFF;
+  static bool lastBroken = false;
+  if (blLevel != lastBlLevel || ldrBroken != lastBroken) {
+    lastBlLevel = blLevel;
+    lastBroken = ldrBroken;
+    LOG("LDR: %u mV -> poziom %u (%s)%s\n", (unsigned)ldrMv, (unsigned)blLevel,
+        blLevel == 0 ? "ciemno" : (blLevel == 1 ? "polmrok" : "swiatlo"),
+        ldrBroken ? " [AWARIA CZUJNIKA: odczyt uparcie <50 mV, ekran na polmroku]" : "");
+  }
+
+  ui.setBacklightTarget(blLevel == 0   ? cfg::BL_NIGHT
+                        : blLevel == 1 ? cfg::BL_DIM
+                                       : cfg::BL_DAY);
+
+  // Dioda zostaje DWUSTANOWA, mimo trzech poziomow ekranu. `night` = poziom najciemniejszy.
+  // Powod: LED_DAY/LED_NIGHT to liczby dostrojone okiem, a trzecia byla by zmyslona —
+  // nikt nie zmierzyl, czy 90 oslepia w polmroku. Do tego dioda to wskaznik czytany
+  // katem oka, a nie powierzchnia do czytania: trzeci odcien przygaszenia jest
+  // rozroznieniem, ktorego nie da sie zauwazyc. Semantyka trzyma sie kupy — skoro
+  // w pomieszczeniu jest na tyle jasno, ze LDR mowi "polmrok" (4x jasniej niz ciemnosc),
+  // to dioda na 90 nie ma kogo oslepic. Gdyby jednak oslepiala, poprawka to jedna stala
+  // LED_DIM i mapowanie na 3 poziomy — ale dopiero Z DANYMI, jak wszystko w tym repo.
+  ledShowGrid(uiPv.data.gridPowerW, uiPv.online, blLevel == 0);
 
   // --- alerty ---
   const Alert a = buildAlert(uiWeather, uiPv);
