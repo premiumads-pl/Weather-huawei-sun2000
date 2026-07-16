@@ -2407,9 +2407,16 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
   // kazdy ma 69 px, a sama liczba "23.8" w duzej czcionce potrzebuje ~90 px.
   // Wiec: 1-2 czujniki -> rzad z wielka liczba, 3-4 -> siatka 2x2 mniejsza czcionka.
   // 5-6 czujnikow -> trzy kolumny (`tight`). Kafelek chudnie ze 146 do 94 px i wtedy
-  // temperatura + jednostka + RSSI nie mieszcza sie w jednej linii. Zeby weszly,
-  // przy `tight` dzieje sie troje: znika jednostka, RSSI traci minus i schodzi do
-  // PlFont10. Szczegoly i pomiary przy odpowiednich liniach nizej.
+  // KOMPLET czterech elementow po prostu nie wchodzi - zmierzone na tablicach glifow:
+  // sygnal musialby stanac na linii nazwy, a "100E" nawet w PlFont10 startuje tam na
+  // x+59, podczas gdy sama "Lazienka" (PLF14) konczy sie na x+67. To 8 px jedno na
+  // drugim przy KROTKIEJ nazwie; "Pokoj dziecka" konczy sie na x+97, czyli 38 px za
+  // duzo. Nie ratuje tego ani zdjecie minusa, ani zmniejszenie nazwy do PlFont10.
+  // Dlatego przy `tight` kafelek ma TRZY elementy: nazwa, temperatura i wilgotnosc
+  // (PlFont10, zapas 2 px w najgorszym przypadku "-19.8" + "100%"), a sygnal znika.
+  // Znika sygnal, a nie wilgotnosc, bo wilgotnosc to tresc ekranu, a sygnal
+  // diagnostyka. Znika tez jednostka - patrz nizej. Sciezka jest dzis MARTWA
+  // (4 czujniki -> 2 kolumny, cw=146) i zapali sie dopiero przy piatym czujniku.
   const bool grid = n > 2;
   const int cols = grid ? (n > 4 ? 3 : 2) : n;
   const int gap = 8;
@@ -2434,42 +2441,61 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     spr.fillRoundRect(x, y, 3, ch, 1, stale ? col::TEXT_MUTE : rc);
     plStr(spr, PLF14, r.name, x + 10, y + 15, stale ? col::TEXT_MUTE : col::TEXT);
 
-    // Zamiast wilgotnosci: SILA SYGNALU i ZRODLO. Wilgotnosc w domu jest niemal
-    // stala i nic z niej nie wynika; sygnal mowi, czy czujnik zaraz zamilknie,
-    // a litera — ktore z dwoch uszu go slyszy. E = wlasne radio ESP, S = bramka.
-    // To NIE jest to samo miejsce: lustro w lazience tlumi radio ESP tak, ze
-    // Schody slychac z -90, a z Shelly z -56. Bez tej litery nie wiadomo, czyj
-    // to pomiar ani co poprawilo przestawienie bramki.
+    // PRAWA KOLUMNA KAFELKA: na gorze SYGNAL (maly), pod nim WILGOTNOSC.
+    // Wilgotnosc jest trescia - po nia sie na ten ekran patrzy. Sygnal jest
+    // diagnostyka: mowi, czy czujnik zaraz zamilknie, a litera - ktore z dwoch uszu
+    // go slyszy. E = wlasne radio ESP, S = bramka Shelly. To NIE jest to samo
+    // miejsce: lustro w lazience tlumi radio ESP tak, ze Schody slychac z -90,
+    // a z Shelly z -56. Bez tej litery nie wiadomo, czyj to pomiar ani co poprawilo
+    // przestawienie bramki. Dlatego sygnal zostaje, ale schodzi na drugi plan.
+    //
+    // PlFont10 jest wymuszony przez NOWA pozycje, a nie ratuje starej kolizji.
+    // Uwaga na pokuse dopisania tu, ze "naprawia blad": w poprzedniej wersji sygnal
+    // stal na wlasnym wierszu (baseline y+32, czyli piksele y+18..y+31), a nazwa na
+    // y+4..y+17: nachodzily sie w X o 13 px, ale w Y wcale, wiec NIC sie nie stykalo.
+    // Dopiero przeniesienie sygnalu NA wiersz nazwy tworzy ryzyko: w PLF18 "-100E"
+    // ma 52 px i startowalby na x+84, wjezdzajac w kazda nazwe dluzsza niz 74 px.
+    // W PlFont10 ma 29 px, startuje na x+107 i zostawia 10 px zapasu nawet dla
+    // "Pokoj dziecka" (87 px). Minus zostaje w kazdym ukladzie - nie ma po co go scinac.
     const int rs = r.rssiBest;
-    char hs[12];
+    char sg[12];
     if (rs == 0) {
-      snprintf(hs, sizeof(hs), "--");
-    } else if (tight) {
-      // Przy trzech kolumnach zdejmujemy minus: RSSI jest zawsze ujemny, wiec znak
-      // nie niesie informacji, a kosztuje 5 px (zmierzone na tablicach glifow PLF14:
-      // "-100E" = 38 px, "100E" = 33 px).
-      //
-      // Sam brak minusa NIE wystarcza. Przy cw=94 RSSI wyrownany do prawej konczy
-      // sie na x+84, a temperatura startuje na x+10. Zeby zmiescic najgorszy realny
-      // przypadek, musialy zadzialac TRZY rzeczy naraz (patrz nizej: brak jednostki
-      // i PlFont10 dla RSSI). Sciezka jest dzis MARTWA: przy 4 czujnikach sa
-      // 2 kolumny, cw=146. Zapali sie dopiero przy piatym czujniku.
-      snprintf(hs, sizeof(hs), "%d%c", rs < 0 ? -rs : rs, r.viaGw ? 'S' : 'E');
+      snprintf(sg, sizeof(sg), "--");
     } else {
-      snprintf(hs, sizeof(hs), "%d%c", rs, r.viaGw ? 'S' : 'E');
+      snprintf(sg, sizeof(sg), "%d%c", rs, r.viaGw ? 'S' : 'E');
     }
-    // Progi jak w narzedziu do rozstawiania czujnikow: > -70 swietnie, > -80 dobrze,
-    // > -88 slabo, nizej na granicy.
-    const uint16_t hc = rs == 0        ? col::TEXT_MUTE
-                        : rs > -80     ? col::OK
-                        : rs > -88     ? col::WARN
-                                       : col::ERR;
-    // Przy trzech kolumnach RSSI schodzi az do PlFont10. PLF14 nie starcza:
-    // "100E" ma w nim 33 px i startuje na x+51, a temperatura bez jednostki konczy
-    // sie na x+48, czyli zapas 3 px = tyle co nic. W PlFont10 to samo "100E" ma
-    // 25 px, startuje na x+59 i zapas rosnie do 11 px. RSSI jest tu liczba
-    // pomocnicza, nie trescia kafelka, wiec drobniejszy font mu nie szkodzi.
-    plRight(spr, tight ? pltxt::font10() : PLF18, hs, x + cw - 10, y + (grid ? 32 : 20),
+    // Progi jak w narzedziu do rozstawiania czujnikow: > -80 dobrze, > -88 slabo,
+    // nizej na granicy.
+    const uint16_t sc = rs == 0    ? col::TEXT_MUTE
+                        : rs > -80 ? col::OK
+                        : rs > -88 ? col::WARN
+                                   : col::ERR;
+    if (!tight) {
+      plRight(spr, pltxt::font10(), sg, x + cw - 10, y + (grid ? 15 : 10), sc);
+    }
+
+    // Wilgotnosc - o stopien mniejsza od temperatury: PLF14 pod PLF18 w siatce.
+    //
+    // Baseline zalezy od ukladu i to nie jest kosmetyka:
+    // * siatka (ch=38): y+32, czyli linia bazowa temperatury. Sygnal siedzi wyzej,
+    //   na linii nazwy (y+15). Najciasniej jest przy "-19.8" + "100%": blok
+    //   temperatury z jednostka konczy sie na x+69, wilgotnosc startuje na x+100,
+    //   czyli 31 px zapasu.
+    // * kafelek 80 px (ch=80): NIE ma linii temperatury do dzielenia. Wielka
+    //   czcionka zjada caly wiersz - samo "-19.8" to 106 px ze 126 px tresci, wiec
+    //   cokolwiek po prawej wjechaloby na cyfry (zmierzone: -36 px). Zamiast tego
+    //   wilgotnosc siada pod sygnalem, w wolnym pasie: sygnal zajmuje wiersze
+    //   y+2..y+10, wilgotnosc y+13..y+23, a wielkie cyfry zaczynaja sie dopiero na
+    //   y+25. Waskim gardlem jest wtedy nazwa: "Pokoj dziecka" konczy sie na x+97,
+    //   "100%" startuje na x+100, czyli 3 px. Nazwa dluzsza niz 90 px (np.
+    //   "Lazienka Gora" = 93 px) wjedzie na wilgotnosc; nazw nikt nigdzie nie
+    //   przycina.
+    char hs[10];
+    snprintf(hs, sizeof(hs), r.hasHum ? "%.0f%%" : "--", r.hum);
+    const uint16_t hc = !r.hasHum                        ? col::TEXT_MUTE
+                        : (r.hum > 65.f || r.hum < 30.f) ? col::WARN
+                                                         : col::PV_HOUSE;
+    plRight(spr, tight ? pltxt::font10() : PLF14, hs, x + cw - 10, y + (grid ? 32 : 23),
             hc);
 
     char v[12];
@@ -2482,9 +2508,10 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
       // Przy trzech kolumnach znika jednostka. To tu najtanszy piksel do oddania:
       // ekran nazywa sie "W DOMU", a wszystko na nim to temperatury pokoi w stopniach
       // Celsjusza. Jednostka powtarzalaby tytul ekranu szesc razy pod rzad, a kosztuje
-      // 15 px: z nia blok temperatury konczy sie na x+63 (3 px przerwy + 12 px znaku
-      // stopnia w PlFont10) i KAZDY wariant RSSI koliduje; bez niej konczy sie na
-      // x+48. Przy dwoch kolumnach (cw=146) miejsca jest dosc i jednostka zostaje.
+      // 15 px: z nia blok temperatury konczy sie na x+69 (3 px przerwy + 12 px znaku
+      // stopnia w PlFont10) i wjezdza na wilgotnosc, ktora startuje na x+56; bez niej
+      // temperatura konczy sie na x+54 i zostaja 2 px zapasu. Przy dwoch kolumnach
+      // (cw=146) miejsca jest dosc i jednostka zostaje.
       if (!tight) {
         gl(spr, "°C", x + 13 + vw, y + 22, col::TEXT_DIM);
       }
@@ -2572,8 +2599,7 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
       const int x = xAt(k);
       const int cyT = yT(tv / 10.f);
       if (px >= 0) {
-        spr.drawLine(px, pyT, x, cyT, rc);
-        spr.drawLine(px, pyT + 1, x, cyT + 1, rc);  // 2 px — czytelne z drugiego konca lazienki
+        spr.drawLine(px, pyT, x, cyT, rc);  // 1 px - przy 2 px linie zlewaly sie w plame
       }
       px = x;
       pyT = cyT;
@@ -2581,8 +2607,12 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
       lastY = cyT;
     }
     // Kropka na koncu linii — kotwiczy "ta barwa = ten kafelek" w miejscu, w ktorym
-    // linie sa najgestsze, czyli przy prawej krawedzi.
-    if (lastX >= 0) spr.fillCircle(lastX, lastY, 2, rc);
+    // linie sa najgestsze, czyli przy prawej krawedzi. Promien 1, nie 2: przy linii
+    // 2 px kropka o promieniu 2 miala 5 px srednicy, czyli 2,5x linii. Przy linii
+    // 1 px ta sama kropka bylaby 5x szersza od niej i z kotwicy zrobilaby sie plama
+    // - a przy czterech pokojach kropki spotykaja sie tu obok siebie. Promien 1 daje
+    // 3 px: nadal wyraznie grubsza od linii, wiec kotwica trzyma.
+    if (lastX >= 0) spr.fillCircle(lastX, lastY, 1, rc);
   }
 
   // --- os temperatury ---
