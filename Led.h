@@ -16,3 +16,10 @@ void ledBegin();
 const char* ledTestStep();
 
 void ledShowGrid(int32_t gridW, bool pvOnline, bool night);
+
+// DIAGNOSTYKA na czas pomiaru PIR: krotki bialy blysk (~120 ms), potem powrot do
+// koloru energii. Dziala takze przy diodzie zgaszonej (falownik offline).
+// Wolac z loop() przy zmianie diag().pirLastAt — NIGDY z ISR: samego zapisu do
+// diody ta funkcja nie robi, ale kontrakt "tylko z petli" trzyma cala reszte.
+// Do usuniecia razem z pomiarem szerokosci/przerw impulsow PIR.
+void ledPirFlash();

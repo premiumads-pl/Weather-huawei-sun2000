@@ -108,8 +108,54 @@ struct Diag {
   // Bez sekretow: LDR to jasnosc otoczenia, PIR to obecnosc — nic prywatnego.
   uint16_t ldrRaw = 0;       // surowy ADC1 z GPIO1 (0-4095), usredniony
   uint16_t ldrMv = 0;        // to samo w mV (kalibracja eFuse) — jasno = wyzej
-  bool pirState = false;     // biezacy stan SR505 na GPIO13 (HIGH = ruch)
-  uint32_t pirLastAt = 0;    // millis() ostatniego HIGH (0 = od startu nic)
+  bool pirState = false;     // biezacy stan AM312 na GPIO13 (HIGH = ruch); odswieza loop()
+  // volatile, bo od v101 pisze to ISR, a nie loop() — czytelnik jest w innym watku.
+  volatile uint32_t pirLastAt = 0;  // millis() ostatniego zbocza W GORE (0 = od startu nic)
+
+  // --- PIR: pomiar zachowania AM312 w lazience (liczniki z pirIsr()) ---
+  // PO CO: nie wiemy, jak ten czujnik realnie zachowuje sie w TYM pomieszczeniu, a od
+  // tego zalezy cala przyszla logika podswietlenia (dzis: goly zegar NIGHT_FROM_H/TO_H).
+  // Dwa pytania do rozstrzygniecia: (1) czy mozna na tym oprzec podswietlenie,
+  // (2) czy para z prysznica go wyzwala.
+  // Tego NIE DA sie zmierzyc przez /api/log: to bufor KOLOWY 3072 B (Log.cpp:7), czyli
+  // ~47 linii — okno rzedu SZESCIU MINUT. Czujnik wyzwalany co chwile zalalby log i
+  // zniszczyl pomiar, dla ktorego go wlaczamy (a przy okazji wymiotl wszystko inne).
+  // Te pola zyja tyle, co uptime, wiec po dobie mowia prawde o dobie.
+  //
+  // WSPOLBIEZNOSC: pisze WYLACZNIE ISR, czyta wylacznie loop()/Portal. Zadnych blokad —
+  // mutex w ISR jest zabroniony, a licznik rozjechany o jeden impuls nikogo nie boli.
+  // Bez sekretow: same liczby o ruchu, bez znacznikow czasu — "kto i kiedy byl w
+  // lazience" z tego nie wychodzi. /api/diag bywa wklejane do zgloszen bledow.
+  volatile uint32_t pirPulses = 0;   // pelne impulsy (zbocze w gore -> zbocze w dol)
+  volatile uint32_t pirEdges = 0;    // WSZYSTKIE zbocza. Kontrola czystosci sygnalu:
+                                     // czysto => edges == 2*pulses (+1 gdy impuls trwa).
+                                     // Nadmiar = drgania/szum i wtedy reszta liczb klamie.
+  volatile uint32_t pirLastMs = 0;   // szerokosc OSTATNIEGO impulsu [ms] — do machania reka
+  volatile uint32_t pirMinMs = 0xFFFFFFFF;  // najkrotszy impuls (0xFFFFFFFF = nie bylo zadnego)
+  volatile uint32_t pirMaxMs = 0;    // najdluzszy impuls
+  volatile uint32_t pirTotalMs = 0;  // suma czasu HIGH — jaki UDZIAL doby "cos sie rusza".
+                                     // uint32 przepelnia sie po 49 dniach SAMEGO HIGH,
+                                     // czyli nigdy: to wiecej, niz millis() w ogole umie.
+
+  // Histogramy, nie same min/max — dokladnie ta sama lekcja co pvFailHist wyzej.
+  // min/max psuje JEDEN wyskok: pojedynczy 3-milisekundowy szum przykleja min do 3 i
+  // czyta sie to jak "drgania styków", a jeden dlugi epizod przykleja max do minut.
+  // Decyzja jest o ROZKLADZIE, nie o skrajnosciach, a histogram pozwala policzyc
+  // OFFLINE dowolnego kandydata na prog — bez wgrywania nowej wersji na kazdy pomysl.
+  //
+  // Szerokosci impulsow, kosze [ms]: <100 | 100-1k | 1k-3k | 3k-10k | 10k-60k | >=60k.
+  // To jest empiryczna odpowiedz na "jaki to naprawde modul": AM312 to jednorazowka
+  // ~2 s (wszystko powinno siedziec w koszu 1k-3k), SR505 ~8 s (kosz 3k-10k), a modul
+  // retrigerujacy rozmaze sie po koszach wyzszych. Kosz <100 ms to nie PIR, tylko szum.
+  volatile uint32_t pirWidthHist[6] = {};
+
+  // Przerwy MIEDZY impulsami (od opadniecia do nastepnego narastania), kosze [ms]:
+  // <2k | 2k-5k | 5k-15k | 15k-60k | 60k-300k | 300k-1800k | >=1800k.
+  // TO JEST POLE, KTORE WYBIERZE TIMEOUT PODSWIETLENIA. Timeout to prog NA PRZERWIE:
+  // ma byc dluzszy niz typowa przerwa "ktos tu wciaz jest" i krotszy niz "wyszedl".
+  // Ani pulses, ani total_s, ani min/max tego nie daja — potrzebny jest rozklad przerw.
+  // Pierwszy kosz (<2 s) to w duzej mierze okno martwe AM312, nie zachowanie czlowieka.
+  volatile uint32_t pirGapHist[7] = {};
 };
 
 Diag& diag();

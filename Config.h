@@ -47,8 +47,14 @@ constexpr int PIN_TFT_BL = 14;
 // (radio zabiera przetwornik). GPIO 1 = ADC1_CH0, wolny (TFT ma 8-12/14, dotyk 7).
 // Dzielnik: 3,3V -[LDR]- GPIO1 -[7,93k]- GND. Jasno => R_LDR male => napiecie WYZSZE.
 constexpr int PIN_LDR = 1;
-// SR505 (PIR): VCC 5V, OUT push-pull 3,3V. GPIO 13 wolny, nie strapujacy. Odczyt
-// CYFROWY, wiec fakt, ze GPIO 13 to ADC2, nie ma znaczenia (nie uzywamy tam ADC).
+// AM312 (PIR): modul 3,3 V, OUT 3,3 V. GPIO 13 wolny, nie strapujacy. Odczyt CYFROWY,
+// wiec fakt, ze GPIO 13 to ADC2, nie ma znaczenia (nie uzywamy tam ADC — i nie probuj,
+// bo ADC2 przy wlaczonym WiFi nie dziala).
+// Stalo tu "SR505 (PIR): VCC 5V" — nieprawda w obu polowach. Wlutowany jest AM312 i on
+// jest zasilany 3,3 V; potwierdzil wlasciciel 16.07.2026. To nie jest kosmetyka: AM312 ma
+// impuls ~2 s i okno martwe ~2 s, a SR505 ~8 s, wiec ta nazwa uzasadniala (poprawny)
+// okres odpytywania w loop() zupelnie nie ta liczba. Realne zachowanie TEGO egzemplarza
+// mierzymy dopiero teraz — pir_* w /api/diag.
 constexpr int PIN_PIR = 13;
 
 // ---------- Siatka layoutu ----------

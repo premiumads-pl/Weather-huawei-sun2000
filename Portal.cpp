@@ -755,9 +755,12 @@ void apiDiag() {
   const uint32_t now = millis();
   auto ago = [&](uint32_t at) -> int {
     if (at == 0) return -1;
-    // Signed: `at` bywa SWIEZSZE niz `now`, gdy pisze je inny rdzen (pirLastAt z loop()
-    // na rdzeniu 1) juz PO zlapaniu `now` w tym watku. Bez tego (now - at) na uint32
-    // przekreca sie w ~4294967 (0xFFFFFFFF/1000). Przyszlosc traktujemy jak "teraz".
+    // Signed: `at` bywa SWIEZSZE niz `now`, gdy pisze je inny watek juz PO zlapaniu
+    // `now` w tym watku. Bez tego (now - at) na uint32 przekreca sie w ~4294967
+    // (0xFFFFFFFF/1000). Przyszlosc traktujemy jak "teraz".
+    // Od v101 pirLastAt pisze pirIsr(), a nie loop() — okno na wyprzedzenie zrobilo sie
+    // WIEKSZE, nie mniejsze: przerwanie wchodzi w dowolnym momencie, takze miedzy
+    // millis() powyzej a ta linijka. Ta poprawka jest teraz bardziej potrzebna niz byla.
     const int32_t d = static_cast<int32_t>(now - at);
     return d < 0 ? 0 : d / 1000;
   };
@@ -899,12 +902,44 @@ void apiDiag() {
 
   // --- czujniki v100 (surowy odczyt do testu) ---
   // ldr_raw rosnie z jasnoscia (dzielnik: jasno => R_LDR male => napiecie wyzsze).
-  // pir_last_s: ile sekund temu SR505 ostatnio zglosil ruch (-1 = od startu nic).
+  // pir_last_s: ile sekund temu AM312 ostatnio zglosil ruch (-1 = od startu nic).
   JsonObject sen = j["sensors"].to<JsonObject>();
   sen["ldr_raw"] = d.ldrRaw;
   sen["ldr_mv"] = d.ldrMv;
   sen["pir"] = d.pirState;
   sen["pir_last_s"] = ago(d.pirLastAt);
+
+  // --- PIR: pomiar zachowania AM312 (liczniki z ISR, zyja tyle co uptime) ---
+  // Po co akurat te pola — patrz Log.h przy pirPulses. Skrot: log to okno ~6 minut,
+  // a pytanie ("czy mozna na tym oprzec podswietlenie i czy para z prysznica go wyzwala")
+  // wymaga doby. Tu nie ma zadnych znacznikow czasu, tylko sumy od startu.
+  // Jak tego uzyc bez czekania na dobe: odczytaj /api/diag, wejdz pod prysznic, odczytaj
+  // ponownie — roznica pir_pulses i pir_total_s mowi wprost, czy para wyzwala czujnik.
+  sen["pir_pulses"] = d.pirPulses;
+  sen["pir_edges"] = d.pirEdges;   // czysto => edges == 2*pulses (+1 gdy impuls wlasnie trwa)
+  sen["pir_last_ms"] = d.pirLastMs;
+  // 0xFFFFFFFF = jeszcze zadnego pelnego impulsu. Wyslanie tego surowo czytaloby sie jak
+  // "najkrotszy impuls trwal 49 dni", wiec zamiast tego null — brak danych ma wygladac
+  // jak brak danych. Ta sama lekcja co viHas* w Log.h.
+  if (d.pirPulses > 0) {
+    sen["pir_min_ms"] = d.pirMinMs;
+    sen["pir_max_ms"] = d.pirMaxMs;
+  } else {
+    sen["pir_min_ms"] = nullptr;
+    sen["pir_max_ms"] = nullptr;
+  }
+  sen["pir_total_s"] = d.pirTotalMs / 1000;   // udzial doby: podziel przez uptime_s
+
+  // Granice koszy jada W ODPOWIEDZI, nie tylko w komentarzu — czytajacy JSON w przegladarce
+  // ma widziec, co znaczy ktora liczba, bez zagladania w zrodlo. Ten plik ma juz za soba
+  // trzy komentarze, ktore rozjechaly sie z kodem; opis obok danych rozjezdza sie trudniej.
+  JsonArray wh = sen["pir_width_ms"].to<JsonArray>();
+  for (uint32_t v : d.pirWidthHist) wh.add(v);
+  sen["pir_width_bins"] = "<100|100-1k|1k-3k|3k-10k|10k-60k|>=60k ms";
+
+  JsonArray gh = sen["pir_gap_ms"].to<JsonArray>();
+  for (uint32_t v : d.pirGapHist) gh.add(v);
+  sen["pir_gap_bins"] = "<2k|2k-5k|5k-15k|15k-60k|60k-300k|300k-1800k|>=1800k ms";
 
   String out;
   serializeJsonPretty(j, out);

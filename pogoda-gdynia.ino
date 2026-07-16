@@ -41,6 +41,7 @@
 
 #include <esp_wifi.h>
 #include <esp_event.h>
+#include "hal/gpio_ll.h"   // gpio_ll_get_level() — jedyny odczyt pinu, ktory wolno wolac z ISR
 #include "Portal.h"
 #include "PvClient.h"
 #include "PvData.h"
@@ -98,6 +99,105 @@ constexpr int kRssiRoamGain = 8;      // ...i przenosimy sie tylko przy realnym 
 // Tylko podnosimy flage; przenosinami zajmie sie netTask.
 void onRssiLow(void*, esp_event_base_t, int32_t, void*) {
   gRoamWanted = true;
+}
+
+// ------------------------------------------------------------ PIR: pomiar ----
+// AM312 na GPIO13, przerwanie na OBU zboczach (CHANGE). Odpytywanie co 250 ms w loop()
+// zostaje, ale daje tylko fakt "teraz HIGH" — ani dokladnego momentu, ani SZEROKOSCI
+// impulsu. A to szerokosc rozstrzyga empirycznie, co tam naprawde jest wlutowane i czy
+// modul retriguje, czyli czy przyszle podswietlenie moze isc za samym pirState, czy
+// potrzebuje wlasnego timeoutu. Wyniki ida w liczniki w Diag, NIE do LOG() — patrz
+// komentarz przy pirPulses w Log.h (log to okno ~6 minut, pomiar wymaga doby).
+//
+// CO TU WOLNO — sprawdzone w rdzeniu 3.3.10 na tej maszynie, nie "z pamieci":
+//  * gpio_ll_get_level() — `static inline __attribute__((always_inline))`
+//    (hal/esp32s3/include/hal/gpio_ll.h:350), wiec wchodzi w cialo TEJ funkcji i czyta
+//    goly rejestr GPIO.in. UWAGA, wbrew intuicji: gpio_get_level() z drivera IRAM-safe
+//    NIE JEST — laduje w sekcji .text.gpio_get_level, a sections.ld nie przenosi
+//    libesp_driver_gpio.a do IRAM (nie ma go ani w .iram0.text, ani w EXCLUDE_FILE
+//    .flash.text). digitalRead() jest jeszcze gorszy: wola perimanGetPinBus() i przy
+//    niezgodnosci robi log_w() (esp32-hal-gpio.c:189).
+//  * millis() — bezpieczne, ale nie z tego powodu, co sie wydaje; patrz nizej.
+// CZEGO TU NIE MA I BYC NIE MOZE: LOG()/logPrintf (bierze portMUX i robi vsnprintf),
+// Serial, snprintf, malloc, mutexy, a takze diag() — to skok do innej jednostki
+// kompilacji, wiec wskaznik na Diag lapiemy RAZ w setup() (gDiagIsr).
+//
+// millis() a IRAM — zweryfikowane, bo wynik wychodzi inny niz "oczywisty":
+// esp_timer_get_time() faktycznie SIEDZI w IRAM (libesp_timer.a, esp_timer_impl_systimer
+// .c.obj, sekcja .iram1.1 — sprawdzone objdumpem), ale opakowanie millis() ma
+// ARDUINO_ISR_ATTR (esp32-hal-misc.c:208), a to makro jest PUSTE, bo w sdkconfig tej
+// wersji stoi "# CONFIG_ARDUINO_ISR_IRAM is not set" (esp32-hal.h:74-81). Czyli samo
+// millis() lezy we FLASHU. Mimo to jest tu bezpieczne i to nie przypadek: ten SAM
+// wylaczony przelacznik sprawia, ze attachInterrupt() instaluje serwis przez
+// gpio_install_isr_service(ARDUINO_ISR_FLAG) z ARDUINO_ISR_FLAG == 0 (esp32-hal-gpio.c
+// :224), czyli BEZ ESP_INTR_FLAG_IRAM — a takie przerwanie IDF sam maskuje na czas, gdy
+// cache flasha jest odlaczony (zapis NVS, OTA). To przerwanie nie ma wiec jak wystrzelic
+// z zimnym cache i skok do flasha nie ma jak trafic w dziure.
+// Konsekwencja, ktora trzeba powiedziec wprost: IRAM_ATTR ponizej NIE czyni calego
+// lancucha IRAM-safe, bo dyspozytor __onPinInterrupt() (esp32-hal-gpio.c:202) ma ten sam
+// pusty ARDUINO_ISR_ATTR i tez jest we flashu. Przez Arduinowe attachInterrupt() w tej
+// konfiguracji rdzenia po prostu NIE DA sie dostac ISR-a w IRAM. IRAM_ATTR zostaje, bo
+// nic nie kosztuje poza ~200 B IRAM i domyka calosc, gdyby CONFIG_ARDUINO_ISR_IRAM
+// kiedys wlaczyc: wtedy dyspozytor i millis() same wskakuja do IRAM.
+Diag* gDiagIsr = nullptr;           // zlapane raz w setup(), zeby ISR nie wolal diag()
+volatile uint32_t gPirRiseAt = 0;   // millis() otwartego impulsu (0 = zaden nie trwa)
+volatile uint32_t gPirFallAt = 0;   // millis() konca poprzedniego impulsu (0 = nie bylo)
+
+// Granice koszy opisane przy pirWidthHist/pirGapHist w Log.h i powtorzone w /api/diag
+// (pir_width_bins/pir_gap_bins) — zeby czytajacy JSON nie musial zgadywac ani ufac
+// komentarzowi. IRAM_ATTR jawnie: przy -Os te dwie i tak by sie wkleily, ale nie chce,
+// zeby bezpieczenstwo ISR zalezalo od humoru inlinera.
+uint8_t IRAM_ATTR pirWidthBucket(uint32_t ms) {
+  if (ms < 100) return 0;
+  if (ms < 1000) return 1;
+  if (ms < 3000) return 2;
+  if (ms < 10000) return 3;
+  if (ms < 60000) return 4;
+  return 5;
+}
+
+uint8_t IRAM_ATTR pirGapBucket(uint32_t ms) {
+  if (ms < 2000) return 0;
+  if (ms < 5000) return 1;
+  if (ms < 15000) return 2;
+  if (ms < 60000) return 3;
+  if (ms < 300000) return 4;
+  if (ms < 1800000) return 5;
+  return 6;
+}
+
+void IRAM_ATTR pirIsr() {
+  Diag* d = gDiagIsr;
+  if (d == nullptr) return;   // przerwanie podpinamy dopiero po ustawieniu wskaznika
+
+  const uint32_t now = millis();
+  const bool high = gpio_ll_get_level(GPIO_LL_GET_HW(GPIO_PORT_0), cfg::PIN_PIR) != 0;
+  ++d->pirEdges;
+
+  if (high) {
+    // Zbocze w gore: zaczyna sie impuls. Przerwe liczymy od KONCA poprzedniego, bo to
+    // ona jest kandydatem na timeout podswietlenia. gPirFallAt == 0 => to pierwszy
+    // impuls od startu i nie ma od czego liczyc.
+    if (gPirFallAt != 0) ++d->pirGapHist[pirGapBucket(now - gPirFallAt)];
+    gPirRiseAt = now;
+    d->pirLastAt = now;
+    return;
+  }
+
+  // Zbocze w dol: domykamy impuls. gPirRiseAt == 0 => pierwsze, co widzimy, to opadanie
+  // (czujnik byl juz HIGH, gdy podpinalismy przerwanie, np. rozgrzewka po starcie) —
+  // szerokosci nie ma z czego policzyc, wiec liczymy to tylko jako zbocze.
+  if (gPirRiseAt == 0) return;
+  const uint32_t w = now - gPirRiseAt;   // uint32 na millis(): odejmowanie znosi zawiniecie
+  gPirFallAt = now;
+  gPirRiseAt = 0;
+
+  ++d->pirPulses;
+  d->pirLastMs = w;
+  if (w < d->pirMinMs) d->pirMinMs = w;
+  if (w > d->pirMaxMs) d->pirMaxMs = w;
+  d->pirTotalMs += w;
+  ++d->pirWidthHist[pirWidthBucket(w)];
 }
 
 // gRadarWantMem/gRadarMemReady usuniete razem z mechanizmem oddawania bufora —
@@ -892,13 +992,21 @@ void setup() {
   // Czujniki: PIR cyfrowy + LDR analog.
   // GOLY INPUT, nie INPUT_PULLDOWN. Poczatkowo dalem pulldown "na wszelki wypadek",
   // ale pomiar na urzadzeniu (v100) pokazal, ze przekombinowalem: spoczynek jest
-  // stabilnie LOW (SR505 sam trzyma low, wiec floating nie grozi), za to pulldown 45k
+  // stabilnie LOW (modul sam trzyma low, wiec floating nie grozi), za to pulldown 45k
   // sciagal stan WYSOKI ponizej progu VIH i czesc machniec nie wyzwalala PIR
-  // (pir_last_s rosl do 100+ mimo ciaglego ruchu). Bez pulldownu SR505 steruje sam.
+  // (pir_last_s rosl do 100+ mimo ciaglego ruchu). Bez pulldownu modul steruje sam.
+  // (Ten pomiar jest prawdziwy; nazywal tylko zly modul — bylo tu "SR505", a wlutowany
+  //  jest AM312. Sama obserwacja o pulldownie tego nie dotyczy.)
   // analogRead na GPIO1 = ADC1 dziala przy WiFi; ADC_11db daje pelny zakres ~0-3,1V
   // pod dzielnik 3,3V. Nastawy sa domyslne, ustawiamy je jawnie dla pewnosci.
   pinMode(cfg::PIN_PIR, INPUT);
   analogSetPinAttenuation(cfg::PIN_LDR, ADC_11db);
+
+  // PIR takze na przerwaniu (oba zbocza) — po co i dlaczego tak, patrz pirIsr().
+  // Kolejnosc jest istotna: najpierw wskaznik, potem pinMode, dopiero na koncu attach.
+  // Odwrotnie pierwsze zbocze trafiloby w gDiagIsr == nullptr i przepadloby.
+  gDiagIsr = &diag();
+  attachInterrupt(digitalPinToInterrupt(cfg::PIN_PIR), pirIsr, CHANGE);
 
   pvHistoryLoad(gHist);
   roomHistoryLoad(gRooms);
@@ -973,9 +1081,21 @@ void loop() {
   const uint32_t now = millis();
 
   // --- czujniki v100 (LDR analog + PIR cyfrowy), surowo do /api/diag ---
-  // Co 250 ms wystarczy: LDR jest wolnozmienny, a SR505 trzyma OUT ~8 s po ruchu,
-  // wiec polling nie zgubi zbocza. Odczyt to mikrosekundy, nie rusza mutexa (Diag to
-  // migawka bez blokad — pojedyncze pole rozjechane o klatke nikogo nie boli).
+  // Co 250 ms wystarczy: LDR jest wolnozmienny, a wlutowany PIR to AM312 — impuls ~2 s,
+  // okno martwe ~2 s, wiec polling nie zgubi zbocza. Odczyt to mikrosekundy, nie rusza
+  // mutexa (Diag to migawka bez blokad — pojedyncze pole rozjechane o klatke nikogo nie
+  // boli).
+  //
+  // Stalo tu wczesniej "SR505 trzyma OUT ~8 s po ruchu" i to byla NIEPRAWDA: modul
+  // potwierdzil wlasciciel 16.07.2026 — jest AM312, nie SR505. Decyzja (250 ms) byla
+  // dobra, ale uzasadniona liczba z czujnika, ktorego tu nie ma; przy 8 s zapas wygladal
+  // na 32-krotny, realnie jest 8-krotny. To istotne, bo od szerokosci impulsu zalezy caly
+  // przyszly timeout podswietlenia. Te ~2 s to nadal KATALOG, nie pomiar w tej lazience —
+  // mierzy je dopiero pir_width_ms w /api/diag i to ono, a nie ten komentarz, bedzie
+  // dowodem.
+  //
+  // pirLastAt pisze teraz pirIsr() (dokladny moment zbocza, nie krata 250 ms). Tutaj
+  // zostaje samo odswiezanie pirState do podgladu.
   {
     static uint32_t nextSensorAt = 0;
     if (static_cast<int32_t>(now - nextSensorAt) >= 0) {
@@ -984,9 +1104,29 @@ void loop() {
       for (int i = 0; i < 8; ++i) acc += analogRead(cfg::PIN_LDR);  // usredniamy szum ADC
       diag().ldrRaw = static_cast<uint16_t>(acc / 8);
       diag().ldrMv = static_cast<uint16_t>(analogReadMilliVolts(cfg::PIN_LDR));
-      const bool pir = digitalRead(cfg::PIN_PIR) != 0;
-      diag().pirState = pir;
-      if (pir) diag().pirLastAt = now;
+      diag().pirState = digitalRead(cfg::PIN_PIR) != 0;
+    }
+  }
+
+  // --- DIAGNOSTYKA: blysk diody przy wyzwoleniu PIR ---
+  // Na czas pomiaru — zeby dalo sie chodzic po lazience i widziec czujnik na zywo,
+  // zamiast odpytywac /api/diag. Znika razem z pomiarem.
+  //
+  // pirLastAt pisze pirIsr(); tu tylko czytamy. To pojedynczy wyrownany uint32
+  // (volatile), wiec odczyt jest atomowy i nie potrzebuje blokady — Diag i tak jest
+  // migawka bez mutexa. Start: pirLastAt == 0 i lastPirSeen == 0, wiec zaden falszywy
+  // blysk nie leci przy starcie.
+  //
+  // Miejsce nie jest przypadkowe: PONAD wczesnymi return-ami loop() (test diody,
+  // portal AP, OTA, ekran IP, boot). Tam ledShowGrid() sie nie wykonuje, wiec blysk
+  // sie nie wyrenderuje — ale lastPirSeen leci dalej i po powrocie do normalnego
+  // rysowania nie odpala sie blysk za zdarzenie sprzed kilkunastu sekund.
+  {
+    static uint32_t lastPirSeen = 0;
+    const uint32_t pirAt = diag().pirLastAt;
+    if (pirAt != lastPirSeen) {
+      lastPirSeen = pirAt;
+      ledPirFlash();
     }
   }
 
