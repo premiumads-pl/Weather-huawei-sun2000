@@ -1512,7 +1512,10 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
       // Ekran "W DOMU" bez czujników byłby pustym kafelkiem co minutę — pomijamy go
       // w rotacji, dopóki nikt nie skonfiguruje choć jednego.
       if (view_ == cfg::VIEW_HOME && ble::count() == 0) {
-        view_ = static_cast<uint8_t>(cfg::VIEW_PV);  // przeskakujemy dalej, nie na poczatek
+        // Na KOLEJNY ekran (PIEC), nie na PV: skok na VIEW_PV przeskakiwał VIEW_BOILER,
+        // wiec przy braku czujnikow BLE piec wypadal z rotacji, mimo ze byl
+        // skonfigurowany. Warunek ponizej i tak pominie PIEC, gdy nieautoryzowany.
+        view_ = static_cast<uint8_t>(cfg::VIEW_BOILER);
       }
       // Radar bez opadu = pusta mapa. Pokazywanie jej co minutę nie ma sensu —
       // pomijamy ekran, ale pasek postępu i tak go zaznaczy (innym kolorem),
@@ -2222,7 +2225,7 @@ void WeatherUi::drawViewBoiler(TFT_eSPI& spr, int ox, float t) {
 
   char sub[40];
   if (b.hasDhwTarget) {
-    snprintf(sub, sizeof(sub), "zadana %.0f°C · %s", b.dhwTargetC,
+    snprintf(sub, sizeof(sub), "zadana %.0f°C, %s", b.dhwTargetC,
              strcmp(b.dhwMode, "comfort") == 0   ? "komfort"
              : strcmp(b.dhwMode, "eco") == 0     ? "eko"
              : strcmp(b.dhwMode, "off") == 0     ? "wyłączona"
@@ -2244,7 +2247,7 @@ void WeatherUi::drawViewBoiler(TFT_eSPI& spr, int ox, float t) {
   } else if (heating) {
     glCenter(spr, "nastawa: brak odczytu", ox + 250, 92, col::TEXT_MUTE);
   } else {
-    glCenter(spr, "lato — nie grzeje", ox + 250, 92, col::TEXT_MUTE);
+    glCenter(spr, "lato - nie grzeje", ox + 250, 92, col::TEXT_MUTE);
   }
   char sup[24];
   if (b.hasSupplyTemp) {
@@ -2347,7 +2350,7 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
 
   char hdr[28] = {};
   if (haveOut) {
-    snprintf(hdr, sizeof(hdr), "na zewnątrz %d°C · %d%%",
+    snprintf(hdr, sizeof(hdr), "na zewnątrz %d°C, %d%%",
              static_cast<int>(lroundf(w.current.tempC)), w.current.humidity);
   }
   viewHeader(spr, ox, hdr);
@@ -2662,10 +2665,10 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
   if (otaTrialActive()) {
     // Okres próbny: wersja jeszcze nie potwierdziła, że działa. Jeśli w ciągu
     // 3 minut nie udowodni (WiFi + dane + sterta), urządzenie samo się cofnie.
-    snprintf(b, sizeof(b), "v%d · próbna", FW_VERSION);
+    snprintf(b, sizeof(b), "v%d - próbna", FW_VERSION);
     viewHeader(spr, ox, b, col::WARN);
   } else if (d.otaRemote > FW_VERSION) {
-    snprintf(b, sizeof(b), "v%d → v%d", FW_VERSION, d.otaRemote);
+    snprintf(b, sizeof(b), "v%d -> v%d", FW_VERSION, d.otaRemote);
     viewHeader(spr, ox, b, col::WARN);
   } else {
     snprintf(b, sizeof(b), "v%d", FW_VERSION);

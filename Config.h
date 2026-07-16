@@ -42,6 +42,15 @@ constexpr int PIN_TFT_MOSI = 11;
 constexpr int PIN_TFT_SCLK = 12;
 constexpr int PIN_TFT_BL = 14;
 
+// ---------- Czujniki (nowe, v100) ----------
+// LDR MUSI byc na ADC1 (GPIO 1-10), nie ADC2 — ADC2 nie dziala przy wlaczonym WiFi
+// (radio zabiera przetwornik). GPIO 1 = ADC1_CH0, wolny (TFT ma 8-12/14, dotyk 7).
+// Dzielnik: 3,3V -[LDR]- GPIO1 -[7,93k]- GND. Jasno => R_LDR male => napiecie WYZSZE.
+constexpr int PIN_LDR = 1;
+// SR505 (PIR): VCC 5V, OUT push-pull 3,3V. GPIO 13 wolny, nie strapujacy. Odczyt
+// CYFROWY, wiec fakt, ze GPIO 13 to ADC2, nie ma znaczenia (nie uzywamy tam ADC).
+constexpr int PIN_PIR = 13;
+
 // ---------- Siatka layoutu ----------
 constexpr int HEADER_H = 28;
 constexpr int PROG_Y = 29;

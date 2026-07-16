@@ -103,6 +103,13 @@ struct Diag {
   // te przypadki rozróżnia i pozwala policzyć offline dowolny kandydat na próg.
   uint32_t pvFailHist[6] = {};
   uint32_t pvExtraHist[6] = {};
+
+  // --- czujniki v100 (surowy odczyt do testu; jeszcze bez logiki) ---
+  // Bez sekretow: LDR to jasnosc otoczenia, PIR to obecnosc — nic prywatnego.
+  uint16_t ldrRaw = 0;       // surowy ADC1 z GPIO1 (0-4095), usredniony
+  uint16_t ldrMv = 0;        // to samo w mV (kalibracja eFuse) — jasno = wyzej
+  bool pirState = false;     // biezacy stan SR505 na GPIO13 (HIGH = ruch)
+  uint32_t pirLastAt = 0;    // millis() ostatniego HIGH (0 = od startu nic)
 };
 
 Diag& diag();

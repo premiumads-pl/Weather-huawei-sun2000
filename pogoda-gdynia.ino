@@ -754,7 +754,7 @@ static Alert buildAlert(const WeatherModel& w, const PvModel& pv) {
   if (pv.online && pvStatusIsFault(pv.data.statusCode)) {
     a.kind = AlertKind::PV_FAULT;
     strncpy(a.title, "Awaria falownika", sizeof(a.title) - 1);
-    snprintf(a.text, sizeof(a.text), "Status 0x%04X — sprawdź instalację",
+    snprintf(a.text, sizeof(a.text), "Status 0x%04X - sprawdź instalację",
              pv.data.statusCode);
     a.color = col::ERR;
     a.iconCode = -1;
@@ -787,7 +787,7 @@ static Alert buildAlert(const WeatherModel& w, const PvModel& pv) {
     a.kind = AlertKind::STORM;
     strncpy(a.title, "Burza", sizeof(a.title) - 1);
     if (w.current.weatherCode >= 95) {
-      snprintf(a.text, sizeof(a.text), "Burza nad %s — teraz", settings().city);
+      snprintf(a.text, sizeof(a.text), "Burza nad %s - teraz", settings().city);
     } else {
       snprintf(a.text, sizeof(a.text), "Prognozowana za %d h", stormIn);
     }
@@ -808,7 +808,7 @@ static Alert buildAlert(const WeatherModel& w, const PvModel& pv) {
   if (rainIn >= 0) {
     a.kind = AlertKind::HEAVY_RAIN;
     strncpy(a.title, "Ulewa", sizeof(a.title) - 1);
-    snprintf(a.text, sizeof(a.text), "Do %.1f mm/h — za %d h", maxRain, rainIn);
+    snprintf(a.text, sizeof(a.text), "Do %.1f mm/h - za %d h", maxRain, rainIn);
     a.color = col::RAIN;
     a.iconCode = 65;
     return a;
@@ -826,7 +826,7 @@ static Alert buildAlert(const WeatherModel& w, const PvModel& pv) {
   if (maxTemp >= 30.f) {
     a.kind = AlertKind::HEAT;
     strncpy(a.title, "Upał", sizeof(a.title) - 1);
-    snprintf(a.text, sizeof(a.text), "Do %.0f°C — pij wodę", maxTemp);
+    snprintf(a.text, sizeof(a.text), "Do %.0f°C - pij wodę", maxTemp);
     a.color = col::T_HOT;
     a.iconCode = 0;
     return a;
@@ -888,6 +888,17 @@ void setup() {
   }
 
   ledBegin();
+
+  // Czujniki v100 (test): PIR cyfrowy + LDR analog.
+  // PULLDOWN, nie goly INPUT: SR505 jest push-pull (sam steruje oba stany, wiec
+  // pulldown 45k mu nie przeszkadza), ale gdyby OUT byl kiedys odlaczony/floatujacy
+  // (zly lut), pulldown daje czysty LOW zamiast losowego "ruchu". Do testu nieznanego
+  // modulu to eliminuje jeden tryb bledu.
+  // analogRead na GPIO1 = ADC1 dziala przy WiFi; ADC_11db daje pelny zakres ~0-3,1V
+  // pod dzielnik 3,3V. Nastawy sa domyslne, ustawiamy je jawnie dla pewnosci.
+  pinMode(cfg::PIN_PIR, INPUT_PULLDOWN);
+  analogSetPinAttenuation(cfg::PIN_LDR, ADC_11db);
+
   pvHistoryLoad(gHist);
   roomHistoryLoad(gRooms);
   uiRooms = gRooms;
@@ -959,6 +970,24 @@ void loop() {
   }
 
   const uint32_t now = millis();
+
+  // --- czujniki v100 (LDR analog + PIR cyfrowy), surowo do /api/diag ---
+  // Co 250 ms wystarczy: LDR jest wolnozmienny, a SR505 trzyma OUT ~8 s po ruchu,
+  // wiec polling nie zgubi zbocza. Odczyt to mikrosekundy, nie rusza mutexa (Diag to
+  // migawka bez blokad — pojedyncze pole rozjechane o klatke nikogo nie boli).
+  {
+    static uint32_t nextSensorAt = 0;
+    if (static_cast<int32_t>(now - nextSensorAt) >= 0) {
+      nextSensorAt = now + 250;
+      uint32_t acc = 0;
+      for (int i = 0; i < 8; ++i) acc += analogRead(cfg::PIN_LDR);  // usredniamy szum ADC
+      diag().ldrRaw = static_cast<uint16_t>(acc / 8);
+      diag().ldrMv = static_cast<uint16_t>(analogReadMilliVolts(cfg::PIN_LDR));
+      const bool pir = digitalRead(cfg::PIN_PIR) != 0;
+      diag().pirState = pir;
+      if (pir) diag().pirLastAt = now;
+    }
+  }
 
   // --- dotyk GPIO7 ---
   switch (touch::poll()) {

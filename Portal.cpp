@@ -892,6 +892,15 @@ void apiDiag() {
   m["published"] = d.mqttPublished;
   m["err"] = d.mqttErr;
 
+  // --- czujniki v100 (surowy odczyt do testu) ---
+  // ldr_raw rosnie z jasnoscia (dzielnik: jasno => R_LDR male => napiecie wyzsze).
+  // pir_last_s: ile sekund temu SR505 ostatnio zglosil ruch (-1 = od startu nic).
+  JsonObject sen = j["sensors"].to<JsonObject>();
+  sen["ldr_raw"] = d.ldrRaw;
+  sen["ldr_mv"] = d.ldrMv;
+  sen["pir"] = d.pirState;
+  sen["pir_last_s"] = ago(d.pirLastAt);
+
   String out;
   serializeJsonPretty(j, out);
   server.sendHeader("Cache-Control", "no-store");
