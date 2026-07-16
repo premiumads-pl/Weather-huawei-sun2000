@@ -9,7 +9,6 @@
 #include "BleGateway.h"
 #include "Colors.h"
 #include "Config.h"
-#include "MapData.h"
 #include "Moon.h"
 #include "GasMeter.h"
 #include "Viessmann.h"
@@ -1585,11 +1584,13 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
 
 namespace {
 
+// Rzutowanie w oknie gmapf. Z definicji gmapf::LON_MIN/LON_MAX daje to dokladnie
+// (piksel w rastrze gmapw) - gmapf::X_OFF, czyli to samo, co rysuje ponizej petla ladu.
 void mapProject(float lat, float lon, int ox, int& x, int& y) {
-  x = ox + static_cast<int>((lon - gmap::LON_MIN) / (gmap::LON_MAX - gmap::LON_MIN) *
-                            gmap::MAP_W);
-  y = CY + static_cast<int>((gmap::LAT_MAX - lat) / (gmap::LAT_MAX - gmap::LAT_MIN) *
-                            gmap::MAP_H);
+  x = ox + static_cast<int>((lon - gmapf::LON_MIN) / (gmapf::LON_MAX - gmapf::LON_MIN) *
+                            gmapf::MAP_W);
+  y = CY + static_cast<int>((gmapf::LAT_MAX - lat) / (gmapf::LAT_MAX - gmapf::LAT_MIN) *
+                            gmapf::MAP_H);
 }
 
 uint16_t flightColor(const Flight& f) {
@@ -1616,29 +1617,43 @@ void WeatherUi::drawViewFlights(TFT_eSPI& spr, int ox, float t, const FlightMode
   const int my = CY;
 
   // --- morze ---
-  spr.fillRect(mx, my, gmap::MAP_W, gmap::MAP_H, col::MAP_SEA);
+  spr.fillRect(mx, my, gmapf::MAP_W, gmapf::MAP_H, col::MAP_SEA);
 
-  // --- ląd (pasy poziome z prekalkulowanej rasteryzacji) ---
-  for (int row = 0; row < gmap::MAP_H; ++row) {
-    const uint16_t a = pgm_read_word(&gmap::LAND_ROW_OFF[row]);
-    const uint16_t b = pgm_read_word(&gmap::LAND_ROW_OFF[row + 1]);
+  // --- ląd (okno gmapf w rastrze gmapw: przesuniecie o X_OFF i przyciecie do 224 px) ---
+  for (int row = 0; row < gmapf::MAP_H; ++row) {
+    const uint16_t a = pgm_read_word(&gmapw::LAND_ROW_OFF[row]);
+    const uint16_t b = pgm_read_word(&gmapw::LAND_ROW_OFF[row + 1]);
     for (uint16_t s = a; s < b; ++s) {
-      const uint8_t x0 = pgm_read_byte(&gmap::LAND_SPANS[s][0]);
-      const uint8_t x1 = pgm_read_byte(&gmap::LAND_SPANS[s][1]);
+      int x0 = static_cast<int>(pgm_read_word(&gmapw::LAND_SPANS[s][0])) - gmapf::X_OFF;
+      int x1 = static_cast<int>(pgm_read_word(&gmapw::LAND_SPANS[s][1])) - gmapf::X_OFF;
+      if (x1 < 0 || x0 > gmapf::MAP_W - 1) continue;   // pas w calosci poza oknem
+      if (x0 < 0) x0 = 0;
+      if (x1 > gmapf::MAP_W - 1) x1 = gmapf::MAP_W - 1;
       spr.drawFastHLine(mx + x0, my + row, x1 - x0 + 1, col::MAP_LAND);
     }
   }
 
-  // --- linia brzegowa ---
-  int px = 0, py = 0;
-  for (int i = 0; i < gmap::COAST_COUNT; ++i) {
-    const int16_t x = static_cast<int16_t>(pgm_read_word(&gmap::COAST_PTS[i][0]));
-    const int16_t y = static_cast<int16_t>(pgm_read_word(&gmap::COAST_PTS[i][1]));
-    if (i > 0) {
-      spr.drawLine(mx + px, my + py, mx + x, my + y, col::MAP_COAST);
+  // --- linia brzegowa (krawedzie pasow ladu, tak samo jak na radarze) ---
+  // Dawna polilinia gmap::COAST_PTS znikla razem z MapData.h — gmapw nie ma konturu,
+  // bo radar rysuje wybrzeze krawedziami pasow. Teraz oba ekrany robia to identycznie.
+  for (int row = 0; row < gmapf::MAP_H; ++row) {
+    const uint16_t a = pgm_read_word(&gmapw::LAND_ROW_OFF[row]);
+    const uint16_t b = pgm_read_word(&gmapw::LAND_ROW_OFF[row + 1]);
+    for (uint16_t s = a; s < b; ++s) {
+      const uint16_t rx0 = pgm_read_word(&gmapw::LAND_SPANS[s][0]);
+      const uint16_t rx1 = pgm_read_word(&gmapw::LAND_SPANS[s][1]);
+      // Krawedz to wybrzeze tylko wtedy, gdy pas konczy sie wewnatrz RASTRA (320 px).
+      // Test musi isc po gmapw, nie po oknie — inaczej brzeg okna udaje wybrzeze
+      // i wzdluz mapy leci pionowa krecha (ten sam blad co kiedys na radarze).
+      const int x0 = static_cast<int>(rx0) - gmapf::X_OFF;
+      const int x1 = static_cast<int>(rx1) - gmapf::X_OFF;
+      if (rx0 > 0 && x0 >= 0 && x0 < gmapf::MAP_W) {
+        spr.drawPixel(mx + x0, my + row, col::MAP_COAST);
+      }
+      if (rx1 < gmapw::MAP_W - 1 && x1 >= 0 && x1 < gmapf::MAP_W) {
+        spr.drawPixel(mx + x1, my + row, col::MAP_COAST);
+      }
     }
-    px = x;
-    py = y;
   }
 
   // --- etykiety miejsc ---
@@ -1686,9 +1701,9 @@ void WeatherUi::drawViewFlights(TFT_eSPI& spr, int ox, float t, const FlightMode
     // numer wiążący z listą
     int nx = x + 12;
     int ny = y - 12;
-    if (nx > mx + gmap::MAP_W - 9) nx = x - 12;
+    if (nx > mx + gmapf::MAP_W - 9) nx = x - 12;
     if (ny < my + 9) ny = y + 12;
-    if (ny > my + gmap::MAP_H - 9) ny = y - 12;
+    if (ny > my + gmapf::MAP_H - 9) ny = y - 12;
     spr.fillCircle(nx, ny, 7, c);
     spr.drawCircle(nx, ny, 7, col::BG);
     char nb[4];
@@ -1697,8 +1712,8 @@ void WeatherUi::drawViewFlights(TFT_eSPI& spr, int ox, float t, const FlightMode
   }
 
   // --- legenda ---
-  const int ly0 = my + gmap::MAP_H - 12;
-  spr.fillRect(mx, ly0, gmap::MAP_W, 12, col::BG);
+  const int ly0 = my + gmapf::MAP_H - 12;
+  spr.fillRect(mx, ly0, gmapf::MAP_W, 12, col::BG);
   spr.fillCircle(mx + 7, ly0 + 6, 4, col::FLY_ARRIVE);
   gl(spr, "przylot GDN", mx + 14, ly0 + 2, col::TEXT_DIM);
   spr.fillCircle(mx + 100, ly0 + 6, 4, col::FLY_DEPART);

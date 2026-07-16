@@ -60,6 +60,26 @@ struct Diag {
 
   // --- falownik ---
   bool pvAsleep = false;     // noc: Huawei wyłącza Modbus TCP, to nie awaria
+
+  // Kumulacyjny licznik odczytów Modbusa — odpowiedź na pytanie "jak często pada
+  // dany rejestr". Nie da się jej wyczytać z /api/log: to bufor KOŁOWY 3072 B
+  // (Log.cpp:7), czyli ~47 linii, a przy zdrowej pracy (PV co 30 s, loty co 15 s)
+  // okno rzędu SZEŚCIU MINUT. `grep -c` po /api/log mierzy ostatnie kilka minut,
+  // nawet gdy urządzenie chodzi od tygodnia. Te pola żyją tyle, co uptime, więc
+  // po dobie mówią prawdę o dobie.
+  // Bez sekretów: same liczby, żadnego IP falownika — /api/diag bywa wklejane
+  // do zgłoszeń błędów.
+  uint32_t pvCycles = 0;      // ile razy fetch() doszedł do czytania rejestrów
+  uint32_t pvFails = 0;       // suma porażek w piątce "starej" (32064/32080/37113/32106/32114)
+  uint32_t pvExtraFails = 0;  // suma porażek w piątce "nowej" (32016/32087/32086/32089/37100)
+
+  // Rozkład porażek NA CYKL; indeks = ile padło w jednym cyklu (0..5).
+  // Suma sama w sobie nie wystarcza, bo próg jest decyzją PER CYKL: 1000 porażek
+  // rozłożone po jednej na 1000 cykli nie przekroczyłoby progu ANI RAZU, a te same
+  // 1000 porażek jako 200 cykli po pięć przekraczałoby go w każdym z nich. Histogram
+  // te przypadki rozróżnia i pozwala policzyć offline dowolny kandydat na próg.
+  uint32_t pvFailHist[6] = {};
+  uint32_t pvExtraHist[6] = {};
 };
 
 Diag& diag();

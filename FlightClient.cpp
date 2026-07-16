@@ -9,7 +9,7 @@
 
 #include "Config.h"
 #include "Settings.h"
-#include "MapData.h"
+#include "MapDataWide.h"
 
 namespace {
 
@@ -26,9 +26,11 @@ void trimCallsign(const char* src, char* dst, size_t n) {
   dst[j] = '\0';
 }
 
+// Ramka mapy samolotow = okno gmapf w rastrze gmapw. Te same stale, z ktorych liczy
+// sie rzutowanie w WeatherUi — samolot uznany za "w ramce" musi dac sie narysowac.
 bool inMapBounds(float lat, float lon) {
-  return lat >= gmap::LAT_MIN && lat <= gmap::LAT_MAX && lon >= gmap::LON_MIN &&
-         lon <= gmap::LON_MAX;
+  return lat >= gmapf::LAT_MIN && lat <= gmapf::LAT_MAX && lon >= gmapf::LON_MIN &&
+         lon <= gmapf::LON_MAX;
 }
 
 // Ile kilometrow ma stopien dlugosci geograficznej na NASZEJ szerokosci.

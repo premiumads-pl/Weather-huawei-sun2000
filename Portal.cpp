@@ -787,6 +787,20 @@ void apiDiag() {
   pv["err"] = d.pvErr;
   pv["asleep"] = d.pvAsleep;   // noc: Huawei wyłącza Modbus TCP — to nie awaria
 
+  // Kumulacyjne liczniki Modbusa (patrz Log.h). Bez IP falownika — same liczby,
+  // a /api/diag bywa wklejane do zgłoszeń błędów.
+  // Odsetek porażek liczy się jako fails / (cycles * 5); `*_hist` to rozkład
+  // porażek na cykl (indeks 0..5) i dopiero on mówi, co zrobiłby dany próg.
+  pv["cycles"] = d.pvCycles;
+  pv["fails"] = d.pvFails;
+  pv["extra_fails"] = d.pvExtraFails;
+  JsonArray fh = pv["fail_hist"].to<JsonArray>();
+  JsonArray eh = pv["extra_hist"].to<JsonArray>();
+  for (int i = 0; i < 6; ++i) {
+    fh.add(d.pvFailHist[i]);
+    eh.add(d.pvExtraHist[i]);
+  }
+
   // Ostatni restart — dotąd nie wiedzieliśmy, czy urządzenie się wywala.
   JsonObject rs = j["reset"].to<JsonObject>();
   rs["reason"] = resetReasonText(d.resetReason);

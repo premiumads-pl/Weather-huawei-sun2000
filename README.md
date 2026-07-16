@@ -259,7 +259,7 @@ WeatherClient.h/.cpp, WeatherData.h    Open-Meteo fetch + parsed model
 PvClient.h/.cpp, PvData.h              Huawei SUN2000 Modbus TCP client + parsed model
 RadarClient.h/.cpp    RainViewer tile fetch + PNG decode + pixel sampling
 FlightClient.h/.cpp, FlightData.h      adsb.fi fetch + route cache
-MapData.h             generated coastline outline for the flight map
+MapDataWide.h         generated Bay of Gdansk raster, shared by the radar and flight maps
 WeatherUi.h/.cpp       all TFT_eSPI drawing (6 screens, header/footer, alerts)
 Led.h/.cpp             RGB status LED
 Ota.h/.cpp             GitHub-Releases-based OTA client

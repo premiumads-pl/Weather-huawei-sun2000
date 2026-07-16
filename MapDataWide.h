@@ -4,9 +4,9 @@
 #include <pgmspace.h>
 
 // Wygenerowane automatycznie (Natural Earth 10m land, rasteryzacja skanliniowa).
-// SZEROKA mapa — 320 px, na caly ekran. Osobna od gmap (224 px), bo tamta dzieli
-// ekran z lista lotow. Granice dobrane tak, zeby zachowac proporcje geograficzne:
-// 349 m na piksel w obu osiach.
+// SZEROKA mapa — 320 px, na caly ekran. Jedyny raster zatoki w projekcie: radar
+// bierze ja w calosci, ekran samolotow jako wycinek (patrz gmapf nizej).
+// Granice dobrane tak, zeby zachowac proporcje geograficzne: 349 m na piksel w obu osiach.
 namespace gmapw {
 
 constexpr float LAT_MIN = 54.3000f;
@@ -73,3 +73,32 @@ static const uint16_t LAND_ROW_OFF[173] PROGMEM = {
 };
 
 }  // namespace gmapw
+
+// Okno mapy dla ekranu SAMOLOTOW — wycinek rastra gmapw, bez wlasnych danych.
+//
+// Ekran samolotow dzieli szerokosc z lista lotow, wiec mapa ma 224 px, nie 320.
+// Kiedys byl na to osobny raster (MapData.h, namespace gmap, LON 18.000-19.200).
+// Mial 346.9 m/px przy 350.1 m/px gmapw — te same wody w dwoch skalach rozjezdzajacych
+// sie o 1%. Teraz jest jeden raster, a ekran samolotow bierze z niego okno od piksela
+// X_OFF. Granice LON licza sie z geometrii gmapw, wiec rzutowanie lon->x i raster
+// NIE MOGA sie rozjechac — to jest cel tej konstrukcji, nie ozdoba.
+//
+// X_OFF = 49, bo (18.0000 - 17.7350) / 1.7300 * 320 = 49.02 px. Lewa krawedz okna
+// wypada na LON 17.99991 — 0.02 px od dawnego 18.0000. Prawa siega 19.21091 zamiast
+// 19.2000, czyli okno pokazuje 2 px WIECEJ na wschod niz stara mapa. Sprawdzone
+// w float32: okno_x == gmapw_x - X_OFF co do piksela.
+namespace gmapf {
+
+constexpr int X_OFF = 49;              // przesuniecie okna w rastrze gmapw
+constexpr int MAP_W = 224;             // szerokosc okna (reszta ekranu to lista lotow)
+constexpr int MAP_H = gmapw::MAP_H;
+
+constexpr float LON_PER_PX = (gmapw::LON_MAX - gmapw::LON_MIN) / gmapw::MAP_W;
+constexpr float LON_MIN = gmapw::LON_MIN + X_OFF * LON_PER_PX;             // 17.99991
+constexpr float LON_MAX = gmapw::LON_MIN + (X_OFF + MAP_W) * LON_PER_PX;   // 19.21091
+constexpr float LAT_MIN = gmapw::LAT_MIN;
+constexpr float LAT_MAX = gmapw::LAT_MAX;
+
+static_assert(X_OFF + MAP_W <= gmapw::MAP_W, "okno gmapf wychodzi poza raster gmapw");
+
+}  // namespace gmapf

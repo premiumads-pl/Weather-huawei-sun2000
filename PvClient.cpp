@@ -217,44 +217,87 @@ bool PvClient::fetch(PvModel& out, bool night) {
 
   // DWA liczniki, nie jeden — i to jest celowe.
   //
-  // `fails` pilnuje piatki, dla ktorej prog "fails >= 3" zostal kiedys skalibrowany:
-  // to 3 z 5, czyli 60% odczytow. Gdyby dorzucic do niego piatke ponizej, ten sam
-  // prog znaczylby nagle 3 z 10, czyli 30% — cichaczem dwukrotnie ostrzejszy werdykt
-  // "Modbus nie odpowiada", w tym samym wydaniu, w ktorym te rejestry PIERWSZY RAZ
-  // sa w ogole sprawdzane. Nie wiemy, jak czesto padaja, wlasnie dlatego, ze do dzis
-  // nikt ich nie liczyl. Zmiana progu i zmiana tego, co go karmi, nie moga isc razem.
+  // Prog "fails >= 3" rozstrzyga jedna rzecz: czy sesja Modbus jest martwa na tyle,
+  // ze oplaca sie ja zerwac i zaplacic za nowy handshake (~20 s rozgrzewki Huawei).
+  // Skalibrowany zostal jako 3 z 5, czyli 60% odczytow. Dorzucenie drugiej piatki do
+  // tego samego licznika zmienia go po cichu na 3 z 10, czyli na 30% — dwa razy
+  // ostrzejszy werdykt "Modbus bez odpowiedzi", bez ani jednej linii o zmianie progu.
   //
-  // `extra` liczy nowa piatke: zapisuje prawde do logu, ale NIE zamyka sesji.
-  // Gdy `/api/log` pokaze po dobie, ze one nie padaja, mozna je bedzie dolaczyc do
-  // `fails` i podniesc prog do 6 — juz na danych, nie na przeczuciu.
+  // Zeby zrobic to uczciwie, trzeba wiedziec, jak czesto ta druga piatka pada.
+  // NADAL TEGO NIE WIEMY — i /api/log na to pytanie nie odpowie: Log.cpp:7 trzyma
+  // bufor KOLOWY 3072 B, czyli ~47 linii, a przy zdrowej pracy (PV co 30 s, loty
+  // co 15 s) jest to okno rzedu SZESCIU MINUT. Poprzednia wersja tego pliku scalila
+  // liczniki i podniosla prog do 6, powolujac sie na "7 h bez ani jednej porazki"
+  // zmierzone przez `grep -c` po /api/log. To byl argument o szesciu minutach,
+  // podpisany jako argument o siedmiu godzinach. Stad ten rollback.
+  //
+  // Pomiar zbiera teraz licznik kumulacyjny w /api/diag (nizej): zyje tyle, co
+  // uptime, wiec po dobie powie prawde o dobie. Prog wroci do rozmowy, gdy beda dane.
+  //
+  // `extra` liczy druga piatke (32016, 32087, 32086, 32089, 37100): idzie do pomiaru
+  // i do logu, ale NIE zamyka sesji.
   int fails = 0;
   int extra = 0;
-  uint16_t missing = 0;  // pierwszy rejestr MOCY, ktory nie doszedl (0 = komplet)
+  uint16_t missing = 0;    // pierwszy rejestr MOCY, ktory nie doszedl (0 = komplet)
+  uint16_t firstFail = 0;  // pierwszy nieudany odczyt z DOWOLNEJ grupy (tylko do logu)
+
+  auto mark = [&](uint16_t addr) {
+    if (!firstFail) firstFail = addr;
+  };
 
   // Trzy rejestry mocy sa nierozlaczne — z dwoch z nich liczy sie houseLoadW.
-  if (readS32(32064, s32)) snap.powerDcW = s32; else { ++fails; if (!missing) missing = 32064; }
-  if (readS32(32080, s32)) snap.powerAcW = s32; else { ++fails; if (!missing) missing = 32080; }
-  if (readS32(37113, s32)) snap.gridPowerW = s32; else { ++fails; if (!missing) missing = 37113; }
-  if (readU32(32106, u32)) snap.energyTotalKwh = static_cast<float>(u32) / 100.f; else ++fails;
-  if (readU32(32114, u32)) snap.energyTodayKwh = static_cast<float>(u32) / 100.f; else ++fails;
+  if (readS32(32064, s32)) snap.powerDcW = s32; else { ++fails; mark(32064); if (!missing) missing = 32064; }
+  if (readS32(32080, s32)) snap.powerAcW = s32; else { ++fails; mark(32080); if (!missing) missing = 32080; }
+  if (readS32(37113, s32)) snap.gridPowerW = s32; else { ++fails; mark(37113); if (!missing) missing = 37113; }
+  if (readU32(32106, u32)) snap.energyTotalKwh = static_cast<float>(u32) / 100.f; else { ++fails; mark(32106); }
+  if (readU32(32114, u32)) snap.energyTodayKwh = static_cast<float>(u32) / 100.f; else { ++fails; mark(32114); }
 
-  // Ponizsza piatka nie miala "else" W OGOLE — mogla PASC W CALOSCI, a nikt by sie
-  // nie dowiedzial. snap jest wyzerowany, wiec kazda taka porazka wychodzila na ekran
-  // jako pomiar: temperatura 0,0 C (zima wyglada wiarygodnie), meterOk=false (alarm
-  // o liczniku, ktorego nie ma), a statusCode 0 to u Huawei "Czuwanie" — w sloneczne
-  // poludnie. Dlatego przy porazce 32089 wpisujemy 0xFFFF: to kod, ktorego Huawei
-  // nie uzywa, wiec pvStatusLabel() zejdzie do default i powie "Stan nieznany"
-  // zamiast udawac, ze falownik czuwa.
-  if (readS16(32016, 10, f)) snap.pvVoltageV = f; else ++extra;
-  if (readS16(32087, 10, f)) snap.inverterTempC = f; else ++extra;
-  if (readU16(32086, u16)) snap.efficiencyPct = static_cast<float>(u16) / 100.f; else ++extra;
-  if (readU16(32089, u16)) snap.statusCode = u16; else { snap.statusCode = 0xFFFF; ++extra; }
-  if (readU16(37100, u16)) snap.meterOk = (u16 == 1); else { snap.meterOk = true; ++extra; }
+  // Druga piatka. snap jest wyzerowany, wiec nieudany odczyt wychodzi na ekran jako
+  // pomiar — i chronia przed tym DWAJ wartownicy z pieciu, nie wszyscy:
+  //
+  //   32089 (statusCode) -> 0xFFFF: kodu tego Huawei nie uzywa, wiec pvStatusLabel()
+  //         zejdzie do default i powie "Stan nieznany" zamiast udawac "Czuwanie"
+  //         (tak czyta sie 0) w sloneczne poludnie.
+  //   37100 (meterOk)    -> true: zeby brak odczytu nie podnosil alarmu o awarii
+  //         licznika, ktorej nikt nie widzial.
+  //
+  // Pozostale trzy — pvVoltageV, inverterTempC, efficiencyPct — wartownika NIE MAJA.
+  // Przy porazce zostaja na 0 z `PvSnapshot snap{}` i, jesli odczyt przejdzie bramki
+  // nizej, ida na ekran jako pomiar: temperatura 0,0 C zima wyglada wiarygodnie.
+  // Tak bylo juz w v97, wiec to nie jest regresja — ale trzeba to nazwac wprost,
+  // zamiast pisac, ze wartownicy pilnuja "reszty". Sentinel dla tej trojki wymaga
+  // zmiany PvData.h i UI, czyli osobnej decyzji; do tego czasu ten komentarz ma
+  // mowic, ile naprawde pilnujemy: dwa z pieciu.
+  if (readS16(32016, 10, f)) snap.pvVoltageV = f; else { ++extra; mark(32016); }
+  if (readS16(32087, 10, f)) snap.inverterTempC = f; else { ++extra; mark(32087); }
+  if (readU16(32086, u16)) snap.efficiencyPct = static_cast<float>(u16) / 100.f; else { ++extra; mark(32086); }
+  if (readU16(32089, u16)) snap.statusCode = u16; else { snap.statusCode = 0xFFFF; ++extra; mark(32089); }
+  if (readU16(37100, u16)) snap.meterOk = (u16 == 1); else { snap.meterOk = true; ++extra; mark(37100); }
 
-  if (extra > 0) {
-    // Sam log, bez konsekwencji. To jest pomiar, nie alarm — po dobie w /api/log
-    // bedzie wiadomo, czy te rejestry sa stabilne.
-    LOG("PV: %d z 5 rejestrow dodatkowych nie doszlo (nie wplywa na prog awarii)", extra);
+  // Licznik kumulacyjny — to jest wlasciwa odpowiedz na "jak czesto padaja", bo
+  // w odroznieniu od /api/log nie ma okna: zyje tyle, co uptime. Zadnego mutexa
+  // (pola sa tylko dopisywane, czyta je webTask) i zadnej operacji sieciowej wyzej.
+  // fails/extra to 0..5, wiec indeks histogramu zawsze miesci sie w [6].
+  {
+    Diag& dg = diag();
+    ++dg.pvCycles;
+    dg.pvFails += static_cast<uint32_t>(fails);
+    dg.pvExtraFails += static_cast<uint32_t>(extra);
+    ++dg.pvFailHist[fails];
+    ++dg.pvExtraHist[extra];
+  }
+
+  // Ktory rejestr padl, nie tylko ile ich bylo — na urzadzeniu bez konsoli inaczej
+  // zostaje samo "Modbus bez odpowiedzi". Najwyzej jedna linia na cykl.
+  //
+  // `&& !night` jest tu istotne: o zmroku TCP jeszcze stoi, a rejestry juz milcza,
+  // wiec bez tego warunku ta linia leci co 5 minut przez CALA NOC — tuz obok
+  // neutralnego "falownik usypia", nazywajac sen awaria. Do tego zjada okno logu,
+  // ktore i tak ma tylko ~47 linii. Nocne milczenie rejestrow widac w histogramie
+  // w /api/diag, i tam jest na nie miejsce.
+  if ((fails > 0 || extra > 0) && !night) {
+    LOG("PV: nie doszlo %d z 5 podstawowych, %d z 5 dodatkowych (pierwszy: %u)",
+        fails, extra, static_cast<unsigned>(firstFail));
   }
 
   // Sesja się posypała — zamknij, żeby następny cykl zaczął od czystego handshake.
@@ -270,7 +313,7 @@ bool PvClient::fetch(PvModel& out, bool night) {
   }
 
   // Brak KTOREGOKOLWIEK z trzech rejestrow mocy = calego odczytu nie wolno pokazac.
-  // Prog fails >= 3 tego nie lapal, bo to jest JEDNA porazka. A gdy padalo 37113
+  // Prog fails >= 3 tego nie lapie, bo to jest JEDNA porazka. A gdy padalo 37113
   // (bilans sieci — timeout, chwilowa desynchronizacja, licznik na innym Modbusie),
   // gridPowerW zostawalo 0 i wychodzilo houseLoadW = powerAcW - 0 = CALA produkcja:
   // sloneczne poludnie, 5 kW z paneli i "Pobor domu: 5000 W", "Siec: 0 W". Ta sama
