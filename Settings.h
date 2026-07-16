@@ -163,3 +163,9 @@ void roomHistorySave(const struct RoomHistory& h);
 // wymaga tygodni.
 void gasHistoryLoad(struct GasHistory& g);
 void gasHistorySave(const struct GasHistory& g);
+
+// Profil doby palnika. Do v98 gBurner byl JEDYNYM profilem bez utrwalania — PV,
+// pokoje i gaz maja swoje — i dokladnie dlatego "wykres pieca nie pamieta po
+// resecie, a wykres fotowoltaiki pamieta". Zadnej innej przyczyny w tym nie ma.
+void burnerHistoryLoad(struct BurnerHistory& b);
+void burnerHistorySave(const struct BurnerHistory& b);

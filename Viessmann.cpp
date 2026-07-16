@@ -391,6 +391,12 @@ bool ensureIds() {
 
 float gCircuitTarget = 0.f;
 
+// Poprzedni odczyt licznikow palnika — do wykrycia REALNEJ zmiany. Dotyka tego
+// wylacznie netTask (fetch), wiec bez blokady.
+float gPrevHours = 0.f;
+uint32_t gPrevStarts = 0;
+bool gHavePrevStats = false;
+
 // Zwraca "czy pole doszlo" OSOBNO od wartosci. Stare "| 0.0f" oddawalo po cichu zero
 // dla pola, ktorego nie ma — a Viessmann potrafi nie przyslac "value" wcale (feature
 // wylaczony przez isEnabled/isReady, czujnik notConnected) albo przyslac null.
@@ -554,8 +560,14 @@ bool fetch(Model& out) {
     } else if (strcmp(name, "heating.burners.0.modulation") == 0) {
       if (propF(f, "value", v)) { m.modulationPct = static_cast<int>(v); m.hasModulation = true; }
     } else if (strcmp(name, "heating.burners.0.statistics") == 0) {
-      if (propF(f, "hours", v)) m.burnerHours = static_cast<uint32_t>(v);
-      if (propF(f, "starts", v)) m.burnerStarts = static_cast<uint32_t>(v);
+      // BEZ static_cast<uint32_t> na "hours" — patrz Viessmann.h przy burnerHours.
+      // Obcinanie do pelnych godzin kasowalo dokladnie te informacje, po ktora tu
+      // przychodzimy: krotki cykl CWU to setne czesci godziny.
+      // "starts" zostaje calkowite: to licznik zaplonow, ulamka tam nie ma.
+      // Kazda wlasciwosc ma WLASNA flage — patrz Viessmann.h. Jedna wspolna, stawiana
+      // na OR, mowilaby "statystyki przyszly" takze wtedy, gdy przyszla polowa.
+      if (propF(f, "hours", v)) { m.burnerHours = v; m.hasBurnerHours = true; }
+      if (propF(f, "starts", v)) { m.burnerStarts = static_cast<uint32_t>(v); m.hasBurnerStarts = true; }
     } else if (strcmp(name, "heating.circuits.0.operating.modes.active") == 0) {
       snprintf(m.circuitMode, sizeof(m.circuitMode), "%s", f["properties"]["value"]["value"] | "");
     } else if (strcmp(name, "heating.circuits.0.operating.programs.normal") == 0) {
@@ -605,6 +617,42 @@ bool fetch(Model& out) {
   m.valid = true;
   m.okAt = millis();
   out = m;
+
+  // Slad po zaplonie, ktorego wykres NIE WIDZI.
+  // Palnik chodzil przez cztery minuty miedzy dwoma odpytami? burnerActive i
+  // modulationPct przespaly to w calosci, ale licznik kumulacyjny drgnal — i ta
+  // linia jest jedynym dowodem, ze cos sie stalo.
+  //
+  // ILE TO KOSZTUJE, POLICZONE. Warunkiem jest ZMIANA wartosci, nie sam odpyt — ale
+  // zima to nie znaczy "rzadko": przy rozdzielczosci `hours` 0,01 h (36 s) licznik
+  // drgnie przy KAZDYM odpycie, czyli jest to linia co 3 min, a nie raz na kilka
+  // godzin. Bufor logu ma 3072 B (Log.cpp) i przy zdrowej pracy zapisuje ~7,8
+  // linii/min, czyli miesci ~6,0 min. Ta linia (~64 B) dokłada 0,33 linii/min = +4%:
+  // okno logu schodzi z ~6,0 do ~5,8 min. Za te 12 sekund kupujemy jedyny slad po
+  // zaplonie krotszym niz odstep miedzy odpytami — oplaca sie.
+  //
+  // OBIE flagi, nie jedna z nich: ta linia drukuje hours ORAZ starts, wiec przy
+  // polowie statystyk nie mialaby co powiedziec. Czego brakuje, widac w /api/diag
+  // (has_hours / has_starts) — to jest kanal do tego pomiaru, nie log.
+  //
+  // Pierwszy odczyt po starcie loguje sie osobno, jako punkt odniesienia: gPrevHours
+  // jest wtedy zerem i "roznica" wynioslaby kilka tysiecy godzin — czyli bzdure.
+  if (m.hasBurnerHours && m.hasBurnerStarts) {
+    if (!gHavePrevStats) {
+      gHavePrevStats = true;
+      gPrevHours = m.burnerHours;
+      gPrevStarts = m.burnerStarts;
+      LOG("Piec: licznik palnika na starcie %.3f h, %u startow",
+          m.burnerHours, static_cast<unsigned>(m.burnerStarts));
+    } else if (m.burnerHours != gPrevHours || m.burnerStarts != gPrevStarts) {
+      LOG("Piec: palnik +%.3f h, starts %u -> %u, mod %d%%",
+          m.burnerHours - gPrevHours, static_cast<unsigned>(gPrevStarts),
+          static_cast<unsigned>(m.burnerStarts), m.modulationPct);
+      gPrevHours = m.burnerHours;
+      gPrevStarts = m.burnerStarts;
+    }
+  }
+
   LOG("Piec: CWU %.1f°C (cel %.0f), zasilanie %.1f°C, palnik %s %d%%, gaz dzis %.1f m3",
       m.dhwTempC, m.dhwTargetC, m.supplyTempC, m.burnerActive ? "ON" : "off", m.modulationPct,
       m.gasDhwM3 + m.gasHeatM3);

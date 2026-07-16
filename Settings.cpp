@@ -587,3 +587,81 @@ void gasHistorySave(const GasHistory& g) {
   prefs.putBytes(K_GAS, &b, sizeof(b));
   prefs.end();
 }
+
+// ------------------------------------------- profil doby palnika (144 sloty) --
+// Ostatni profil bez utrwalania. PV zapisuje sie co 5 minut, pokoje co 10, gaz raz
+// na dobe — a palnik nie zapisywal sie NIGDY. Wykres pieca gasl przy kazdym
+// restarcie i to jest cala tajemnica "fotowoltaika pamieta, piec nie".
+//
+// FILLED IDZIE DO BLOBU NA ZAPAS — DZIS BEZ OBSERWOWALNEGO SKUTKU.
+// Przy PV odtwarzamy filled z danych (`filled[i] = watts[i] > 0 || load[i] > 0`).
+// Tu daloby sie tak samo i nikt by nie zauwazyl: jedyny konsument to drawGasChart
+// (WeatherUi.cpp:2323), ktory pomija slot warunkiem `!h.filled[s] || h.mod[s] == 0` —
+// a `mod[s] == 0` i tak pomija ten sam slot, push() zas ustawia filled wszedzie, gdzie
+// mod > 0. Czyli `!filled[s]` jest dzis warunkiem MARTWYM. peak() nie jest wolane wcale.
+// NIE SZUKAJ TU LOGIKI, KTORA TO WYKORZYSTUJE — nie ma jej.
+//
+// Pole zostaje na potrzeby PLANOWANEGO wykresu: mod == 0 znaczy "palnik zmierzony,
+// stal", i to jest pelnoprawny pomiar, ktory przeprojektowany wykres bedzie chcial
+// odroznic od "nie bylo odczytu" (bez tego cala noc bez odpytow wyglada identycznie
+// jak noc, w ktora piec stal). 144 B w blobie jest tansze teraz niz migracja klucza
+// NVS pozniej.
+//
+// Ten sam wzorzec, co przy "gas1" i "prof1": wlasny klucz, pole `ver` w blobie,
+// asercja rozmiaru. Rozmiary blobow w przestrzeni "pvday" sa rozne (prof1 = 584,
+// rh2 = 1736, gas1 = 252, burn1 = 296), wiec pomylka o klucz nie ma jak przejsc
+// przez kontrole getBytesLength().
+namespace {
+struct BurnerBlob {
+  uint16_t ver;
+  int32_t day;                            // tm_yday
+  uint8_t mod[BurnerHistory::SLOTS];      // 0..100 %
+  uint8_t filled[BurnerHistory::SLOTS];   // 0/1 — patrz wyzej: pole na zapas
+};
+constexpr uint16_t BURN_VER = 1;
+constexpr const char* K_BURN = "burn1";
+
+static_assert(sizeof(BurnerBlob) == 296,
+              "zmienil sie uklad profilu palnika - podbij klucz NVS na \"burn2\", "
+              "inaczej stary blob wczyta sie jako nowy (cicha korupcja)");
+}  // namespace
+
+void burnerHistoryLoad(BurnerHistory& h) {
+  h.reset(-1);
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, true)) {
+    return;
+  }
+  BurnerBlob b{};
+  if (prefs.getBytesLength(K_BURN) == sizeof(b) &&
+      prefs.getBytes(K_BURN, &b, sizeof(b)) == sizeof(b) && b.ver == BURN_VER &&
+      b.day >= 0) {
+    memcpy(h.mod, b.mod, sizeof(h.mod));
+    // Przez petle, nie memcpy: `filled` w BurnerHistory to bool[], a bool o wartosci
+    // innej niz 0/1 (choćby ze smiecia w NVS) to zachowanie niezdefiniowane.
+    for (int i = 0; i < BurnerHistory::SLOTS; ++i) h.filled[i] = b.filled[i] != 0;
+    h.day = b.day;
+    Serial.printf("Piec: wczytano profil palnika dnia %d z NVS\n", static_cast<int>(b.day));
+  }
+  prefs.end();
+  // Profil ze WCZORAJ zostaje tu CELOWO nietkniety i CELOWO nie sprawdzamy daty:
+  // przy starcie NTP jeszcze nie odpowiedzial, wiec tm_yday bylby z 1970 i skasowalby
+  // dobry profil. Kasowanie doby jest osobno, w netTask, gdzie zegar jest juz pewny —
+  // patrz pogoda-gdynia.ino, "polnoc: profil doby palnika przestaje byc dzis".
+  // NIE polega ono na push(): push() przychodzi tylko po udanym odpycie pieca, wiec
+  // przy milczacym API wczorajszy profil wisialby na ekranie jako "dzis" godzinami.
+}
+
+void burnerHistorySave(const BurnerHistory& h) {
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, false)) {
+    return;
+  }
+  BurnerBlob b{};
+  b.ver = BURN_VER;
+  b.day = h.day;
+  memcpy(b.mod, h.mod, sizeof(b.mod));
+  for (int i = 0; i < BurnerHistory::SLOTS; ++i) b.filled[i] = h.filled[i] ? 1 : 0;
+  prefs.putBytes(K_BURN, &b, sizeof(b));
+  prefs.end();
+}

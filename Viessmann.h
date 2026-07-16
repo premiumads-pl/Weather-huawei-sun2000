@@ -30,7 +30,21 @@ struct Model {
   float supplyTempC = 0.f;
   bool burnerActive = false;
   int modulationPct = 0;
-  uint32_t burnerHours = 0;
+
+  // LICZNIKI KUMULACYJNE PALNIKA — jedyne dane o piecu ODPORNE NA ALIASING.
+  //
+  // Odpytujemy piec co 3 minuty (limit Viessmanna: 120/10 min, 1450/dobe), a cykl
+  // grzania CWU trwa czasem krocej. Cykl, ktory zaczal sie i skonczyl MIEDZY dwoma
+  // odpytami, dla burnerActive/modulationPct nie istnial — i wlasnie dlatego licznik
+  // gazu pokazuje 1,1 m3 na dobe przy modulacji "caly czas zero". Fotowoltaika idzie
+  // co 30 s, wiec trafia; piec nie ma szans.
+  // Licznik kumulacyjny tego problemu nie ma z definicji: roznica miedzy dwoma
+  // odpytami mowi, ile palnik chodzil, nawet jesli ANI RAZU nie zlapalismy go w akcji.
+  //
+  // hours JEST FLOATEM, i to nie kosmetyka. Do v98 stalo tu uint32_t i parser robil
+  // static_cast<uint32_t>(v) — dwuminutowe palenie to 0,033 h, czyli po obcieciu
+  // dokladnie zero. Licznik odporny na aliasing byl zaokraglany do bezuzytecznosci.
+  float burnerHours = 0.f;
   uint32_t burnerStarts = 0;
 
   // obieg grzewczy
@@ -59,6 +73,18 @@ struct Model {
   bool hasSupplyTemp = false;
   bool hasBurnerState = false;
   bool hasModulation = false;
+  // Bez tych flag "hours = 0,0" znaczy naraz "cecha heating.burners.0.statistics
+  // nie przyszla" i "palnik ma zero przepracowanych godzin". Przy pomiarze
+  // rozdzielczosci licznika to jest roznica miedzy "API nie daje" a "nie rusza sie".
+  //
+  // DWIE FLAGI, NIE JEDNA: `hours` i `starts` to dwie osobne wlasciwosci tej samej
+  // cechy i moga przyjsc niezaleznie. Do v99 stala tu jedna flaga, podnoszona na OR
+  // przez obie — co podkopywalo jedyny cel tych pol: gdyby doszlo samo `starts`,
+  // diagnostyka pokazalaby "statystyki sa" przy burner_hours = 0,0, czyli "licznik
+  // godzin stoi" zamiast "`hours` nie ma w odpowiedzi". Dokladnie ta konfuzja, dla
+  // ktorej flaga powstala. W /api/diag: has_hours i has_starts, osobno.
+  bool hasBurnerHours = false;
+  bool hasBurnerStarts = false;
   bool hasCircuitTarget = false;
   bool hasGas = false;
   bool hasHeat = false;

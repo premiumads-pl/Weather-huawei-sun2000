@@ -801,6 +801,35 @@ void apiDiag() {
     eh.add(d.pvExtraHist[i]);
   }
 
+  // --- piec: SUROWE liczniki z API (patrz Log.h) ---
+  // Wystawione po to, zeby dalo sie ODCZYTAC Z URZADZENIA, czy `hours` rusza sie
+  // o 0,01 czy o 0,1 (albo wcale) i czy `starts` inkrementuje sie przy kazdym
+  // zaplonie. Bez tego pomiaru kazdy projekt wykresu palnika jest zgadywaniem:
+  // odpytujemy piec co 3 min, a cykl CWU bywa krotszy, wiec chwilowa modulacja
+  // przesypia cale grzania (stad "gaz 1,1 m3, modulacja caly czas zero").
+  // Zadnych sekretow: liczby z pieca, nigdy token ani clientId.
+  // Zmienna nazywa sie `pc` (piec), a NIE `vi`: `vi` to nazwa przestrzeni nazw
+  // (Viessmann.h) i lokalna zmienna zaslonilaby ja w calej tej funkcji.
+  JsonObject pc = j["vi"].to<JsonObject>();
+  pc["ok_ago_s"] = ago(d.viOkAt);
+  pc["err"] = d.viErr;
+  pc["dhw"] = d.viDhwC;
+  pc["sup"] = d.viSupplyC;
+  // has_hours == false znaczy "wlasciwosci `hours` NIE BYLO w odpowiedzi" — a nie
+  // "licznik stoi". Bez tego rozroznienia nieruchome zero przez cala dobe prowadzi
+  // do dokladnie zlego wniosku.
+  // DWIE flagi, bo `hours` i `starts` moga przyjsc niezaleznie: kazda liczba ponizej
+  // ma wlasny dowod na to, ze jest pomiarem. Jesli has_hours == false, to
+  // burner_hours = 0,0 nic nie znaczy i nie wolno go czytac.
+  pc["has_hours"] = d.viHasBurnerHours;
+  pc["has_starts"] = d.viHasBurnerStarts;
+  pc["burner_hours"] = d.viBurnerHours;     // Z ULAMKIEM, surowo z API
+  pc["burner_starts"] = d.viBurnerStarts;   // surowo z API
+  pc["modulation"] = d.viModulation;        // ostatnia zlapana
+  pc["burner_active"] = d.viBurnerActive;
+  pc["has_gas"] = d.viHasGas;
+  pc["gas_day"] = d.viGasDayM3;             // dhw + heating, currentDay
+
   // Ostatni restart — dotąd nie wiedzieliśmy, czy urządzenie się wywala.
   JsonObject rs = j["reset"].to<JsonObject>();
   rs["reason"] = resetReasonText(d.resetReason);

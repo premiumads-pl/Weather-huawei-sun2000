@@ -44,6 +44,29 @@ struct Diag {
   char viErr[56] = {};
   float viDhwC = 0.f;
   float viSupplyC = 0.f;
+
+  // --- piec: SUROWE liczniki, tak jak przyszly z API ---
+  // Po co: nie wiemy, jaka rozdzielczosc ma naprawde `hours` i `starts` u TEGO pieca,
+  // a to rozstrzyga, ktory ksztalt wykresu palnika w ogole moze zadzialac. Jesli
+  // hours rusza sie o 0,01 — mozna liczyc czas palenia miedzy odpytami. Jesli o 0,1 —
+  // rozdzielczosc to 6 minut i wykres 10-minutowy jest na granicy. Jesli nie rusza
+  // sie wcale, cala droga przez liczniki jest slepa.
+  // Tego NIE DA sie wyczytac z /api/log: bufor kolowy 3072 B miesci okolo szesciu
+  // minut, a pomiar wymaga doby. Te pola zyja tyle, co uptime.
+  // Bez sekretow: same liczby z pieca, zaden token ani clientId.
+  float viBurnerHours = 0.f;      // Z ULAMKIEM — bez tego caly pomiar jest bezcelowy
+  uint32_t viBurnerStarts = 0;
+  int viModulation = 0;           // ostatnia ZLAPANA modulacja (tylko gdy przyszla)
+  bool viBurnerActive = false;
+  float viGasDayM3 = 0.f;         // summary.dhw + summary.heating, currentDay
+  // "Zero" kontra "nie przyszlo" — ta sama lekcja co vi::Model::has*. Bez tych flag
+  // nieruchome hours=0,0 znaczy naraz "licznik stoi" i "cechy nie ma w odpowiedzi",
+  // czyli dokladnie te dwie rzeczy, ktore ten pomiar ma rozroznic.
+  // Osobno dla hours i starts: przy jednej fladze na OR polowiczna odpowiedz
+  // (samo `starts`) meldowalaby "statystyki sa" przy burner_hours = 0,0.
+  bool viHasBurnerHours = false;
+  bool viHasBurnerStarts = false;
+  bool viHasGas = false;
   int radarFrame = -1;        // ktora klatka animacji radaru jest rysowana
   int radarFrameMin = 0;      // jej przesuniecie czasowe (min)
   uint32_t radarSkips = 0;   // ile razy radar odpuścił z braku pamięci

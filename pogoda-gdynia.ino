@@ -209,6 +209,79 @@ static void netTask(void*) {
     // Dlatego stoi PRZED wszystkimi "continue" poniżej.
     otaGuardTick();
 
+    // ---- polnoc: profile doby (palnik I fotowoltaika) przestaja byc "dzis" ----
+    // MUSI tykac niezaleznie od odpytu pieca i falownika — i dlatego stoi TU, przed
+    // wszystkimi "continue" ponizej, obok otaGuardTick(). Bez WiFi tez.
+    //
+    // OBIE historie mialy DOKLADNIE ten sam blad, bo maja dokladnie ta sama budowe:
+    // reset() jest wolany WYLACZNIE z push(), a push() leci tylko po UDANYM fetchu.
+    // Nie ma fetchu — nie ma push() — nie ma resetu — `day` zostaje wczorajszy,
+    // a 144 sloty trzymaja wczorajsze slupki. Oba wykresy sa podpisane "DZIS"
+    // (WeatherUi.cpp:575 — stopka wykresu PV, WeatherUi.cpp:2313 — "PRACA PALNIKA
+    // DZIŚ") i ZADEN z nich nie sprawdza doby. Ufaja tym strukturom.
+    //
+    // PALNIK: profil przezywa restart w NVS, wiec restart o 00:10 odtwarzal profil
+    // WCZORAJSZY z wczorajszym `day`. Do pierwszego udanego odpytu — minutami.
+    // A gdy piec milczy (token wygasl, API lezy, nie ma WiFi) — godzinami.
+    //
+    // FOTOWOLTAIKA: gorzej, bo tu nie trzeba ZADNEGO restartu. pvClient.fetch()
+    // zwraca ok == false przez cala noc (Huawei wylacza Modbus TCP po zachodzie —
+    // patrz PvModel::asleep), wiec: asleep => ok == false => push nie leci => reset
+    // nie leci. Co noc, od polnocy do pierwszego udanego odczytu po wschodzie
+    // slonca, ekran fotowoltaiki pokazywal WCZORAJSZA krzywa pod napisem "DZIS".
+    // Zima to 8 godzin dziennie. To nie byl blad restartu, to bylo codzienne
+    // klamstwo. Store co 5 min utrwalal je jeszcze do NVS.
+    //
+    // DLACZEGO KASUJEMY, A NIE PODPISUJEMY "WCZORAJ": pusty wykres o 03:00 jest
+    // PRAWDZIWY — dzisiejsza produkcja naprawde wynosi wtedy zero. Wczorajsza
+    // krzywa podpisana "dzis" to nieprawda, nawet jesli ladniejsza od pustki.
+    // Ta sama klasa bledu, co "wilgotnosc pokazana jako temperatura".
+    //
+    // Warunki, obydwa istotne (dla obu historii tak samo):
+    //   day >= 0        — nie bylo jeszcze ZADNEGO profilu, nie ma czego kasowac;
+    //   day != tm_yday  — profil odtworzony z NVS w TEJ SAMEJ dobie zostaje
+    //                     nietkniety, po to go zapisujemy (kapiel 8:00, restart
+    //                     14:00, slupek ma byc).
+    // Zegar musi byc pewny (NTP), inaczej skasowalibysmy dobry profil na podstawie
+    // daty z 1970. Sam reset to 144 sloty w RAM — wolno go zrobic pod gLock, bo to
+    // ani siec, ani NVS.
+    //
+    // GasHistory (gGas) NIE jest tu ruszana i to jest swiadome: to bufor 120 dni,
+    // ktory przewija sie sam przez advance(epoch) zerujac przespane doby, a jego
+    // `head` zawsze wskazuje wlasciwy dzien, bo push() leci tylko tuz po udanym
+    // advance(). Nie ma tam "dzis", ktore moglo by sklamac — czyta go wylacznie
+    // sumBetween() po jawnym zakresie dat.
+    {
+      const time_t tt = time(nullptr);
+      if (tt > 1700000000) {
+        struct tm tmv{};
+        localtime_r(&tt, &tmv);
+        xSemaphoreTake(gLock, portMAX_DELAY);
+        const bool burnerRolled = (gBurner.day >= 0 && gBurner.day != tmv.tm_yday);
+        if (burnerRolled) {
+          gBurner.reset(tmv.tm_yday);
+        }
+        const bool pvRolled = (gHist.day >= 0 && gHist.day != tmv.tm_yday);
+        if (pvRolled) {
+          gHist.reset(tmv.tm_yday);
+        }
+        xSemaphoreGive(gLock);
+        // Pusty profil trafi do NVS przy najblizszym zapisie (co 5 min, czyli o 00:05)
+        // i tak ma byc: nowa doba NAPRAWDE jest pusta. Guard `snap.day >= 0` przy
+        // zapisie tego nie blokuje i nie ma blokowac — po reset(tm_yday) `day` jest
+        // >= 0, bo profil ISTNIEJE, tylko jest (zgodnie z prawda) pusty. Ten guard
+        // odsiewa co innego: day == -1, czyli "nie bylo jeszcze ANI JEDNEGO odczytu",
+        // kiedy nadpisanie NVS skasowaloby profil odtworzony przy starcie.
+        // Wczorajszej doby i tak nie umiemy pokazac — obie struktury trzymaja jedna.
+        if (burnerRolled) {
+          LOG("Piec: nowa doba — profil palnika wyzerowany (bez czekania na odpyt)");
+        }
+        if (pvRolled) {
+          LOG("PV: nowa doba — profil produkcji wyzerowany (bez czekania na falownik)");
+        }
+      }
+    }
+
     if (!settings().hasWifi()) {
       gBooting = false;
       vTaskDelay(pdMS_TO_TICKS(500));
@@ -400,6 +473,25 @@ static void netTask(void*) {
         diag().viDhwC = tmp.dhwTempC;
         diag().viSupplyC = tmp.supplyTempC;
 
+        // Surowe liczniki do /api/diag (patrz Log.h). Przepisujemy je BEZ zadnej
+        // obrobki — cala wartosc tych pol polega na tym, ze pokazuja to, co
+        // naprawde przyszlo z pieca.
+        // Kazda liczba pod WLASNA flaga: `hours` i `starts` to osobne wlasciwosci
+        // i moga przyjsc niezaleznie. Przepisujemy tylko to, co naprawde doszlo —
+        // inaczej polowiczna odpowiedz zostawialaby w diagnostyce ostatnia dobra
+        // wartosc podpisana swieza flaga.
+        diag().viHasBurnerHours = tmp.hasBurnerHours;
+        diag().viHasBurnerStarts = tmp.hasBurnerStarts;
+        if (tmp.hasBurnerHours) diag().viBurnerHours = tmp.burnerHours;
+        if (tmp.hasBurnerStarts) diag().viBurnerStarts = tmp.burnerStarts;
+        diag().viBurnerActive = tmp.burnerActive;
+        // "Ostatnia ZLAPANA": nadpisujemy tylko, gdy modulacja faktycznie doszla.
+        // Brakujaca cecha zapisalaby tu zero, czyli "palnik stoi" — a to jest dokladnie
+        // to klamstwo, ktore mamy zmierzyc, a nie powielic.
+        if (tmp.hasModulation) diag().viModulation = tmp.modulationPct;
+        diag().viHasGas = tmp.hasGas;
+        if (tmp.hasGas) diag().viGasDayM3 = tmp.gasDhwM3 + tmp.gasHeatM3;
+
         // Profil doby palnika + wlasny log zuzycia gazu. Log jest wlasny, bo
         // liczniki miesieczne/roczne pieca sa zepsute (currentMonth < lastSevenDays,
         // currentYear = 5.3 m3 po 4 latach) — ufamy tylko currentDay.
@@ -560,13 +652,46 @@ static void netTask(void*) {
       diag().stackWeb = uxTaskGetStackHighWaterMark(gWebTask) * sizeof(StackType_t);
     }
 
-    // ---- zapis profilu produkcji do NVS ----
+    // ---- zapis profili doby do NVS: produkcja PV + palnik ----
+    // Oba profile jada na jednym zegarze (co 5 min), bo maja identyczny problem:
+    // trzymaja JEDNA dobe, ktora jest kasowana o polnocy, wiec jedyne, co moze je
+    // uratowac przed restartem, to zapis W TRAKCIE doby.
+    //
+    // DLACZEGO PALNIK NIE ZAPISUJE SIE "RAZ NA DOBE PRZY ZMIANIE day", JAK GAZ:
+    // bo dla tej struktury to nie dziala. GasHistory to bufor 120 dni — zamknieta
+    // doba zostaje w nim na zawsze, wiec zapis na przewinieciu dnia utrwala gotowa
+    // sume. BurnerHistory ma tylko biezaca dobe i BurnerHistory::reset() zeruje
+    // wszystkie 144 sloty przy zmianie tm_yday. Zapis dokladnie w tym momencie
+    // wpisalby do NVS PUSTY profil, a restart o 14:00 odtworzylby z niego zero —
+    // czyli ten sam objaw, ktory naprawiamy ("wykres pieca nie pamieta po resecie").
+    // PvHistory ma to samo ograniczenie i z tego samego powodu zapisuje sie co 5 min.
+    // To jest CALY powod, dla ktorego "fotowoltaika pamieta, a piec nie".
+    //
+    // Koszt: 296 B blobu (struktura na stosie ma 292 — reszta to `ver` i wyrownanie)
+    // co 5 min, obok istniejacych 584 B (PV) w tym samym takcie i
+    // 1736 B co 10 min (pokoje). NVS jest wear-levelowane, a to najmniejszy z tych
+    // trzech zapisow — nie zmienia rzedu wielkosci zuzycia.
     if (static_cast<int32_t>(now - nextStoreAt) >= 0) {
-      xSemaphoreTake(gLock, portMAX_DELAY);
-      PvHistory snap = gHist;
-      xSemaphoreGive(gLock);
-      if (snap.day >= 0) {
-        pvHistorySave(snap);
+      // Osobne zakresy: dwa snapshoty (724 B + 292 B) nie musza zyc naraz na stosie
+      // netTask. Zapis ZAWSZE poza gLock — rdzen 1 czeka na te sama blokade z klatka.
+      {
+        xSemaphoreTake(gLock, portMAX_DELAY);
+        PvHistory snap = gHist;
+        xSemaphoreGive(gLock);
+        if (snap.day >= 0) {
+          pvHistorySave(snap);
+        }
+      }
+      {
+        xSemaphoreTake(gLock, portMAX_DELAY);
+        BurnerHistory snap = gBurner;
+        xSemaphoreGive(gLock);
+        // day < 0 = nie bylo jeszcze ANI JEDNEGO odczytu pieca (piec wylaczony,
+        // brak autoryzacji, same bledy). Pusty profil nadpisalby ten z NVS
+        // i skasowal to, co wlasnie odtworzylismy przy starcie.
+        if (snap.day >= 0) {
+          burnerHistorySave(snap);
+        }
       }
       nextStoreAt = millis() + cfg::PV_STORE_MS;
     }
@@ -768,6 +893,8 @@ void setup() {
   uiRooms = gRooms;
   ui.setRoomHistory(&uiRooms);
   gasHistoryLoad(gGas);   // 120 dni logu gazu — bez tego weryfikacja licznika nie ma z czym porownywac
+  burnerHistoryLoad(gBurner);   // profil doby palnika — dotad ginal przy KAZDYM restarcie
+  uiBurner = gBurner;           // zeby wykres mial dane JUZ w pierwszej klatce, przed pierwszym odpytem pieca
   ui.setBoiler(&uiVi);
   ui.setBurnerHistory(&uiBurner);
 

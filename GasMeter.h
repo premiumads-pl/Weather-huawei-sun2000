@@ -98,7 +98,15 @@ struct BurnerHistory {
   static constexpr int SLOTS = 144;   // doba co 10 minut
   uint8_t mod[SLOTS] = {};            // 0..100 %
   bool filled[SLOTS] = {};
-  int day = -1;                       // tm_yday — kasujemy o polnocy, jak PV
+  // tm_yday; -1 = nie bylo jeszcze ZADNEGO odczytu pieca (profil pusty, nie ma czego
+  // kasowac ani zapisywac).
+  //
+  // Dobe kasuja DWA miejsca i to jest swiadome. push() ponizej — gdy piec odpowiada.
+  // I netTask (pogoda-gdynia.ino, "polnoc: profil doby palnika") — co 250 ms, takze
+  // gdy piec milczy. To drugie jest tym istotnym: profil przezywa restart w NVS, wiec
+  // bez niego wczorajsze slupki wisza pod naglowkiem "PRACA PALNIKA DZIŚ" tak dlugo,
+  // jak dlugo nie przyjdzie udany odpyt — a przy wygaslym tokenie to godziny.
+  int day = -1;
 
   void reset(int yday) {
     for (int i = 0; i < SLOTS; ++i) { mod[i] = 0; filled[i] = false; }
