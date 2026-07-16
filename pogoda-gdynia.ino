@@ -1238,30 +1238,28 @@ void loop() {
   // odczyt LDR jest juz swiezy (blok czujnikow stoi na gorze loop(), przed wszystkimi
   // wczesnymi return-ami), wiec ta wartosc i tak zyje jedna klatke.
   static uint8_t blLevel = 1;
-  static uint32_t ldrLowSince = 0;   // 0 = odczyt w zakresie fizycznym
   const uint16_t ldrMv = diag().ldrMv;
 
-  // Awaria czujnika. Warunek musi TRWAC — pojedyncze drgniecie ADC to nie awaria.
-  if (ldrMv >= cfg::LDR_BROKEN_MV) {
-    ldrLowSince = 0;                 // powrot natychmiastowy: jeden zdrowy odczyt wystarczy
-  } else if (ldrLowSince == 0) {
-    ldrLowSince = now ? now : 1;     // 0 jest zarezerwowane na "odczyt zdrowy"
-  }
-  const bool ldrBroken =
-      ldrLowSince != 0 &&
-      static_cast<int32_t>(now - ldrLowSince) >= static_cast<int32_t>(cfg::LDR_BROKEN_MS);
-
-  if (ldrBroken) {
-    // Nie wierzymy czujnikowi -> SRODEK skali i tyle. Swiadomie NIE ma tu odwrotu do
-    // zegara, mimo ze kusi. Powod: prog 50 mV opiera sie na wnioskowaniu optycznym,
-    // a nie na pomiarze ciemnosci przy podswietleniu 45 (nikt go nie zrobil), wiec
-    // falszywy alarm jest mozliwy — a wtedy zegar o 14:00 w ciemnej lazience walnalby
-    // BL_DAY, czyli doklada dokladnie ten blad, dla ktorego usuwamy zegar. BL_DIM myli
-    // sie najwyzej o polowe skali i to w obie strony: nigdy niewidoczny, nigdy oslepia.
-    // Poza tym awaria sama daje sie rozpoznac bez nowego pola w /api/diag: ldr_mv
-    // pokazuje ~0, a ekran przestaje reagowac na wlacznik swiatla.
-    blLevel = 1;
-  } else {
+  // WYKRYWANIA AWARII CZUJNIKA TU NIE MA — i to jest decyzja, nie zapomnienie.
+  //
+  // v103 mialo warunek "ldr_mv < 50 mV przez 60 s => czujnik zepsuty => wymus polmrok".
+  // Prog 50 mV wzial sie z zalozenia, ze ciemnosc to ~251 mV (bo tyle zmierzylem).
+  // ZALOZENIE BYLO BLEDNE: te 251 mV padlo o 19:30, czyli w ZMIERZCHU, nie w ciemnosci.
+  // Pomiar o 23:30, przy zgaszonym swietle i pustej lazience, dal **17-26 mV** (LDR ~1,3 MOhm
+  // — siedem razy wiecej, niz mowi nota katalogowa dla "dark").
+  // Skutek: prawdziwa ciemnosc byla rozpoznawana jako AWARIA i ekran szedl na 130 zamiast 45.
+  // Wlasciciel znalazl to w 30 minut, siedzac po ciemku i czekajac az ekran przygasnie.
+  //
+  // Dlaczego nie da sie tego naprawic obnizeniem progu: odlaczony LDR sciaga wejscie do
+  // masy przez 7,93 kOhm i daje ~0 mV, a prawdziwa ciemnosc daje ~20 mV. Miedzy "zepsuty"
+  // a "ciemno" jest ~20 mV, czyli tyle, ile wynosi nieliniowosc ADC przy samym dnie skali.
+  // Progu, ktory rozroznia te dwa stany, po prostu NIE MA.
+  //
+  // Co sie stanie, gdy czujnik naprawde padnie: odczyt ~0 mV => poziom "ciemno" => ekran
+  // przygaszony do 45. Czytelny, tylko ciemny, i nie reaguje na wlacznik swiatla —
+  // a `ldr_mv` w /api/diag pokazuje ~0. To jest lepszy stan niz falszywy alarm, ktory
+  // rozjasnia ekran w nocy i twierdzi, ze wie lepiej.
+  {
     // Histereza na obu granicach. Kolejnosc kaskady jest CELOWA i robi dwie rzeczy:
     // (1) zapalenie swiatla (251 -> 3164 mV) przechodzi 0->1->2 w JEDNYM przebiegu,
     //     wiec nie ma schodkowania po jednym poziomie na klatke;
@@ -1278,18 +1276,11 @@ void loop() {
 
   // Log tylko przy ZMIANIE — w petli 30 fps kazdy inny wariant zalalby bufor logu
   // (3072 B = ~47 linii = ~6 minut) i wymiotl z niego wszystko inne.
-  // Awaria jest osobnym warunkiem, a nie tylko dopiskiem do zmiany poziomu: gdy
-  // czujnik pada, blLevel jest przypinany do 1, wiec jesli akurat JUZ byl na 1, samo
-  // `blLevel != lastBlLevel` nie zlapaloby niczego i komunikat o awarii nigdy by nie
-  // padl — czyli dokladnie w tym przypadku, dla ktorego go piszemy.
   static uint8_t lastBlLevel = 0xFF;
-  static bool lastBroken = false;
-  if (blLevel != lastBlLevel || ldrBroken != lastBroken) {
+  if (blLevel != lastBlLevel) {
     lastBlLevel = blLevel;
-    lastBroken = ldrBroken;
-    LOG("LDR: %u mV -> poziom %u (%s)%s\n", (unsigned)ldrMv, (unsigned)blLevel,
-        blLevel == 0 ? "ciemno" : (blLevel == 1 ? "polmrok" : "swiatlo"),
-        ldrBroken ? " [AWARIA CZUJNIKA: odczyt uparcie <50 mV, ekran na polmroku]" : "");
+    LOG("LDR: %u mV -> poziom %u (%s)\n", (unsigned)ldrMv, (unsigned)blLevel,
+        blLevel == 0 ? "ciemno" : (blLevel == 1 ? "polmrok" : "swiatlo"));
   }
 
   ui.setBacklightTarget(blLevel == 0   ? cfg::BL_NIGHT

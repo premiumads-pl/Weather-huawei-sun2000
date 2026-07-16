@@ -87,8 +87,22 @@ constexpr uint8_t BL_NIGHT = 45;  // ciemno
 // ---------- Progi jasności (LDR na GPIO1) ----------
 // Dzielnik: 3,3V -[LDR]- GPIO1 -[7,93 kΩ]- GND. Jasno => R_LDR małe => napięcie WYŻSZE.
 // ZMIERZONE W TEJ ŁAZIENCE 16.07.2026, nie wzięte z noty katalogowej LDR-a:
-//   ciemno 251 mV (~96 kΩ) · półmrok 1050 mV (~16 kΩ) · światło 3164 mV (~0,3 kΩ)
-// Rozdzielenie stanów jest ~12-krotne, więc progi mają ogromny luz.
+//   PRAWDZIWA ciemność (23:30, zgaszone światło, pusto)  **17-26 mV**  (~1,3 MΩ)
+//   zmierzch (19:30, jeszcze widno za oknem)               251 mV     (~96 kΩ)
+//   półmrok (20:50)                                       1050 mV     (~16 kΩ)
+//   światło zapalone                                      3164 mV     (~0,3 kΩ)
+//
+// UWAGA — te 251 mV były przez chwilę uznane za „ciemność" i to był BŁĄD, który
+// kosztował wydanie (v103): zmierzono je o 19:30, czyli w zmierzchu. Prawdziwa
+// ciemność jest **dziesięć razy niższa**, a LDR ma wtedy ~1,3 MΩ, czyli SIEDEM RAZY
+// więcej niż katalogowe „dark 190 kΩ" (nota mierzy „ciemność" przy kilku luksach,
+// nie w ciemności). Nie ufać nocie i nie ufać pomiarowi zrobionemu o złej porze.
+//
+// Progi poniżej ZOSTAJĄ mimo tej korekty: 20 mV jest 20x poniżej LDR_DIM_DOWN_MV,
+// więc ciemność trafia w poziom 0 z ogromnym zapasem. Zmieniło się tylko to, że
+// pasmo 400-650 nie stoi już w geometrycznym środku przerwy (ten wypadłby na ~145 mV)
+// — stoi bliżej półmroku. Skutek: zmierzch 251 mV dostaje poziom „ciemno" (45),
+// co jest obronne, ale warte sprawdzenia na pełnej dobie danych ldr_mv.
 //
 // Każda granica ma DWA progi (histereza). Bez tego odczyt drgający wokół pojedynczego
 // progu przerzucałby poziom w kółko przez cały zmierzch i świt — a rampa w WeatherUi
@@ -106,15 +120,14 @@ constexpr uint16_t LDR_DIM_DOWN_MV = 400;   // półmrok -> ciemno
 constexpr uint16_t LDR_DAY_UP_MV = 2200;    // półmrok -> światło
 constexpr uint16_t LDR_DAY_DOWN_MV = 1500;  // światło -> półmrok
 
-// Awaria czujnika: odłączony LDR / zimny lut zostawia GPIO1 ściągnięty do masy
-// przez 7,93 kΩ, czyli ~0 mV — „ciemno na zawsze". Prawdziwa ciemność to 251 mV,
-// czyli 5x więcej (50 mV to R_LDR ~515 kΩ wobec zmierzonych 96 kΩ), więc uparty
-// odczyt poniżej progu jest fizycznie niemożliwy w tym pomieszczeniu.
-// Odwrotna awaria (przerwa w rezystorze 7,93 kΩ => odczyt przy 3,3 V => „jasno na
-// zawsze") jest NIEODRÓŻNIALNA od zapalonego światła i celowo nie jest wykrywana:
-// sama się zgłasza — ekran świeci pełnią w nocy.
-constexpr uint16_t LDR_BROKEN_MV = 50;
-constexpr uint32_t LDR_BROKEN_MS = 60000;  // musi trwać, żeby jedno drgnięcie ADC nie liczyło
+// LDR_BROKEN_MV/LDR_BROKEN_MS tu NIE MA — wykrywanie awarii czujnika zostało
+// USUNIĘTE w v104, bo było oparte na błędnym pomiarze i psuło normalną pracę.
+// Pełne uzasadnienie stoi przy logice podświetlenia w pogoda-gdynia.ino; w skrócie:
+// próg 50 mV wziął się z założenia „ciemność = 251 mV", a to 251 mV zmierzono
+// o 19:30, czyli w ZMIERZCHU. Prawdziwa ciemność o 23:30 to **17-26 mV**, więc
+// czujnik działający poprawnie był rozpoznawany jako zepsuty.
+// Progu, który odróżnia „odłączony" (~0 mV) od „ciemno" (~20 mV), po prostu nie ma —
+// dzieli je tyle, ile wynosi nieliniowość ADC przy dnie skali.
 
 // ---------- Czasy ----------
 constexpr uint32_t WEATHER_REFRESH_MS = 15UL * 60UL * 1000UL;
