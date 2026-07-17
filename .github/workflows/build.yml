@@ -65,9 +65,18 @@ jobs:
           cp User_Setup.h "$LIB_DIR/User_Setup.h"
           echo "User_Setup.h -> $LIB_DIR"
 
+      # No --build-property here, deliberately. The one compiler flag this
+      # project overrides (-fno-exceptions, worth ~95 KB of flash) lives in
+      # build_opt.h in the sketch folder; the esp32 core's prebuild hook copies
+      # it into the build dir and feeds it to the compiler as a response file.
+      # It is checked into the repo, so this checkout gets it automatically and
+      # builds the same bytes as tools/release.sh and as a README reader.
+      # If a flag ever has to be added to this command, it must be added to
+      # tools/release.sh and both READMEs in the same PR — see CONTRIBUTING.md.
       - name: Compile
         run: |
           arduino-cli compile --fqbn "$FQBN" --output-dir build . | tee build.log
+          test -f build_opt.h || { echo "::error::build_opt.h is missing — the -fno-exceptions flag it carries is worth ~95 KB of flash and this build is NOT what release.sh produces. See CONTRIBUTING.md."; exit 1; }
 
       - name: Enforce RAM ceiling (same rule as tools/release.sh)
         run: |

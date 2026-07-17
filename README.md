@@ -108,11 +108,11 @@ cp User_Setup.h "$(arduino-cli lib list TFT_eSPI --format json \
 
 # 2. Compile (min_spiffs partitions are required — see below)
 arduino-cli compile \
-  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs" .
+  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,PSRAM=enabled" .
 
 # 3. Flash over USB
 arduino-cli upload -p /dev/cu.usbmodem101 \
-  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs" .
+  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,PSRAM=enabled" .
 ```
 
 Requirements: `arduino-cli`, esp32 board core (`esp32:esp32`, this repo's CI
@@ -121,6 +121,13 @@ pins **3.3.10**), and the libraries `TFT_eSPI`, `ArduinoJson`, `PNGdec` and `Pub
 **`PartitionScheme=min_spiffs` is not optional.** It gives two ~1.9 MB app
 partitions; the default partition table's app slot is too small for OTA to
 have a second copy to write into, so remote updates would simply fail.
+
+That command is byte-for-byte what `tools/release.sh` and CI run, so it
+reproduces the published `firmware.bin`. There are deliberately no extra
+`--build-property` flags to remember: the one compiler option this project
+overrides (`-fno-exceptions`, worth ~95 KB of flash) lives in `build_opt.h` in
+this directory, which the esp32 core picks up on its own. Don't delete that
+file — see [CONTRIBUTING.md](CONTRIBUTING.md#build_opth--dont-delete-it-its-worth-95-kb-of-flash).
 
 ### Option B — flash a pre-built release with `esptool`
 

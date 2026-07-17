@@ -9,6 +9,7 @@
 #include <WiFiClientSecure.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <cstdlib>
 #include <cstring>
 
 // Zrzuty awaryjne (coredump). Rdzen 3.3.10 ma je WLACZONE od zawsze — sprawdzone
@@ -1365,9 +1366,20 @@ String viRedirect() {
 
 namespace {
 
+// Recznie, bez sscanf — i to NIE jest mikrooptymalizacja z nudow.
+// To bylo JEDYNE wywolanie sscanf w calym projekcie, a ciagnelo za soba caly silnik
+// formatowania wejscia newliba: __ssvfscanf_r (8765 B) + sscanf (104 B) + obsluga.
+// Zmierzone na buildzie --clean: 1 781 582 -> 1 771 806 B, czyli -9776 B flasha za 6 linii.
+// Format jest sztywny ("YYYY-MM-DD", z panelu), wiec sscanf nic tu nie wnosil.
+// Uwaga: nie ruszac na "jeszcze prostsze" atoi() — atoi nie umie powiedziec, GDZIE
+// skonczyl, wiec nie da sie sprawdzic separatorow i data "2026xx01" przeszlaby jako 2026.
 uint32_t dayFromIso(const char* iso) {
   int y = 0, m = 0, d = 0;
-  if (sscanf(iso, "%d-%d-%d", &y, &m, &d) != 3) return 0;
+  const char* q = iso;
+  char* e = nullptr;
+  y = static_cast<int>(strtol(q, &e, 10)); if (e == q || *e != '-') return 0; q = e + 1;
+  m = static_cast<int>(strtol(q, &e, 10)); if (e == q || *e != '-') return 0; q = e + 1;
+  d = static_cast<int>(strtol(q, &e, 10)); if (e == q) return 0;
   struct tm tmv{};
   tmv.tm_year = y - 1900;
   tmv.tm_mon = m - 1;

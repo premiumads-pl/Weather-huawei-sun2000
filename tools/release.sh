@@ -19,6 +19,12 @@ sed -i '' "s/#define FW_VERSION ${CUR}/#define FW_VERSION ${NEW}/" Version.h
 echo "==> wersja ${CUR} -> ${NEW}"
 
 # --- kompilacja ---
+# Bez zadnych --build-property. Jedyna nadpisana flaga kompilatora
+# (-fno-exceptions, ~95 kB flasha) siedzi w build_opt.h w katalogu szkicu i rdzen
+# esp32 dociaga ja sam — tak samo tutaj, w CI i u kogos, kto buduje wg README.
+# Jesli kiedys pojawi sie tu flaga, ktorej nie ma w README i .github/workflows/,
+# to od tej chwili wydajemy inna binarke niz ta, ktora ludzie moga odtworzyc.
+# Patrz CONTRIBUTING.md, sekcja o build_opt.h.
 echo "==> kompiluje..."
 rm -rf build
 TMPDIR=/tmp arduino-cli compile --fqbn "$FQBN" --output-dir build . 2>&1 | tee build.log

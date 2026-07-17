@@ -91,14 +91,21 @@ Skopiuj `User_Setup.h` z tego repo do katalogu biblioteki TFT_eSPI
 
 ```bash
 arduino-cli compile \
-  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs" .
+  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,PSRAM=enabled" .
 
 arduino-cli upload -p /dev/cu.usbmodem101 \
-  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs" .
+  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,PSRAM=enabled" .
 ```
 
 Partycje `min_spiffs` są konieczne — dają dwie partycje aplikacji po 1,9 MB,
 bez tego OTA się nie zmieści.
+
+To dokładnie ta sama komenda, którą uruchamia `tools/release.sh` i CI, więc
+odtwarza opublikowany `firmware.bin` co do bajtu. Celowo nie ma tu żadnych
+dodatkowych `--build-property` do zapamiętania: jedyna flaga kompilatora, którą
+ten projekt nadpisuje (`-fno-exceptions`, warta ~95 kB flasha), siedzi w pliku
+`build_opt.h` w tym katalogu, a rdzeń esp32 podnosi go sam. Nie kasuj tego pliku
+— wyjaśnienie w [CONTRIBUTING.md](CONTRIBUTING.md#build_opth--dont-delete-it-its-worth-95-kb-of-flash).
 
 Zobacz też [README.md](README.md) (EN) — sekcja *Flashing* opisuje dodatkowo
 flashowanie gotowego `firmware.bin` przez `esptool`.
