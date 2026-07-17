@@ -1866,12 +1866,32 @@ void WeatherUi::drawNetInfo(const char* ssid, const char* ip, int rssi, int secs
     spr.drawFastHLine(0, cfg::HEADER_H - 1, W, col::DIVIDER);
     spr.fillCircle(12, 14, 4, col::OK);
     plStr(spr, PLF14, "POŁĄCZONO Z SIECIĄ", 24, 19, col::OK);
-    char fw[10];
-    snprintf(fw, sizeof(fw), "v%d", FW_VERSION);
-    plRight(spr, PLF14, fw, W - 10, 19, col::TEXT_MUTE);
+
+    // Wersja, a w okresie probnym takze to, ze jest probna. Ten ekran jest PIERWSZYM,
+    // co widac po restarcie z OTA — czyli dokladnie wtedy, gdy odpowiedz na pytanie
+    // "ktora wersja wstala i czy juz sie obronila" jest najwiecej warta. Do v105
+    // stalo tu samo "v106", identycznie jak przy wersji stabilnej, wiec ekran przemilczal
+    // jedyna rzecz, ktora go w tym momencie odrozniala. Nazewnictwo i kolor jak w
+    // drawViewStats — ten sam stan ma wygladac tak samo wszedzie.
+    // Zmierzone: "v106 - próbna" = 89 px, tytul konczy sie na x=174, napis startuje
+    // na x=221 -> 47 px odstepu, wiec nie ma prawa wejsc na tytul.
+    char fw[24];
+    const bool trial = otaTrialActive();
+    if (trial) {
+      snprintf(fw, sizeof(fw), "v%d - próbna", FW_VERSION);
+    } else {
+      snprintf(fw, sizeof(fw), "v%d", FW_VERSION);
+    }
+    plRight(spr, PLF14, fw, W - 10, 19, trial ? col::WARN : col::TEXT_MUTE);
+
+    // Caly blok (ikona + siec + karta IP) stoi 14 px wyzej niz do v105. Powod jest
+    // zmierzony, nie estetyczny: pod belka bylo 24 MARTWE wiersze (y=28..51), a dolne
+    // 20 wierszy dzwigalo trzy elementy na raz — podpis, pasek i odliczanie zachodzily
+    // na siebie. Ekran byl przeciazony u dolu i pusty u gory. Po przesunieciu pod belka
+    // zostaje 10 px oddechu, a dol miesci wszystko z odstepami 5/7/5 px.
 
     // ikona WiFi — łuki o sile zależnej od RSSI
-    const int wx = 42, wy = 96;
+    const int wx = 42, wy = 82;
     const int bars = rssi >= -55 ? 3 : (rssi >= -70 ? 2 : (rssi >= -82 ? 1 : 0));
     for (int i = 0; i < 3; ++i) {
       const int r = 14 + i * 10;
@@ -1881,20 +1901,56 @@ void WeatherUi::drawNetInfo(const char* ssid, const char* ip, int rssi, int secs
     spr.fillCircle(wx, wy, 4, bars > 0 ? col::ACCENT : col::PV_TRACK);
 
     // sieć
-    gl(spr, "SIEC", 92, 50, col::TEXT_MUTE);
-    plStr(spr, PLF18, ssid, 92, 76, col::TEXT);
+    gl(spr, "SIEC", 92, 36, col::TEXT_MUTE);
+
+    // SSID przycinamy POMIAREM, nie na oko. Pole ma 32 znaki (Settings.h), a miejsca
+    // od x=92 do prawego marginesu jest 218 px. Zmierzone w PLF18: 32 x "M" = 512 px,
+    // 32 x "A" = 448 px — czyli dluga nazwa wyjezdzala poza ekran (o 294 px w skrajnym
+    // przypadku). Nikt tego nie zglosil tylko dlatego, ze tutejsza siec ma krotka nazwe.
+    // Najpierw schodzimy na mniejszy font (wzorzec z drawViewStats), bo CALY SSID
+    // mniejszym drukiem mowi wiecej niz polowa SSID duzym; dopiero potem tniemy.
+    char sb[sizeof(Settings::ssid)];
+    snprintf(sb, sizeof(sb), "%s", ssid);
+    constexpr int kSsidMax = W - 10 - 92;   // 218 px
+    const pltxt::FontSet sf = pltxt::stringWidth(PLF18, sb) <= kSsidMax ? PLF18 : PLF14;
+    // Ciecie CALYMI ZNAKAMI, nie bajtami: SSID moze legalnie miec polskie litery, a te
+    // zajmuja w UTF-8 dwa bajty. Urwanie samego ogona zostawiloby osierocony bajt
+    // wiodacy, a wtedy pltxt::decodeUtf8 bierze NASTEPNY bajt jako kontynuacje — zjada
+    // '\0' i czyta za buforem. Ten sam warunek co w drawViewStats: patrzymy na bajt,
+    // NA KTORYM tniemy, i cofamy sie z bajtow kontynuacji (10xxxxxx) do wiodacego.
+    while (sb[0] != '\0' && pltxt::stringWidth(sf, sb) > kSsidMax) {
+      size_t n = strlen(sb) - 1;
+      while (n > 0 && (static_cast<uint8_t>(sb[n]) & 0xC0) == 0x80) --n;
+      sb[n] = '\0';
+    }
+    plStr(spr, sf, sb, 92, 62, col::TEXT);
+
     char sig[20];
     snprintf(sig, sizeof(sig), "%d dBm", rssi);
-    gl(spr, sig, 92, 84, col::TEXT_DIM);
+    gl(spr, sig, 92, 70, col::TEXT_DIM);
 
     // adres IP — duży, żeby dało się przepisać
-    spr.fillRoundRect(14, 112, W - 28, 62, 10, col::BG_CARD);
-    spr.fillRoundRect(14, 112, 4, 62, 2, col::ACCENT);
-    gl(spr, "ADRES IP URZADZENIA", 30, 120, col::TEXT_MUTE);
-    bigStr(spr, &FreeSansBold18pt7b, ip, 30, 162, col::ACCENT);
+    spr.fillRoundRect(14, 98, W - 28, 62, 10, col::BG_CARD);
+    spr.fillRoundRect(14, 98, 4, 62, 2, col::ACCENT);
+    gl(spr, "ADRES IP URZADZENIA", 30, 106, col::TEXT_MUTE);
+    bigStr(spr, &FreeSansBold18pt7b, ip, 30, 148, col::ACCENT);
 
-    plCenter(spr, PLF14, "Panel konfiguracji dostępny pod tym adresem", W / 2, 196,
-             col::TEXT_DIM);
+    // Podpowiedz, pasek i odliczanie stoja teraz JEDNO POD DRUGIM. Wczesniej dzielily
+    // te same wiersze — i to jest zgloszony "tekst, ktory pojawia sie pod paskiem
+    // odliczania". Zmierzone w starym ukladzie (plCenter kotwiczy LINIE BAZOWA):
+    //   podpis   bl=196 -> y=185..199
+    //   pasek    by=186 h=6 -> y=186..191   (rysowany PO tekscie, wiec go zamalowywal)
+    //   odliczanie bl=204 -> y=193..205     (nachodzilo na dolne 7 wierszy podpisu)
+    // Czyli kolizja byla POTROJNA, nie podwojna: podpis ginal pod paskiem I pod
+    // odliczaniem naraz. Teraz, z pomiaru glifow (karta IP konczy sie na 159):
+    //   podpis   bl=176 -> y=165..178       (5 px od karty)
+    //   pasek    by=186 -> y=186..191       (7 px odstepu)
+    //   odliczanie gl y=195 -> y=197..204   (5 px odstepu, dol tresci = 205)
+    //
+    // Podpis skrocony z "Panel konfiguracji dostępny pod tym adresem" (289 px, po 15 px
+    // marginesu) na wersje bez "dostępny" (227 px, po 46 px) — to samo znaczenie, a
+    // napis przestaje dotykac krawedzi.
+    plCenter(spr, PLF14, "Panel konfiguracji pod tym adresem", W / 2, 176, col::TEXT_DIM);
 
     // odliczanie
     const int bx = 40, bw = W - 80, by = 186;
@@ -1905,7 +1961,10 @@ void WeatherUi::drawNetInfo(const char* ssid, const char* ip, int rssi, int secs
     }
     char cd[24];
     snprintf(cd, sizeof(cd), "start za %d s", secsLeft);
-    plCenter(spr, PLF14, cd, W / 2, 204, col::TEXT_MUTE);
+    // glCenter, NIE plCenter: gl() kotwiczy GORE i sam dodaje PlFont10Ascent. Mniejszy
+    // font, bo odliczanie to informacja drugorzedna — a przy PLF14 dolna krawedz
+    // wypadala na 205, czyli dokladnie na ostatnim wierszu obszaru tresci.
+    glCenter(spr, cd, W / 2, 195, col::TEXT_MUTE);
   });
 
   tft_.fillRect(0, VIEW_H, W, cfg::SCREEN_H - VIEW_H, col::BG);
@@ -1989,33 +2048,15 @@ void WeatherUi::drawOtaDirect(int progress, const char* msg) {
 
 // ------------------------------------------------- TEST DIODY RGB ------------
 
-void WeatherUi::drawLedTest(const char* colorName) {
-  if (!ready_) return;
-
-  uint16_t c = col::TEXT_MUTE;
-  if (strcmp(colorName, "CZERWONY") == 0) c = C565(255, 40, 40);
-  else if (strcmp(colorName, "ZIELONY") == 0) c = C565(40, 230, 90);
-  else if (strcmp(colorName, "NIEBIESKI") == 0) c = C565(60, 130, 255);
-
-  pushBands([&](TFT_eSPI& spr) {
-    spr.fillRect(0, 0, W, VIEW_H, col::BG);
-
-    spr.fillRect(0, 0, W, cfg::HEADER_H, col::HEADER);
-    spr.drawFastHLine(0, cfg::HEADER_H - 1, W, col::DIVIDER);
-    plStr(spr, PLF14, "TEST DIODY RGB", 12, 19, col::ACCENT);
-
-    spr.fillCircle(W / 2, 96, 40, c);
-    spr.drawCircle(W / 2, 96, 46, col::DIVIDER);
-
-    plCenter(spr, PLF14, "Dioda powinna teraz świecić na:", W / 2, 152, col::TEXT_DIM);
-    plCenter(spr, PLF18, colorName, W / 2, 180, c);
-    plCenter(spr, PLF14, "Sprawdź, czy kolory się zgadzają.", W / 2, 202, col::TEXT_MUTE);
-  });
-
-  tft_.fillRect(0, VIEW_H, W, cfg::SCREEN_H - VIEW_H, col::BG);
-  blTarget_ = cfg::BL_DAY;
-  tickBacklight();
-}
+// drawLedTest() USUNIETY (v106). Byl ekranem autotestu diody: przez pierwsze 1,5 s po
+// starcie zajmowal caly wyswietlacz napisem "Dioda powinna teraz swiecic na: CZERWONY".
+// Sluzyl weryfikacji mapowania kanalow R/G/B — a to zostalo potwierdzone w v23
+// (12.07.2026, komunikat commita "mapowanie R/G/B potwierdzone"). Od tamtej pory ekran
+// pokazywal odpowiedz na pytanie, ktore juz nie bylo zadawane, i robil to kosztem
+// jedynej informacji wartej wtedy pokazania: czy urzadzenie laczy sie z siecia.
+// Sam autotest diody zostaje (Led.cpp, nieblokujacy) — zniknal tylko jego ekran.
+// Gdyby kiedys trzeba bylo mapowanie sprawdzic ponownie: kolejnosc to R -> G -> B po
+// 500 ms, widac ja na diodzie bez zadnego ekranu.
 
 // ---------------------------------------------- WIDOK 6: STATYSTYKI ----------
 

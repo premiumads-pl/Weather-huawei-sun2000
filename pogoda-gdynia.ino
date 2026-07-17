@@ -1250,12 +1250,15 @@ void loop() {
       break;
   }
 
-  // --- test diody RGB przy starcie (3 x 1,5 s) ---
-  if (const char* colorName = ledTestStep()) {
-    ui.drawLedTest(colorName);
-    delay(40);
-    return;
-  }
+  // --- autotest diody RGB przy starcie (3 x 500 ms) ---
+  // NIE zabiera juz ekranu. Dioda i TFT to osobny sprzet — test jednego nie ma prawa
+  // wygaszac drugiego, a dokladnie to robil: przez pierwsze 1,5 s po starcie zamiast
+  // "Laczenie z WiFi..." staly slowa "CZERWONY/ZIELONY/NIEBIESKI". To jest ta sama
+  // 1,5 s, w ktorej trwa laczenie z siecia — czyli ekran klamal o tym, co robi
+  // urzadzenie, dokladnie wtedy, gdy ktos patrzy (bo wlasnie je powiesil).
+  // Bez "return": test leci w tle, a ekran pokazuje prawde. ledShowGrid() i tak czeka
+  // na gTestDone, wiec bilans energii nie wejdzie diodzie w droge.
+  ledTestStep();
 
   // --- tryb konfiguracji: instrukcja na ekranie ---
   if (portal::apActive()) {

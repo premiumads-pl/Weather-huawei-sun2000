@@ -11,9 +11,11 @@
 
 void ledBegin();
 
-// Test kolejności kolorów przy starcie. Zwraca nazwę aktualnie świecącego koloru
-// albo nullptr, gdy test się skończył.
-const char* ledTestStep();
+// Autotest kolejności kolorów przy starcie: R -> G -> B po 500 ms, potem gaśnie.
+// NIEBLOKUJĄCY i niewidoczny dla ekranu — wołać z loop() w każdej iteracji, bez
+// wstrzymywania rysowania. Sam pilnuje, kiedy się skończył; po teście ledShowGrid()
+// przejmuje diodę.
+void ledTestStep();
 
 void ledShowGrid(int32_t gridW, bool pvOnline, bool night);
 

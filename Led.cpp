@@ -57,29 +57,42 @@ void ledBegin() {
   LOG("LED: dioda RGB na GPIO %d\n", kPin);
 }
 
-// 3 x 1,5 s: czerwony -> zielony -> niebieski. Pełna jasność, żeby dało się
-// jednoznacznie stwierdzić, czy R to naprawdę R.
-const char* ledTestStep() {
+// 3 x cfg::LED_TEST_MS (500 ms): czerwony -> zielony -> niebieski, pełną jasnością.
+// Odpowiednik testu lampek na desce rozdzielczej: jeden przebieg kanałów przy starcie.
+//
+// UWAGA — ten komentarz mówił "3 x 1,5 s" i to była NIEPRAWDA od v23 (12.07.2026),
+// czyli od commita, który skrócił krok do 500 ms z uzasadnieniem "mapowanie R/G/B
+// potwierdzone". Config.h mówił 500, komentarz 1500, i to komentarz był czytany —
+// całe zgłoszenie "4,5 sekundy przy każdym starcie" wzięło się stąd. Realny koszt to
+// 1,5 s łącznie, a od teraz 0 s widocznego kosztu: test nie zabiera ekranu.
+//
+// Dlaczego w ogóle zostaje, skoro mapowanie jest potwierdzone: teraz nie kosztuje nic
+// (dioda przy starcie i tak jest zgaszona, bilansu energii jeszcze nie ma o czym
+// pokazywać, ekran leci swoim torem), a kupuje jedyny moment, w którym widać, że dioda
+// żyje i ma kanały na swoim miejscu. Gdyby kosztował ekran — leciałby.
+//
+// Zwraca void: nazwy kolorów były potrzebne wyłącznie ekranowi drawLedTest(), którego
+// już nie ma. Same napisy zniknęły z flasha razem z nim.
+void ledTestStep() {
   if (gTestDone) {
-    return nullptr;
+    return;
   }
   const uint32_t t = millis() - gTestStart;
   const uint32_t step = cfg::LED_TEST_MS;
   if (t < step) {
     setRgb(160, 0, 0);
-    return "CZERWONY";
+    return;
   }
   if (t < step * 2) {
     setRgb(0, 160, 0);
-    return "ZIELONY";
+    return;
   }
   if (t < step * 3) {
     setRgb(0, 0, 160);
-    return "NIEBIESKI";
+    return;
   }
   setRgb(0, 0, 0);
   gTestDone = true;
-  return nullptr;
 }
 
 // Wolane z loop(), NIE z pirIsr(): rgbLedWrite() to RMT i nie ma prawa byc w

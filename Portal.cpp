@@ -11,6 +11,16 @@
 #include <freertos/semphr.h>
 #include <cstring>
 
+// Zrzuty awaryjne (coredump). Rdzen 3.3.10 ma je WLACZONE od zawsze — sprawdzone
+// w sdkconfig tego rdzenia (tools/esp32s3-libs/3.3.10/sdkconfig):
+//   CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y, CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y,
+//   CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y, CONFIG_ESP_COREDUMP_CHECK_BOOT=y
+// a min_spiffs.csv (nasz schemat partycji) ma na to partycje: coredump, 0x3F0000, 64 kB.
+// Czyli przy KAZDYM panicu urzadzenie samo zapisuje do flasha stan wszystkich zadan
+// i przezywa to odlaczenie zasilania — tylko do tej pory nie bylo jak tego odczytac.
+#include "esp_core_dump.h"
+#include "esp_partition.h"
+
 #include "Config.h"
 #include "Log.h"
 #include "MqttClient.h"
@@ -237,10 +247,20 @@ Symulacja pokazuje sztuczny front — do obejrzenia, jak wygląda wizualizacja.<
 <div class=row>
 <button class=s style=margin:0 onclick=dg()>Stan urządzenia</button>
 <button class=s style=margin:0 onclick=lg()>Logi</button>
+<button class=s style=margin:0 onclick=cd()>Zrzut awaryjny</button>
 </div>
 <pre id=dbg style="white-space:pre-wrap;font:12px ui-monospace,monospace;color:#9fb6cf;
  background:#081221;border:1px solid #24405f;border-radius:8px;padding:10px;margin-top:10px;
  max-height:300px;overflow:auto"></pre>
+<div id=cdact style=display:none>
+<div class="hint err">Surowy zrzut to kopia pamięci urządzenia — mogą w nim być hasła Wi-Fi
+ i MQTT, bindkeye BLE oraz token Viessmanna. Nie wklejaj go do zgłoszeń błędów ani na
+ GitHuba. Zadanie, adres upadku i backtrace widać wyżej i to jest bezpieczne do wklejenia.</div>
+<div class=row>
+<button class=s style=margin:0 onclick=cdget()>Pobierz surowy zrzut</button>
+<button class=s style=margin:0 onclick=cddel()>Skasuj zrzut</button>
+</div>
+</div>
 <button class=s onclick=rb()>Restartuj urządzenie</button>
 <button class=s onclick=fgt()>Zapomnij sieć Wi-Fi</button>
 </div>
@@ -370,6 +390,23 @@ async function demo(on){
 async function dg(){$('dbg').textContent=await(await fetch('/api/diag')).text();}
 async function lg(){$('dbg').textContent=await(await fetch('/api/log')).text();}
 async function rb(){if(confirm('Restartować?')){await fetch('/api/reboot',{method:'POST'});}}
+async function cd(){
+ const r=await(await fetch('/api/coredump')).json();
+ $('dbg').textContent=r.present?JSON.stringify(r,null,1)
+  :'Brak zrzutu awaryjnego — urządzenie nie padło od ostatniego skasowania.';
+ $('cdact').style.display=r.present?'block':'none';
+}
+// Odpowiedz ma Content-Disposition: attachment, wiec przegladarka pobiera plik i NIE
+// opuszcza panelu. Nazwa pliku (…PRYWATNE-NIE-PUBLIKOWAC.bin) przychodzi z urzadzenia.
+async function cdget(){
+ if(!confirm('Pobrać surowy zrzut?\n\nTo kopia pamięci urządzenia — mogą w nim być hasła '
+  +'Wi-Fi i MQTT, bindkeye BLE oraz token Viessmanna. Nie publikuj tego pliku.'))return;
+ location.href='/api/coredump/raw';
+}
+async function cddel(){
+ if(!confirm('Skasować zrzut? To jedyny dowód na to, dlaczego urządzenie padło.'))return;
+ await fetch('/api/coredump',{method:'DELETE'});cd();
+}
 async function load(){
  const r=await(await fetch('/api/state')).json();
  $('fw').textContent=r.fw;
@@ -750,6 +787,83 @@ void apiLog() {
   server.send(200, "text/plain; charset=utf-8", logDump());
 }
 
+// --- zrzut awaryjny: streszczenie, czyli "dlaczego padlo" bez pobierania 64 kB ---
+//
+// Wypelnia `o` TYLKO tym, co jest bezpieczne do wklejenia do publicznego zgloszenia:
+// adresami kodu i nazwa zadania. Wolno to wolac z /api/diag wlasnie dlatego, ze nie
+// wchodzi tu ani jeden bajt ZAWARTOSCI pamieci — patrz dlugi komentarz nizej.
+//
+// Kluczowa rzecz: `esp_core_dump_get_summary()` REALNIE ISTNIEJE w tym rdzeniu
+// (esp_core_dump.h:172, symbol T w lib/libespcoredump.a) i jest widoczne, bo naglowek
+// odslania je pod `#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH && ..._DATA_FORMAT_ELF`,
+// a oba sa =y. Ten sam warunek powtarzamy ponizej, zeby zmiana konfiguracji rdzenia
+// zepsula co najwyzej te sekcje, a nie caly build panelu.
+void coredumpInfo(JsonObject o) {
+  size_t addr = 0, size = 0;
+  const bool present = esp_core_dump_image_get(&addr, &size) == ESP_OK && size > 0;
+  o["present"] = present;
+  if (!present) {
+    return;   // brak zrzutu to NIE blad: tak wyglada urzadzenie, ktore nie padlo
+  }
+  o["size"] = size;
+  o["addr"] = addr;
+  // CRC32 liczy rdzen, czytajac obraz z flasha. Zrzut uciety (np. panic w trakcie
+  // zapisu) da tu false — i wtedy wiadomo, ze streszczenie ponizej moze byc smieciem.
+  o["crc_ok"] = esp_core_dump_image_check() == ESP_OK;
+
+#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH && CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF
+  // ~212 B na stosie zadania web (zapas 12,7 kB). Rdzen parsuje ELF-a przez mmap
+  // partycji, wiec NIE alokuje 64 kB na stercie — dlatego wolno to robic tutaj.
+  esp_core_dump_summary_t s;
+  if (esp_core_dump_get_summary(&s) == ESP_OK) {
+    s.exc_task[sizeof(s.exc_task) - 1] = '\0';
+    // String(), nie goly wskaznik: `s` to zmienna NA STOSIE, a ArduinoJson dla
+    // `const char*` zapamietuje sam wskaznik — po wyjsciu z tej funkcji serializacja
+    // czytalaby martwa ramke. Dokladnie ten blad zjadl juz raz liste BLE (patrz apiBleList).
+    o["task"] = String(s.exc_task);
+
+    char hex[12];
+    snprintf(hex, sizeof(hex), "0x%08x", static_cast<unsigned>(s.exc_pc));
+    o["pc"] = String(hex);   // ADRES UPADKU — to jest ta jedna liczba, po ktora sie tu przyszlo
+    snprintf(hex, sizeof(hex), "0x%08x", static_cast<unsigned>(s.ex_info.exc_vaddr));
+    o["vaddr"] = String(hex);            // adres, ktory zabolal (0x0 = wyluskanie nulla)
+    o["cause"] = s.ex_info.exc_cause;    // EXCCAUSE
+    o["version"] = s.core_dump_version;
+
+    // Ktora WERSJA firmware'u padla. Zrzut przezywa OTA, wiec potrafi pochodzic ze
+    // starszego builda niz ten, ktory teraz chodzi — a do rozszyfrowania adresow trzeba
+    // DOKLADNIE tego app.elf, ktory sie wywalil. Bez tego pola nie ma jak tego sprawdzic.
+    s.app_elf_sha256[sizeof(s.app_elf_sha256) - 1] = '\0';
+    o["app_elf_sha"] = String(reinterpret_cast<const char*>(s.app_elf_sha256));
+
+    // Backtrace: same adresy kodu. To on odpowiada "gdzie padlo", a rozszyfrowuje sie go
+    // przez: xtensa-esp32s3-elf-addr2line -pfiaC -e build/pogoda-gdynia.ino.elf <adresy>
+    JsonArray bt = o["bt"].to<JsonArray>();
+    const uint32_t depth = s.exc_bt_info.depth > 16 ? 16 : s.exc_bt_info.depth;
+    for (uint32_t i = 0; i < depth; ++i) {
+      snprintf(hex, sizeof(hex), "0x%08x", static_cast<unsigned>(s.exc_bt_info.bt[i]));
+      bt.add(String(hex));
+    }
+    o["bt_corrupted"] = s.exc_bt_info.corrupted;
+
+    // CELOWO NIE WYSTAWIAMY ex_info.exc_a[16] (rejestry a0..a15 z chwili wyjatku).
+    // Cala reszta powyzej to ADRESY — wskazniki na kod i na pamiec. Rejestry to jedyne
+    // pole streszczenia, ktore moze zawierac DANE: gdyby urzadzenie padlo w srodku
+    // kopiowania hasla, siedzialyby w nich jego 4-bajtowe kawalki. A /api/diag jest w tym
+    // projekcie wprost pomyslane do wklejania do zgloszen (patrz komentarze przy pv i mqtt).
+    // Komu rejestry naprawde potrzebne, ten i tak siega po /api/coredump/raw i gdb.
+  }
+
+  // Gotowa odpowiedz "dlaczego padlo", slowami rdzenia — np.
+  // "Guru Meditation Error: Core 0 panic'ed (StoreProhibited)". Staly tekst z panic
+  // handlera, zadnych danych z pamieci.
+  char reason[160] = {};
+  if (esp_core_dump_get_panic_reason(reason, sizeof(reason)) == ESP_OK) {
+    o["panic_reason"] = String(reason);
+  }
+#endif
+}
+
 void apiDiag() {
   const Diag& d = diag();
   const uint32_t now = millis();
@@ -845,6 +959,12 @@ void apiDiag() {
   rs["prev_reason"] = resetReasonText(d.prevResetReason);
   rs["was_crash"] = resetWasCrash();
   rs["crashes_total"] = d.panicCount;
+
+  // Dotad `crashes_total` mowilo ILE razy padlo i na tym sie konczylo. Zrzut awaryjny
+  // dokłada DLACZEGO: zadanie, adres upadku i backtrace — bez pobierania czegokolwiek
+  // i bez USB. Same adresy i nazwa zadania, wiec ta sekcja jest bezpieczna do wklejenia
+  // razem z reszta /api/diag. Caly plik (i jego prywatnosc) to /api/coredump.
+  coredumpInfo(j["coredump"].to<JsonObject>());
 
   JsonObject r = j["radar"].to<JsonObject>();
   r["ok_ago_s"] = ago(d.radarOkAt);
@@ -993,6 +1113,137 @@ void apiScreen() {
   }
   WiFiClient c = server.client();
   gScreenshot(c);
+}
+
+// --- zrzut awaryjny (coredump) -----------------------------------------------
+//
+// PRYWATNOSC — powod, dla ktorego ten blok jest zbudowany wlasnie tak.
+// Surowy zrzut to KOPIA PAMIECI z chwili panica: stosy wszystkich zadan, ich TCB
+// i rejestry. Moga w nim lezec haslo WiFi, login i haslo MQTT, bindkeye BLE oraz token
+// i refresh token Viessmanna. To cos zupelnie innego niz /api/diag, ktore wystawia
+// starannie dobrane flagi i liczby. Repozytorium tego projektu jest PUBLICZNE.
+//
+// Dlatego samo ostrzezenie to za malo i zrobione sa trzy rzeczy wiecej:
+//
+//  1. BEZPIECZNA SCIEZKA ODPOWIADA NA PYTANIE. "Dlaczego padlo" (zadanie, adres upadku,
+//     backtrace, panic reason) jest w /api/diag -> coredump, bez ani jednego bajtu
+//     zawartosci pamieci. W typowym sledztwie caly plik NIE JEST POTRZEBNY — a sciezka,
+//     po ktora nikt nie siega, nie wycieknie. To jest ta prawdziwa ochrona, nie napis.
+//  2. OSTRZEZENIE JEDZIE Z PLIKIEM. Nazwa pobranego pliku to
+//     "coredump-PRYWATNE-NIE-PUBLIKOWAC.bin". Ostrzezenie w JSON-ie albo w naglowku HTTP
+//     zostaje w przegladarce; nazwa pliku jest widoczna jeszcze wtedy, gdy ktos pol roku
+//     pozniej przeciaga zalacznik do zgloszenia na GitHubie. Tylko ona tam dociera.
+//  3. POBRANIE JEST OSOBNE I JAWNE. Metadane sa pod /api/coredump, a bajty dopiero pod
+//     /api/coredump/raw — nie da sie wyciagnac pamieci urzadzenia "przy okazji" klikniecia
+//     w diagnostyke.
+//
+// Czego NIE zrobiono, swiadomie: nie probujemy wycinac sekretow ze zrzutu. Nie da sie
+// wiarygodnie znalezc hasla w surowych stosach i TCB, a filtr, ktory przepusci jedno na
+// dziesiec, jest GORSZY od braku filtra — dalby falszywe poczucie, ze plik jest czysty.
+// Uczciwiej: plik jest brudny zawsze i tak jest opisany.
+
+// Wspolny wstep dla /raw i DELETE: znajduje obraz i partycje.
+// esp_core_dump_image_get() daje ADRES BEZWZGLEDNY we flashu, a esp_partition_read()
+// chce PRZESUNIECIA wzgledem poczatku partycji — bez tej zamiany czytalibysmy 4 MB obok.
+// Przy okazji sprawdzamy, czy obraz w calosci miesci sie w partycji: jesli nie, cos jest
+// nie tak i lepiej nie wyslac w swiat przypadkowego kawalka flasha.
+bool coredumpLocate(const esp_partition_t** part, size_t* base, size_t* size) {
+  size_t addr = 0;
+  if (esp_core_dump_image_get(&addr, size) != ESP_OK || *size == 0) {
+    return false;
+  }
+  *part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                   ESP_PARTITION_SUBTYPE_DATA_COREDUMP, nullptr);
+  if (*part == nullptr || addr < (*part)->address ||
+      addr + *size > (*part)->address + (*part)->size) {
+    return false;
+  }
+  *base = addr - (*part)->address;
+  return true;
+}
+
+// Metadane + instrukcja obslugi. Tu sie laduje i stad wiadomo, co dalej.
+void apiCoredump() {
+  JsonDocument j;
+  coredumpInfo(j.to<JsonObject>());
+  if (j["present"].as<bool>()) {
+    j["uwaga"] =
+        "Plik z /api/coredump/raw to kopia pamieci urzadzenia: moga w nim byc hasla WiFi "
+        "i MQTT, bindkeye BLE oraz token Viessmanna. NIE WOLNO go wkleic do publicznego "
+        "zgloszenia bledu ani wrzucic na GitHuba. Zadanie, adres upadku i backtrace masz "
+        "wyzej w tej odpowiedzi (i w /api/diag) — TO jest bezpieczne do wklejenia.";
+    // Format: to NIE jest goly ELF, tylko obraz zrzutu = naglowek + ELF + CRC32.
+    // Dlatego espcoredump.py wymaga --core-format raw; podanie tego pliku jako ELF-a
+    // konczy sie bledem parsowania i szukaniem winy nie tam, gdzie trzeba.
+    j["howto"] =
+        "curl -o coredump.bin http://<ip>/api/coredump/raw ; "
+        "esp-coredump info_corefile --core coredump.bin --core-format raw --chip esp32s3 "
+        "<app.elf z DOKLADNIE tej wersji, ktora padla — patrz app_elf_sha> ; "
+        "po zdiagnozowaniu: curl -X DELETE http://<ip>/api/coredump";
+  }
+  String out;
+  serializeJson(j, out);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", out);
+}
+
+// Surowy obraz zrzutu, strumieniowo.
+//
+// RAM: partycja ma 64 kB, a zapasu w statycznym RAM jest ~3 kB — obrazu NIE WOLNO wczytac
+// w calosci ani do RAM-u, ani do String-a (String zrobilby dokladnie to samo, tylko na
+// stercie). Czytamy z flasha i wysylamy kawalkami po 512 B: w pamieci jest zawsze jeden
+// bufor na stosie zadania web (zapas 12,7 kB), niezaleznie od tego, czy zrzut ma 8 kB czy
+// 64 kB. Ten sam wzorzec co /api/screen, ktore wysyla BMP 320x240 wiersz po wierszu.
+//
+// Zaden mutex nie jest tu brany: to czysty odczyt z flasha, gLock nie chroni partycji
+// coredump, a trzymanie go przez ~128 obrotow petli z I/O zablokowaloby netTask i rysowanie.
+void apiCoredumpRaw() {
+  const esp_partition_t* part = nullptr;
+  size_t base = 0, size = 0;
+  if (!coredumpLocate(&part, &base, &size)) {
+    server.send(404, "text/plain; charset=utf-8",
+                "Brak zrzutu awaryjnego (albo obraz nie miesci sie w partycji).\n");
+    return;
+  }
+
+  // Nazwa pliku jest jedynym ostrzezeniem, ktore zostanie z plikiem po pobraniu.
+  server.sendHeader("Content-Disposition",
+                    "attachment; filename=\"coredump-PRYWATNE-NIE-PUBLIKOWAC.bin\"");
+  server.sendHeader("X-Coredump-Warning",
+                    "Kopia pamieci urzadzenia: moga tu byc hasla WiFi/MQTT, bindkeye BLE "
+                    "i token Viessmanna. Nie publikowac.");
+  server.sendHeader("Cache-Control", "no-store");
+  // Znany Content-Length => odpowiedz idzie bez kodowania kawalkowego, wiec curl i
+  // przegladarka pokazuja pasek postepu, a uciety transfer widac od razu.
+  server.setContentLength(size);
+  server.send(200, "application/octet-stream", "");
+
+  uint8_t buf[512];
+  WiFiClient client = server.client();
+  for (size_t off = 0; off < size; off += sizeof(buf)) {
+    const size_t n = (size - off) < sizeof(buf) ? (size - off) : sizeof(buf);
+    if (esp_partition_read(part, base + off, buf, n) != ESP_OK) {
+      break;   // urwiemy transfer: krotszy niz Content-Length = klient widzi blad, i dobrze
+    }
+    if (!client.connected()) {
+      break;   // ktos zamknal karte w trakcie — nie ma po co czytac reszty flasha
+    }
+    server.sendContent(reinterpret_cast<const char*>(buf), n);
+  }
+}
+
+// Kasowanie. HTTP_DELETE, nie GET: to zmiana stanu, a GET-em umie ja wywolac cudza strona
+// otwarta w tej samej sieci (<img src=...>) — dokladnie ten powod, dla ktorego /api/vi/set
+// jest na POST. Tu stawka jest inna, ale rownie nieprzyjemna: skasowanie jedynego dowodu
+// na to, dlaczego urzadzenie padlo, zanim ktokolwiek zdazyl go przeczytac.
+void apiCoredumpErase() {
+  const esp_err_t err = esp_core_dump_image_erase();
+  JsonDocument o;
+  o["ok"] = err == ESP_OK;
+  o["err"] = err == ESP_OK ? "" : esp_err_to_name(err);
+  String out;
+  serializeJson(o, out);
+  server.send(200, "application/json", out);
 }
 
 void apiView() {
@@ -1364,6 +1615,12 @@ void routes() {
   server.on("/api/log", apiLog);
   server.on("/api/diag", apiDiag);
   server.on("/api/reboot", HTTP_POST, apiReboot);
+  // Zrzut awaryjny. GET /api/coredump = metadane i instrukcja (bezpieczne),
+  // GET /api/coredump/raw = surowa kopia pamieci (NIE publikowac — patrz apiCoredumpRaw),
+  // DELETE /api/coredump = skasowanie, czyli zwolnienie miejsca na nastepny zrzut.
+  server.on("/api/coredump", HTTP_GET, apiCoredump);
+  server.on("/api/coredump", HTTP_DELETE, apiCoredumpErase);
+  server.on("/api/coredump/raw", HTTP_GET, apiCoredumpRaw);
   server.on("/api/screen", apiScreen);
   server.on("/api/view", apiView);
   server.on("/api/ble", HTTP_GET, apiBleList);

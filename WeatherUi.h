@@ -44,7 +44,8 @@ class WeatherUi {
   void drawSetup(const char* apSsid, const char* apPass, const char* apIp);
   void drawOta(int progress, const char* msg);
   void drawNetInfo(const char* ssid, const char* ip, int rssi, int secsLeft, int total);
-  void drawLedTest(const char* colorName);
+  // drawLedTest() usuniety w v106 — patrz komentarz w WeatherUi.cpp. Autotest diody
+  // zyje dalej w Led.cpp i nie zabiera juz ekranu.
 
   // Na czas OTA oddajemy bufor ekranu — inaczej TLS + pobieranie 1,3 MB
   // nie mają z czego działać.
