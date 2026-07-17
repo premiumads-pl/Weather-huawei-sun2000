@@ -105,9 +105,12 @@ void onRssiLow(void*, esp_event_base_t, int32_t, void*) {
 // AM312 na GPIO13, przerwanie na OBU zboczach (CHANGE). Odpytywanie co 250 ms w loop()
 // zostaje, ale daje tylko fakt "teraz HIGH" — ani dokladnego momentu, ani SZEROKOSCI
 // impulsu. A to szerokosc rozstrzyga empirycznie, co tam naprawde jest wlutowane i czy
-// modul retriguje, czyli czy przyszle podswietlenie moze isc za samym pirState, czy
-// potrzebuje wlasnego timeoutu. Wyniki ida w liczniki w Diag, NIE do LOG() — patrz
-// komentarz przy pirPulses w Log.h (log to okno ~6 minut, pomiar wymaga doby).
+// modul retriguje. Wyniki ida w liczniki w RTC, NIE do LOG() — patrz komentarz przy
+// PirRtc w Log.h (log to okno ~6 minut, pomiar ma trwac tydzien).
+//
+// To jest POMIAR i tylko pomiar: PIR nie steruje podswietleniem i sterowac nie bedzie
+// (rzadzi nim sam LDR, v103+). Nie ma tu wiec zadnego "timeoutu do dobrania" — jest
+// pytanie wlasciciela: kto i kiedy realnie korzysta z lazienki.
 //
 // CO TU WOLNO — sprawdzone w rdzeniu 3.3.10 na tej maszynie, nie "z pamieci":
 //  * gpio_ll_get_level() — `static inline __attribute__((always_inline))`
@@ -140,10 +143,47 @@ void onRssiLow(void*, esp_event_base_t, int32_t, void*) {
 // nic nie kosztuje poza ~200 B IRAM i domyka calosc, gdyby CONFIG_ARDUINO_ISR_IRAM
 // kiedys wlaczyc: wtedy dyspozytor i millis() same wskakuja do IRAM.
 Diag* gDiagIsr = nullptr;           // zlapane raz w setup(), zeby ISR nie wolal diag()
+
+// Liczniki pomiaru w pamieci RTC — przezywaja OTA. Po co, gdzie to lezy (RTC SLOW, nie
+// FAST!) i dlaczego ISR moze tu pisac — patrz PirRtc w Log.h.
+// RTC_NOINIT_ATTR => sekcja .rtc_noinit jest NOLOAD: nikt tego nie inicjalizuje ani przy
+// starcie, ani po resecie. Dlatego BEZ inicjalizatora (byloby zignorowane) i dlatego
+// pirRtcBegin() musi sam sprawdzic znacznik waznosci.
+RTC_NOINIT_ATTR PirRtc gPir;
+
+// Stan chwilowy ISR-a — ZOSTAJE W DRAM, celowo. To znaczniki millis(), a millis() zeruje
+// sie przy restarcie: w RTC przezylyby OTA jako liczby bez znaczenia i pierwsza przerwa
+// po aktualizacji wyszlaby losowa (now - gPirFallAt sprzed restartu). W DRAM zeruja sie
+// same, wiec pierwszy impuls po restarcie po prostu nie ma od czego liczyc przerwy i nie
+// jest liczony — co jest prawda, bo tej przerwy naprawde nie zmierzylismy.
 volatile uint32_t gPirRiseAt = 0;   // millis() otwartego impulsu (0 = zaden nie trwa)
 volatile uint32_t gPirFallAt = 0;   // millis() konca poprzedniego impulsu (0 = nie bylo)
 
-// Granice koszy opisane przy pirWidthHist/pirGapHist w Log.h i powtorzone w /api/diag
+// Ile zbocz w gore loop() juz zaksiegowal w gPir.byHour. Seed w setup() z gPir.rises:
+// po OTA licznik w RTC jest juz duzy, a to zero — bez seeda pierwszy obrot loop()
+// wrzucilby CALA dotychczasowa historie w biezaca godzine i zmyslil pik.
+uint32_t gPirBookedRises = 0;
+uint32_t gPirTickMs = 0;            // millis() ostatniego doliczenia collectedS
+
+void pirRtcBegin() {
+  // Po odlaczeniu pradu RTC zawiera smieci. Bez tej proby wczytalibysmy je jako dane —
+  // dlatego rozstrzyga znacznik, a nie "wyglada rozsadnie".
+  if (gPir.magic == PIR_RTC_MAGIC) {
+    ++gPir.boots;
+    LOG("PIR: liczniki z RTC przezyly restart — zbieram od %lu s, start #%lu\n",
+        (unsigned long)gPir.collectedS, (unsigned long)gPir.boots);
+  } else {
+    memset(&gPir, 0, sizeof(gPir));
+    gPir.minMs = 0xFFFFFFFF;   // "nie bylo zadnego impulsu"; 0 znaczyloby "impuls 0 ms"
+    gPir.boots = 1;
+    gPir.magic = PIR_RTC_MAGIC;
+    LOG("PIR: RTC puste lub z innego ukladu pol — zimny start, liczniki wyzerowane\n");
+  }
+  gPirBookedRises = gPir.rises;
+  gPirTickMs = millis();
+}
+
+// Granice koszy opisane przy PirRtc::widthHist/gapHist w Log.h i powtorzone w /api/diag
 // (pir_width_bins/pir_gap_bins) — zeby czytajacy JSON nie musial zgadywac ani ufac
 // komentarzowi. IRAM_ATTR jawnie: przy -Os te dwie i tak by sie wkleily, ale nie chce,
 // zeby bezpieczenstwo ISR zalezalo od humoru inlinera.
@@ -166,20 +206,26 @@ uint8_t IRAM_ATTR pirGapBucket(uint32_t ms) {
   return 6;
 }
 
+// Liczniki pomiaru ida do gPir (RTC SLOW), pirLastAt zostaje w Diag (millis(), patrz
+// komentarze przy obu). gPir jest globalem TEJ jednostki kompilacji, wiec kompilator
+// adresuje go absolutnie (l32r + s32i) — tak samo, jak dotad adresowal gDiagIsr.
+// Zadnego skoku, zadnego wywolania: struktura dostepu sie NIE zmienila.
 void IRAM_ATTR pirIsr() {
   Diag* d = gDiagIsr;
   if (d == nullptr) return;   // przerwanie podpinamy dopiero po ustawieniu wskaznika
 
   const uint32_t now = millis();
   const bool high = gpio_ll_get_level(GPIO_LL_GET_HW(GPIO_PORT_0), cfg::PIN_PIR) != 0;
-  ++d->pirEdges;
+  ++gPir.edges;
 
   if (high) {
     // Zbocze w gore: zaczyna sie impuls. Przerwe liczymy od KONCA poprzedniego, bo to
-    // ona jest kandydatem na timeout podswietlenia. gPirFallAt == 0 => to pierwszy
-    // impuls od startu i nie ma od czego liczyc.
-    if (gPirFallAt != 0) ++d->pirGapHist[pirGapBucket(now - gPirFallAt)];
+    // ona jest rozkladem, ktory rozstrzyga "ktos tu jeszcze jest" kontra "wyszedl".
+    // gPirFallAt == 0 => to pierwszy impuls od startu (albo pierwszy po restarcie) i nie
+    // ma od czego liczyc.
+    if (gPirFallAt != 0) ++gPir.gapHist[pirGapBucket(now - gPirFallAt)];
     gPirRiseAt = now;
+    ++gPir.rises;      // jednostka rytmu doby; ksieguje ja loop() do gPir.byHour
     d->pirLastAt = now;
     return;
   }
@@ -192,12 +238,12 @@ void IRAM_ATTR pirIsr() {
   gPirFallAt = now;
   gPirRiseAt = 0;
 
-  ++d->pirPulses;
-  d->pirLastMs = w;
-  if (w < d->pirMinMs) d->pirMinMs = w;
-  if (w > d->pirMaxMs) d->pirMaxMs = w;
-  d->pirTotalMs += w;
-  ++d->pirWidthHist[pirWidthBucket(w)];
+  ++gPir.pulses;
+  gPir.lastMs = w;
+  if (w < gPir.minMs) gPir.minMs = w;
+  if (w > gPir.maxMs) gPir.maxMs = w;
+  gPir.totalMs += w;
+  ++gPir.widthHist[pirWidthBucket(w)];
 }
 
 // gRadarWantMem/gRadarMemReady usuniete razem z mechanizmem oddawania bufora —
@@ -1003,8 +1049,10 @@ void setup() {
   analogSetPinAttenuation(cfg::PIN_LDR, ADC_11db);
 
   // PIR takze na przerwaniu (oba zbocza) — po co i dlaczego tak, patrz pirIsr().
-  // Kolejnosc jest istotna: najpierw wskaznik, potem pinMode, dopiero na koncu attach.
-  // Odwrotnie pierwsze zbocze trafiloby w gDiagIsr == nullptr i przepadloby.
+  // Kolejnosc jest istotna: najpierw liczniki i wskaznik, dopiero na koncu attach.
+  // Odwrotnie pierwsze zbocze trafiloby w gDiagIsr == nullptr i przepadloby, a gorzej —
+  // pirRtcBegin() wyzerowaloby po nim liczniki albo doliczyloby je do smieci z RTC.
+  pirRtcBegin();
   gDiagIsr = &diag();
   attachInterrupt(digitalPinToInterrupt(cfg::PIN_PIR), pirIsr, CHANGE);
 
@@ -1135,6 +1183,56 @@ void loop() {
     if (pirAt != lastPirSeen) {
       lastPirSeen = pirAt;
       ledPirFlash();
+    }
+  }
+
+  // --- PIR: rytm doby + ciaglosc pomiaru (patrz PirRtc w Log.h) ---
+  // Miejsce nie jest przypadkowe: tak jak blysk diody wyzej, siedzi PONAD wczesnymi
+  // return-ami loop() (portal AP, OTA, ekran IP, boot). Gdyby bylo nizej, kazda minuta
+  // w trybie AP albo na ekranie startowym wypadalaby z collectedS i z byHour, czyli
+  // pomiar klamalby dokladnie o tym, ile go naprawde bylo.
+  //
+  // Wszystko to jest TANIE przy 30 fps: dwa odczyty uint32 z RTC i porownanie. time()
+  // wolamy dopiero, gdy naprawde cos przyszlo albo gdy startedEpoch jest jeszcze puste.
+  {
+    // collectedS: doliczamy PRZYROSTY millis(), nigdy wartosc bezwzgledna — millis()
+    // zeruje sie po restarcie, wiec "collectedS = millis()/1000" cofaloby licznik do
+    // zera przy kazdym OTA i tracilo dokladnie to, po co ten licznik istnieje.
+    // Reszte ponizej sekundy zostawiamy w gPirTickMs, zeby nie gubic po ~0,5 s na obrot.
+    const uint32_t dt = now - gPirTickMs;
+    if (dt >= 1000) {
+      gPir.collectedS += dt / 1000;
+      gPirTickMs += (dt / 1000) * 1000;
+    }
+
+    // startedEpoch ustawiamy raz, przy pierwszym czasie z NTP. Odejmowanie collectedS
+    // jest istotne: NTP wchodzi kilka-kilkanascie sekund PO starcie zbierania, a po
+    // zimnym starcie bez sieci moze wejsc dopiero po godzinach. Bez tego odejmowania
+    // "zbieram od" pokazywaloby moment SYNCHRONIZACJI, a nie poczatek pomiaru.
+    if (gPir.startedEpoch == 0) {
+      const time_t tt = time(nullptr);
+      if (tt > 1700000000) {
+        gPir.startedEpoch = static_cast<uint32_t>(tt) - gPir.collectedS;
+      }
+    }
+
+    // Rytm doby. Ksiegujemy PRZYROST zbocz w gore, a nie pojedyncze zdarzenie — przy
+    // 30 fps loop widzi kazde zbocze AM312 (impuls ~2 s), ale przyrost jest odporny
+    // takze wtedy, gdy petla utknie na dluzej (OTA, portal, wolny render).
+    const uint32_t rises = gPir.rises;
+    if (rises != gPirBookedRises) {
+      const time_t tt = time(nullptr);
+      if (tt > 1700000000) {
+        struct tm tmv;
+        localtime_r(&tt, &tmv);   // czas LOKALNY (TZ ustawia connectWifi) — pytanie
+                                  // brzmi "o ktorej ktos chodzi", a nie "o ktorej UTC"
+        gPir.byHour[tmv.tm_hour] += rises - gPirBookedRises;
+      }
+      // Przesuwamy ZAWSZE, takze bez czasu z NTP. Inaczej zbocza sprzed synchronizacji
+      // czekalyby w kolejce i w chwili zlapania czasu wpadlyby CALE w jedna godzine —
+      // zmyslony pik o godzinie, o ktorej akurat wstal WiFi. Lepiej je zgubic: jest ich
+      // kilka, a pomiar ma trwac tydzien.
+      gPirBookedRises = rises;
     }
   }
 

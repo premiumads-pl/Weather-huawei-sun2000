@@ -909,37 +909,70 @@ void apiDiag() {
   sen["pir"] = d.pirState;
   sen["pir_last_s"] = ago(d.pirLastAt);
 
-  // --- PIR: pomiar zachowania AM312 (liczniki z ISR, zyja tyle co uptime) ---
-  // Po co akurat te pola — patrz Log.h przy pirPulses. Skrot: log to okno ~6 minut,
-  // a pytanie ("czy mozna na tym oprzec podswietlenie i czy para z prysznica go wyzwala")
-  // wymaga doby. Tu nie ma zadnych znacznikow czasu, tylko sumy od startu.
-  // Jak tego uzyc bez czekania na dobe: odczytaj /api/diag, wejdz pod prysznic, odczytaj
+  // --- PIR: pomiar zachowania AM312 (liczniki z ISR, PRZEZYWAJA OTA) ---
+  // Po co akurat te pola — patrz PirRtc w Log.h. Skrot: log to okno ~6 minut, a pytanie
+  // wlasciciela ("kto i kiedy realnie korzysta z lazienki i czy czujnik to wiernie
+  // oddaje") wymaga TYGODNIA. Od tej wersji liczniki siedza w RTC, wiec wydanie OTA ich
+  // NIE kasuje — a przez ostatnia dobe wyszlo piec wersji.
+  // Jak tego uzyc bez czekania tydzien: odczytaj /api/diag, wejdz pod prysznic, odczytaj
   // ponownie — roznica pir_pulses i pir_total_s mowi wprost, czy para wyzwala czujnik.
-  sen["pir_pulses"] = d.pirPulses;
-  sen["pir_edges"] = d.pirEdges;   // czysto => edges == 2*pulses (+1 gdy impuls wlasnie trwa)
-  sen["pir_last_ms"] = d.pirLastMs;
+  //
+  // "zbieram od" kontra uptime: uptime_s zeruje sie po KAZDYM restarcie, pomiar leci
+  // dalej. Do normowania czegokolwiek (impulsy na godzine) sluzy pir_collected_s, NIGDY
+  // uptime_s — ta pomylka jest tu najlatwiejsza do zrobienia i najdrozsza.
+  JsonObject pir = sen["pir_meas"].to<JsonObject>();
+  pir["collected_s"] = gPir.collectedS;   // REALNY czas zbierania (bez przerw na restarty)
+  pir["boots"] = gPir.boots;              // ile restartow przezyl ten komplet danych
+  // startedEpoch = 0 => NTP jeszcze nigdy nie dal czasu, wiec poczatku nie znamy. Brak
+  // danych ma wygladac jak brak danych (ta sama lekcja co viHas* i pir_min_ms nizej).
+  if (gPir.startedEpoch > 0) {
+    pir["started_epoch"] = gPir.startedEpoch;
+    // Ile czasu ZEGAROWEGO minelo od startu zbierania. Roznica wzgledem collected_s to
+    // czas, w ktorym urzadzenie sie restartowalo i NIC nie mierzylo — czyli wprost
+    // odpowiedz na "czy w tym tygodniu sa dziury i jak duze".
+    const time_t nowT = time(nullptr);
+    if (nowT > 1700000000) {
+      const uint32_t wall = static_cast<uint32_t>(nowT) - gPir.startedEpoch;
+      pir["wall_s"] = wall;
+      pir["gap_s"] = wall > gPir.collectedS ? wall - gPir.collectedS : 0;
+    }
+  } else {
+    pir["started_epoch"] = nullptr;
+  }
+
+  sen["pir_pulses"] = gPir.pulses;
+  sen["pir_rises"] = gPir.rises;   // wyzwolenia; to ich rozklad siedzi w pir_by_hour
+  sen["pir_edges"] = gPir.edges;   // czysto => edges == 2*pulses (+1 gdy impuls wlasnie trwa)
+  sen["pir_last_ms"] = gPir.lastMs;
   // 0xFFFFFFFF = jeszcze zadnego pelnego impulsu. Wyslanie tego surowo czytaloby sie jak
   // "najkrotszy impuls trwal 49 dni", wiec zamiast tego null — brak danych ma wygladac
   // jak brak danych. Ta sama lekcja co viHas* w Log.h.
-  if (d.pirPulses > 0) {
-    sen["pir_min_ms"] = d.pirMinMs;
-    sen["pir_max_ms"] = d.pirMaxMs;
+  if (gPir.pulses > 0) {
+    sen["pir_min_ms"] = gPir.minMs;
+    sen["pir_max_ms"] = gPir.maxMs;
   } else {
     sen["pir_min_ms"] = nullptr;
     sen["pir_max_ms"] = nullptr;
   }
-  sen["pir_total_s"] = d.pirTotalMs / 1000;   // udzial doby: podziel przez uptime_s
+  sen["pir_total_s"] = gPir.totalMs / 1000;   // udzial doby: podziel przez pir_collected_s
 
   // Granice koszy jada W ODPOWIEDZI, nie tylko w komentarzu — czytajacy JSON w przegladarce
   // ma widziec, co znaczy ktora liczba, bez zagladania w zrodlo. Ten plik ma juz za soba
   // trzy komentarze, ktore rozjechaly sie z kodem; opis obok danych rozjezdza sie trudniej.
   JsonArray wh = sen["pir_width_ms"].to<JsonArray>();
-  for (uint32_t v : d.pirWidthHist) wh.add(v);
+  for (uint32_t v : gPir.widthHist) wh.add(v);
   sen["pir_width_bins"] = "<100|100-1k|1k-3k|3k-10k|10k-60k|>=60k ms";
 
   JsonArray gh = sen["pir_gap_ms"].to<JsonArray>();
-  for (uint32_t v : d.pirGapHist) gh.add(v);
+  for (uint32_t v : gPir.gapHist) gh.add(v);
   sen["pir_gap_bins"] = "<2k|2k-5k|5k-15k|15k-60k|60k-300k|300k-1800k|>=1800k ms";
+
+  // Rytm doby: wyzwolenia w kazdej godzinie czasu LOKALNEGO, indeks 0..23 = godzina.
+  // Liczone tylko wtedy, gdy NTP dal czas — suma pir_by_hour bywa wiec MNIEJSZA niz
+  // pir_rises i to nie jest blad, tylko te zbocza, ktorych godziny nie znalismy.
+  JsonArray bh = sen["pir_by_hour"].to<JsonArray>();
+  for (uint32_t v : gPir.byHour) bh.add(v);
+  sen["pir_by_hour_note"] = "indeks = godzina lokalna 0-23; normuj przez collected_s, nie uptime";
 
   String out;
   serializeJsonPretty(j, out);

@@ -105,7 +105,9 @@ struct Diag {
   uint32_t pvExtraHist[6] = {};
 
   // --- czujniki: LDR (GPIO1, ADC1) + PIR AM312 (GPIO13) ---
-  // Bez sekretow: LDR to jasnosc otoczenia, PIR to obecnosc — nic prywatnego.
+  // Bez sekretow: LDR to jasnosc otoczenia, PIR to obecnosc — zadnych tokenow ani IP.
+  // (Uwaga: to zdanie mowilo kiedys "nic prywatnego" i po dolozeniu PirRtc::byHour
+  //  przestalo byc prawda — patrz nota o prywatnosci przy PirRtc nizej.)
   // Od v103 ldrMv NIE jest juz samym podgladem: steruje podswietleniem (progi w Config.h).
   // Oba pola sa usredniane z 8 odczytow w tej samej petli — do v102 usredniany byl TYLKO
   // ldrRaw, a ldrMv bral pojedyncza probke, wiec dwa pola opisujace ten sam pomiar
@@ -114,36 +116,128 @@ struct Diag {
   uint16_t ldrMv = 0;        // to samo w mV (kalibracja eFuse), usredniony z 8 — jasno = wyzej
   bool pirState = false;     // biezacy stan AM312 na GPIO13 (HIGH = ruch); odswieza loop()
   // volatile, bo od v101 pisze to ISR, a nie loop() — czytelnik jest w innym watku.
-  volatile uint32_t pirLastAt = 0;  // millis() ostatniego zbocza W GORE (0 = od startu nic)
-
-  // --- PIR: pomiar zachowania AM312 w lazience (liczniki z pirIsr()) ---
-  // PO CO: nie wiemy, jak ten czujnik realnie zachowuje sie w TYM pomieszczeniu, a od
-  // tego zalezy DRUGA polowa logiki podswietlenia. Pierwsza polowa jest juz zrobiona:
-  // od v103 poziom jasnosci wybiera LDR (zegar NIGHT_FROM_H/TO_H zostal USUNIETY,
-  // patrz Config.h). PIR ma dolozyc to, czego swiatlo nie powie: gaszenie ekranu do
-  // ZERA, gdy nikogo nie ma, i budzenie, gdy ktos wejdzie po ciemku.
-  // Dwa pytania do rozstrzygniecia: (1) ile wynosi timeout "nikogo nie ma" — pierwszy
-  // pomiar (33 min) dal DZIEWIEC przerw w pasmie 60-300 s, wiec 60 s byloby bledem,
-  // (2) czy para z prysznica go wyzwala.
-  // Tego NIE DA sie zmierzyc przez /api/log: to bufor KOLOWY 3072 B (Log.cpp:7), czyli
-  // ~47 linii — okno rzedu SZESCIU MINUT. Czujnik wyzwalany co chwile zalalby log i
-  // zniszczyl pomiar, dla ktorego go wlaczamy (a przy okazji wymiotl wszystko inne).
-  // Te pola zyja tyle, co uptime, wiec po dobie mowia prawde o dobie.
   //
-  // WSPOLBIEZNOSC: pisze WYLACZNIE ISR, czyta wylacznie loop()/Portal. Zadnych blokad —
-  // mutex w ISR jest zabroniony, a licznik rozjechany o jeden impuls nikogo nie boli.
-  // Bez sekretow: same liczby o ruchu, bez znacznikow czasu — "kto i kiedy byl w
-  // lazience" z tego nie wychodzi. /api/diag bywa wklejane do zgloszen bledow.
-  volatile uint32_t pirPulses = 0;   // pelne impulsy (zbocze w gore -> zbocze w dol)
-  volatile uint32_t pirEdges = 0;    // WSZYSTKIE zbocza. Kontrola czystosci sygnalu:
-                                     // czysto => edges == 2*pulses (+1 gdy impuls trwa).
-                                     // Nadmiar = drgania/szum i wtedy reszta liczb klamie.
-  volatile uint32_t pirLastMs = 0;   // szerokosc OSTATNIEGO impulsu [ms] — do machania reka
-  volatile uint32_t pirMinMs = 0xFFFFFFFF;  // najkrotszy impuls (0xFFFFFFFF = nie bylo zadnego)
-  volatile uint32_t pirMaxMs = 0;    // najdluzszy impuls
-  volatile uint32_t pirTotalMs = 0;  // suma czasu HIGH — jaki UDZIAL doby "cos sie rusza".
-                                     // uint32 przepelnia sie po 49 dniach SAMEGO HIGH,
-                                     // czyli nigdy: to wiecej, niz millis() w ogole umie.
+  // ZOSTAJE W DRAM, a nie w RTC razem z reszta pomiaru PIR (patrz PirRtc nizej) — i to
+  // nie przeoczenie. To ZNACZNIK CZASU w millis(), a millis() zeruje sie przy kazdym
+  // restarcie. Przeniesiony do RTC przezylby OTA jako liczba bez znaczenia: po restarcie
+  // "ostatni ruch" wypadlby w przyszlosci wzgledem nowego millis() i pir_last_s
+  // pokazywaloby ujemne albo 49-dniowe bzdury. Do RTC ida tylko RÓŻNICE czasu
+  // (szerokosci, przerwy, sumy), ktore restart znosi bez szkody.
+  volatile uint32_t pirLastAt = 0;  // millis() ostatniego zbocza W GORE (0 = od startu nic)
+};
+
+Diag& diag();
+
+// --- PIR: pomiar dlugoterminowy, PRZEZYWA OTA (pamiec RTC) ---
+// PO CO W OGOLE: nie wiemy, jak ten czujnik realnie zachowuje sie w TEJ lazience —
+// kto i kiedy z niej korzysta i czy AM312 to wiernie oddaje. PIR NIE steruje niczym
+// i sterowac nie bedzie: podswietleniem rzadzi sam LDR (v103+, zegar NIGHT_FROM_H
+// USUNIETY — patrz Config.h) i to zostaje. Rozwazany "PIR gasi ekran w pustej
+// lazience" zostal ODRZUCONY, bo nie zmienilby ANI JEDNEJ wartosci jasnosci: pusta
+// ciemna lazienka ma miec 45 i obecny czlowiek w ciemnej lazience tez ma miec 45.
+// To jest wiec pomiar i tylko pomiar.
+//
+// DLACZEGO RTC, A NIE ZWYKLY RAM: liczniki zyly tyle, co uptime, a KAZDE wydanie OTA
+// je kasowalo — przez ostatnia dobe wyszlo piec wersji. Docelowy horyzont to TYDZIEN,
+// wiec tydzien bez wydania jest nierealny i pomiar nigdy by sie nie domknal.
+// RTC_NOINIT_ATTR przezywa restart programowy (OTA), panic i watchdog; ginie dopiero
+// przy odlaczeniu zasilania. Tego NIE DA sie zalatwic przez /api/log: to bufor KOLOWY
+// 3072 B (Log.cpp:7), czyli ~47 linii — okno rzedu SZESCIU MINUT.
+//
+// GDZIE TO NAPRAWDE LEZY — sprawdzone w linkerze i w ELF-ie, nie "z poradnika":
+// .rtc_noinit idzie do regionu `rtc_data_location` (sections.ld), a ten jest aliasem na
+// `rtc_slow_seg` (memory.ld:107), bo w sdkconfig stoi
+// "# CONFIG_ESP32S3_RTCDATA_IN_FAST_MEM is not set". Czyli RTC **SLOW** @ 0x50000000+512,
+// dlugosc 0x2000-512 = 7680 B — a NIE rtc_iram_seg (RTC FAST @ 0x600fe000), jak sie
+// powszechnie powtarza i jak zakladalismy, zabierajac sie za te zmiane. Potwierdza to
+// gotowy obraz: `nm` daje "50000200 000000c0 B gPir", a sekcje .rtc.text i
+// .rtc.force_fast pod 0x600fe000 maja ROZMIAR ZERO. Ta struktura ma 192 B, czyli 2,5%
+// regionu — miejsca jest az nadto, wiec praktycznie nic sie przez to nie zmienia.
+// Region jest ODDZIELNY od .dram0, wiec przeniesienie tych pol z Diag ZWALNIA RAM
+// (potwierdzone kompilacja: 73112 -> 73040 B, zapas do progu 76000 rosnie do 2960 B).
+//
+// CO DOKLADNIE TO PRZEZYWA — i dlaczego akurat .rtc_noinit, a nie RTC_DATA_ATTR:
+// .rtc_noinit jest sekcja NOLOAD, wiec nie ma jej w obrazie i NIKT jej nie laduje ani
+// nie zeruje. Startowy memset dotyczy zakresu _rtc_bss_start.._rtc_bss_end, a ten jest
+// w tym obrazie PUSTY (oba symbole = 0x50000200), wiec obejmuje zero bajtow — gPir lezy
+// tuz za nim i nie da sie go tym trafic. RTC_DATA_ATTR (.rtc.data) by NIE zadzialalo:
+// tamto jest w obrazie i bootloader odtwarza je z flasha przy zwyklym resecie, czyli
+// dokladnie przy OTA — liczniki wracalyby do zera i caly ten zabieg bylby na nic.
+// Przezywa wiec: OTA, ESP.restart(), panic, watchdog, brownout.
+// NIE przezywa: odlaczenia zasilania (i wtedy magic to wylapie, patrz nizej).
+//
+// CZY ISR MOZE TU PISAC — sprawdzone DEASEMBLACJA, nie zalozone:
+//  * BEZPIECZENSTWO. RTC SLOW to zwykla pamiec pod stalym adresem, NIE okno cache'a
+//    flasha. objdump pirIsr() pokazuje jeden `l32r a7, (50000200 <gPir>)` (baza raz do
+//    rejestru), a potem same `l32i.n/s32i.n a8, a7, offset` — DOKLADNIE te same formy
+//    instrukcji, ktorymi ten sam ISR adresuje globale w DRAM (gPirFallAt @ 3fca5880).
+//    Zadnego wywolania, zadnej funkcji pomocniczej, zadnej sciezki przez sterownik.
+//    Nie ma tu wiec ryzyka "skoku we flash przy zimnym cache", ktore rzadzi CALA reszta
+//    bezpieczenstwa tego ISR-a (patrz dlugi komentarz przy pirIsr()). `memw` wokol
+//    dostepow bierze sie z `volatile`, a nie z RTC — stoi tak samo przy globalach DRAM.
+//  * KOSZT. RTC SLOW faktycznie siedzi na wolniejszej szynie niz DRAM i tej latencji
+//    NIE zmierzylismy (urzadzenie wisi w lazience, tylko OTA). Nie trzeba: liczbe
+//    dostepow ogranicza kod (z deasemblacji: <=13 slow na zbocze opadajace), a czestosc
+//    zbocz ogranicza FIZYKA czujnika — AM312 to impuls ~2 s plus okno martwe ~2 s, wiec
+//    nawet przy CIAGLYM ruchu to najwyzej ~0,5 zbocza na sekunde. Przy absurdalnie
+//    pesymistycznym 1 us na dostep (240 taktow!) daje to 13 us * 0,5/s = ~7 us na
+//    sekunde pracy rdzenia, czyli ~0,0007%. Petla renderu ma 33 ms budzetu na klatke.
+//    Niepewnosc latencji RTC po prostu nie ma jak urosnac do czegokolwiek istotnego.
+//  * WYROWNANIE. Wszystkie pola to uint32 pod adresem podzielnym przez 4 (struktura
+//    startuje na 0x50000200), wiec zadnego dostepu bajtowego ani niewyrownanego.
+//
+// WSPOLBIEZNOSC: liczniki pisze WYLACZNIE ISR, `byHour` i pola ciaglosci WYLACZNIE
+// loop(); czyta Portal (webTask). Zadnych blokad — mutex w ISR jest zabroniony, a
+// wszystko to wyrownane uint32, wiec pojedynczy odczyt jest atomowy. Licznik
+// rozjechany o jeden impuls nikogo nie boli.
+//
+// PRYWATNOSC — to sie ZMIENILO wraz z byHour i nie wolno tego przemilczec. Do tej wersji
+// przy tych polach stalo "same liczby o ruchu, bez znacznikow czasu — 'kto i kiedy byl w
+// lazience' z tego nie wychodzi". Po dolozeniu byHour to juz NIEPRAWDA: rozklad godzinowy
+// z lazienki to wprost rytm dnia domownikow — kiedy wstaja, kiedy wracaja, kiedy ich nie
+// ma. Ocena: w domowej sieci to nie jest sekret i pomiar jest tego wart. ALE /api/diag
+// BYWA WKLEJANE DO ZGLOSZEN BLEDOW, a tam trafia do publicznego repo — i to jest jedyne
+// realne ryzyko, bo pusty pas godzin 8-16 mowi obcemu, kiedy w domu nikogo nie ma.
+// Dlatego swiadomie: zadnych dat, zadnych znacznikow pojedynczych zdarzen, tylko 24 sumy
+// bez dnia — z tego nie da sie odtworzyc konkretnej wizyty ani konkretnej doby, a do
+// pytania "jak to realnie wyglada" w zupelnosci wystarcza. Przed wklejeniem /api/diag
+// gdziekolwiek publicznie warto wyciac sensors.pir_by_hour — reszta pol jest niegrozna.
+// Znacznik waznosci pamieci RTC. Dolny bajt to WERSJA UKLADU pol PirRtc — PODBIJ GO przy
+// KAZDEJ zmianie tej struktury. Inaczej po OTA nowy kod odczytalby stary obraz przesuniety
+// o pole i wyszlyby z tego liczby wygladajace sensownie, a bedace smieciem. To jedyny
+// przypadek, w ktorym pomiar traci sie swiadomie i slusznie.
+inline constexpr uint32_t PIR_RTC_MAGIC = 0x9147A501;
+
+struct PirRtc {
+  // Po odlaczeniu pradu RTC zawiera SMIECI i bez tej proby wczytalibysmy je jako dane
+  // (np. 4 mld impulsow i przerwy z kosmosu). Rozstrzyga znacznik, a nie "czy liczby
+  // wygladaja rozsadnie" — smiec potrafi wygladac rozsadnie.
+  uint32_t magic;
+
+  // --- ciaglosc pomiaru: "zbieram od" (NIE mylic z uptime) ---
+  // Po OTA uptime leci od zera, a pomiar leci dalej — te trzy pola sa jedynym miejscem,
+  // z ktorego widac PRAWDZIWY horyzont zebranych danych.
+  uint32_t startedEpoch;  // epoch POCZATKU zbierania (0 = NTP jeszcze nie dal czasu)
+  uint32_t collectedS;    // sumaryczne sekundy REALNEGO zbierania, doliczane przyrostami
+                          // w loop(). To NIE to samo, co (teraz - startedEpoch): tamto
+                          // liczy takze czas, gdy urzadzenie sie restartowalo i NIC nie
+                          // mierzylo. Roznica obu = ile pomiaru zjadly restarty, i wlasnie
+                          // dlatego trzymamy OBA, a nie jedno.
+  uint32_t boots;         // ile razy wystartowalismy na tym komplecie danych (OTA/panic)
+
+  // --- liczniki z pirIsr() ---
+  volatile uint32_t pulses;   // pelne impulsy (zbocze w gore -> zbocze w dol)
+  volatile uint32_t edges;    // WSZYSTKIE zbocza. Kontrola czystosci sygnalu:
+                              // czysto => edges == 2*pulses (+1 gdy impuls trwa).
+                              // Nadmiar = drgania/szum i wtedy reszta liczb klamie.
+  volatile uint32_t rises;    // same zbocza W GORE = "wyzwolenia". Osobno od edges, bo to
+                              // one sa jednostka rytmu doby (byHour) i tylko z nich da sie
+                              // policzyc przyrost w loop() bez zgadywania.
+  volatile uint32_t lastMs;   // szerokosc OSTATNIEGO impulsu [ms] — do machania reka
+  volatile uint32_t minMs;    // najkrotszy impuls (0xFFFFFFFF = nie bylo zadnego)
+  volatile uint32_t maxMs;    // najdluzszy impuls
+  volatile uint32_t totalMs;  // suma czasu HIGH — jaki UDZIAL doby "cos sie rusza".
+                              // uint32 przepelnia sie po 49 dniach SAMEGO HIGH.
 
   // Histogramy, nie same min/max — dokladnie ta sama lekcja co pvFailHist wyzej.
   // min/max psuje JEDEN wyskok: pojedynczy 3-milisekundowy szum przykleja min do 3 i
@@ -155,15 +249,31 @@ struct Diag {
   // To jest empiryczna odpowiedz na "jaki to naprawde modul": AM312 to jednorazowka
   // ~2 s (wszystko powinno siedziec w koszu 1k-3k), SR505 ~8 s (kosz 3k-10k), a modul
   // retrigerujacy rozmaze sie po koszach wyzszych. Kosz <100 ms to nie PIR, tylko szum.
-  volatile uint32_t pirWidthHist[6] = {};
+  volatile uint32_t widthHist[6];
 
   // Przerwy MIEDZY impulsami (od opadniecia do nastepnego narastania), kosze [ms]:
   // <2k | 2k-5k | 5k-15k | 15k-60k | 60k-300k | 300k-1800k | >=1800k.
-  // TO JEST POLE, KTORE WYBIERZE TIMEOUT PODSWIETLENIA. Timeout to prog NA PRZERWIE:
-  // ma byc dluzszy niz typowa przerwa "ktos tu wciaz jest" i krotszy niz "wyszedl".
+  // TO JEST POLE, KTORE WYBIERZE TIMEOUT, gdyby kiedys jakis timeout byl potrzebny.
   // Ani pulses, ani total_s, ani min/max tego nie daja — potrzebny jest rozklad przerw.
   // Pierwszy kosz (<2 s) to w duzej mierze okno martwe AM312, nie zachowanie czlowieka.
-  volatile uint32_t pirGapHist[7] = {};
+  volatile uint32_t gapHist[7];
+
+  // Rytm doby: ile WYZWOLEN (zbocz w gore) w kazdej godzinie czasu LOKALNEGO
+  // (TZ=CET/CEST ustawiane w connectWifi()). Sam histogram przerw mowi, JAK dlugo trwaja
+  // epizody, ale nie mowi KIEDY — a wlasnie to jest pytanie wlasciciela ("ja chodze,
+  // dzieci chodza, czasem ktos nie zamknie drzwi").
+  // Bucketowanie robi loop(), NIGDY ISR: localtime_r() bierze locka newlib i siega do
+  // danych strefy we flashu — w przerwaniu to zakaz.
+  // Liczone tylko, gdy NTP dal czas (> 1700000000). Bez czasu godzina jest nieznana i
+  // wyzwolenie przepada — lepiej zgubic kilka z pierwszych sekund po starcie, niz
+  // wsypac je wszystkie do godziny 0 i zmyslic pik o polnocy.
+  uint32_t byHour[24];
 };
 
-Diag& diag();
+// Definicja (z RTC_NOINIT_ATTR) siedzi w pogoda-gdynia.ino — w tej samej jednostce
+// kompilacji, co pirIsr(), zeby ISR siegal po adres absolutny, a nie przez skok.
+extern PirRtc gPir;
+
+// Sprawdza znacznik waznosci i zeruje wszystko po zimnym starcie. Wolac w setup()
+// PRZED attachInterrupt() — inaczej pierwsze zbocze trafiloby w niezainicjowane smieci.
+void pirRtcBegin();
