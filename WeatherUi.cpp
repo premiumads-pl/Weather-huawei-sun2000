@@ -2908,11 +2908,11 @@ void WeatherUi::drawViewMem(TFT_eSPI& spr, int ox, float t, uint32_t heapNow) {
 
   // --- 3. Flash — cały układ scalony (4 MB w tym płycie) ---
   {
-    const uint32_t chipSz = ESP.getFlashChipSize();
-    // ESP.getSketchSize(): rozmiar DZIAŁAJĄCEGO firmware'u (obraz w partycji app,
-    // z nagłówkiem) — rzędu wielkości tego samego, co firmware.bin z release, ale
-    // niekoniecznie identyczny co do bajtu (nagłówek/wyrównanie liczą się inaczej).
-    const uint32_t sketchSz = ESP.getSketchSize();
+    const uint32_t chipSz = diag().flashBytes;
+    // Rozmiar firmware'u czytamy z diag() (policzony raz w setup()), NIE wołamy tu
+    // ESP.getSketchSize(): ta funkcja skanuje flash i w loop() podczas rysowania (SPI
+    // zajety przez TFT) zwracala 0 — ekran pokazywal "firmware 0 kB". Patrz Diag w Log.h.
+    const uint32_t sketchSz = diag().sketchBytes;
     char fS[16], cS[16];
     fmtBytes(fS, sizeof(fS), sketchSz);
     fmtBytes(cS, sizeof(cS), chipSz);
@@ -2925,7 +2925,7 @@ void WeatherUi::drawViewMem(TFT_eSPI& spr, int ox, float t, uint32_t heapNow) {
   // --- 4. Partycja APP aktywna TERAZ — ile z WŁASNEGO slotu OTA (~1,9 MB) zajmuje ---
   {
     const esp_partition_t* run = esp_ota_get_running_partition();
-    const uint32_t sketchSz = ESP.getSketchSize();
+    const uint32_t sketchSz = diag().sketchBytes;   // z setup(), nie skan w rysowaniu
     const uint32_t runSz = run ? run->size : 0;
     const int pct = runSz ? static_cast<int>((static_cast<uint64_t>(sketchSz) * 100) / runSz) : 0;
     char val[56];

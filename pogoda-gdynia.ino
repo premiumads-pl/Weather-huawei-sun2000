@@ -1275,6 +1275,12 @@ void setup() {
 
   esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_BSS_RSSI_LOW, &onRssiLow, nullptr);
 
+  // Rozmiary flasha liczone TU, raz — patrz komentarz w Diag (Log.h). getSketchSize()
+  // skanuje partycje app; w setup() SPI jest wolne, wiec skan sie udaje. Ekran PAMIEC
+  // i /api/diag czytaja te dwa pola zamiast wolac skan z goracej sciezki rysowania.
+  diag().sketchBytes = ESP.getSketchSize();
+  diag().flashBytes = ESP.getFlashChipSize();
+
   // Zrzut ekranu rysuje teraz calą klatkę (a nie tylko czyta bufor), więc stos zadania
   // web musi pomieścić cały łańcuch rysujący. 4 kB zapasu ze sterty, której i tak
   // przybyło 66 kB.

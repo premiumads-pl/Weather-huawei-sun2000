@@ -27,6 +27,14 @@ struct Diag {
   uint32_t mqttConnects = 0;
   uint32_t mqttPublished = 0;
 
+  // Rozmiar firmware i flasha, policzone RAZ w setup(). ESP.getSketchSize() skanuje
+  // partycje app przez SPI — wolane z loop() PODCZAS rysowania (SPI zajety przez TFT)
+  // zwracalo 0 (ekran PAMIEC pokazywal "firmware 0 kB"), a z webTask/Portalu dawalo
+  // poprawna wartosc. Liczymy wiec w setup(), gdy SPI jest wolne, i czytamy stad —
+  // zamiast wolac skan flasha co klatke na goracej sciezce rysowania.
+  uint32_t sketchBytes = 0;
+  uint32_t flashBytes = 0;
+
   uint8_t radarLevel = 0;
   uint32_t radarAgeSec = 0;
   int flightsTotal = 0;
