@@ -13,6 +13,7 @@
 #include "GasMeter.h"
 #include "Viessmann.h"
 #include "MapDataWide.h"
+#include "MapDataRadar.h"
 #include "RadarMap.h"
 #include "PlText.h"
 #include "BleSensors.h"
@@ -2122,11 +2123,17 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel
     // zachowanie jak dzis, zwykly skok bez interpolacji. Bezpieczny fallback —
     // nie zgadujemy kierunku, gdy nie mamy z czego.
     if (wxFresh && w.current.windKmh > 0.05f) {
-      // gmapw: granice dobrane tak, zeby 1 px = 349 m w OBU osiach (patrz naglowek
-      // MapDataWide.h). Sprawdzenie: 0,54 st. szer.geogr. * 111,32 km/st. / 172 px
-      // = 349,5 m/px; 1,73 st. dl.geogr. * 111,32 km/st. * cos(54,57 st. — srodek
-      // zakresu) / 320 px = 348,9 m/px. Zgadza sie do promila w obu osiach.
-      constexpr float kMPerPx = 349.f;
+      // v110: skala PRZY MAPIE (gmapr::M_PER_PX w MapDataRadar.h), nie zaszyta tutaj
+      // jako literal — to byla usterka, ktora ta zmiana naprawia, nie zdobi. Do v109
+      // stalo tu "constexpr float kMPerPx = 349.f", czyli skala gmapw (111 km/320 px).
+      // Ta mapa (gmapr) pokrywa ~300 km na tej samej liczbie pikseli, wiec kazdy
+      // piksel to WIECEJ metrow (~937 m/px, 2,7x wiecej — patrz wyprowadzenie przy
+      // gmapr::M_PER_PX). Zostawienie 349 kazaloby ponizszemu stepPx wyjsc 2,7x za
+      // MALY w pikselach wzgledem prawdziwej predkosci wiatru w metrach — czyli
+      // chmury na ekranie plynelyby 2,7x za SZYBKO wzgledem tego, co pokazuje
+      // kolejna klatka (dokladnie objaw z opisu zadania). Stala siedzi PRZY mapie
+      // (MapDataRadar.h), nie tutaj, zeby przy kolejnej zmianie granic gmapr nie
+      // trzeba bylo pamietac o rownoleglej zmianie w dwoch miejscach.
       // Klatka co RADAR_MAP_REFRESH_MS (10 min) — liczone z tej stalej, a nie z
       // wpisanej na sztywno "10", zeby wzor sam nadazyl, gdyby cykl kiedys sie zmienil.
       constexpr float kFrameMin = static_cast<float>(cfg::RADAR_MAP_REFRESH_MS) / 60000.f;
@@ -2135,8 +2142,10 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel
       // przy RADAR_FLOW_GAIN w Config.h — to jawne przyblizenie, nie pomiar).
       const float speedKmh = w.current.windKmh * cfg::RADAR_FLOW_GAIN;
       // V[km/h] * czas[h] * 1000[m/km] / (m/px) = przesuniecie w px na jedna klatke.
-      // Np. 50 km/h, gain=1: 50 * (10/60) * 1000 / 349 = 23,9 px na 10 min.
-      const float stepPx = speedKmh * (kFrameMin / 60.f) * 1000.f / kMPerPx;
+      // Np. 50 km/h, gain=1: 50 * (10/60) * 1000 / 937,5 = 8,9 px na 10 min (przy
+      // gmapw/349 wychodzilo 23,9 px — ten sam wiatr daje mniej pikseli na SZERSZEJ
+      // mapie, bo kazdy piksel to teraz wiecej metrow; to jest oczekiwane, nie blad).
+      const float stepPx = speedKmh * (kFrameMin / 60.f) * 1000.f / gmapr::M_PER_PX;
 
       // KIERUNEK — wyprowadzenie (najlatwiejsze miejsce na blad znaku w tej zmianie):
       // windDir to kierunek, SKAD wieje wiatr (konwencja meteo/Open-Meteo), NIE dokad.
@@ -2172,19 +2181,20 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel
     }
   }
 
-  // --- mapa na PELNA szerokosc (osobny raster gmapw, 320 px) ---
+  // --- mapa na PELNA szerokosc (v110: gmapr, 300 km, nie gmapw/111 km — gmapw
+  // zostaje wylacznie dla ekranu samolotow, patrz MapDataWide.h i drawViewFlights) ---
   // Ekran samolotow dzieli miejsce z lista lotow i musi miec 224 px. Radar nie ma
   // czego dzielic, wiec dostaje caly ekran — inaczej mapa byla przycieta z bokow.
   const int mx = ox;
   const int my = CY;
 
-  spr.fillRect(mx, my, gmapw::MAP_W, gmapw::MAP_H, col::MAP_SEA);
-  for (int row = 0; row < gmapw::MAP_H; ++row) {
-    const uint16_t a = pgm_read_word(&gmapw::LAND_ROW_OFF[row]);
-    const uint16_t b = pgm_read_word(&gmapw::LAND_ROW_OFF[row + 1]);
+  spr.fillRect(mx, my, gmapr::MAP_W, gmapr::MAP_H, col::MAP_SEA);
+  for (int row = 0; row < gmapr::MAP_H; ++row) {
+    const uint16_t a = pgm_read_word(&gmapr::LAND_ROW_OFF[row]);
+    const uint16_t b = pgm_read_word(&gmapr::LAND_ROW_OFF[row + 1]);
     for (uint16_t k = a; k < b; ++k) {
-      const uint16_t x0 = pgm_read_word(&gmapw::LAND_SPANS[k][0]);
-      const uint16_t x1 = pgm_read_word(&gmapw::LAND_SPANS[k][1]);
+      const uint16_t x0 = pgm_read_word(&gmapr::LAND_SPANS[k][0]);
+      const uint16_t x1 = pgm_read_word(&gmapr::LAND_SPANS[k][1]);
       spr.drawFastHLine(mx + x0, my + row, x1 - x0 + 1, col::MAP_LAND);
     }
   }
@@ -2192,8 +2202,8 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel
   // --- warstwa opadu ---
   // Rysujemy CIAGAMI, nie pikselami: przy 320x172 = 55 tys. pikseli pojedyncze
   // drawPixel zjadloby budzet klatki (21 ms) w calosci. (Tu bylo kiedys "224x172 =
-  // 38 tys." — 224 to szerokosc mapy SPRZED przejscia na szeroka gmapw; radar od
-  // dawna rysuje na W=gmapw::MAP_W=320.)
+  // 38 tys." — 224 to szerokosc mapy SPRZED przejscia na szeroka gmapw; od v110
+  // radar rysuje na gmapr, ktora ma te sama wielkosc rastra co gmapw, 320x172.)
   // Przesuniecie (sx,sy) jest STALE w calej klatce (liczone raz, wyzej), wiec
   // levelAt(fi, x-sx, y-sy) dalej daje ciagi jednakowego poziomu — to przesuniecie
   // PROBKOWANIA zrodla, a nie zmiana kosztu per piksel. levelAt() zwraca 0 poza
@@ -2207,17 +2217,17 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel
       col::ERR,                                  // ulewa
   };
 
-  const int rows = static_cast<int>(gmapw::MAP_H * e);   // animacja wejscia: opad "wchodzi"
+  const int rows = static_cast<int>(gmapr::MAP_H * e);   // animacja wejscia: opad "wchodzi"
   for (int y = 0; y < rows; ++y) {
     int x = 0;
-    while (x < gmapw::MAP_W) {
+    while (x < gmapr::MAP_W) {
       const uint8_t lv = radarmap::levelAt(fi, x - sx, y - sy);
       if (lv == 0) {
         ++x;
         continue;
       }
       int x2 = x + 1;
-      while (x2 < gmapw::MAP_W && radarmap::levelAt(fi, x2 - sx, y - sy) == lv) ++x2;
+      while (x2 < gmapr::MAP_W && radarmap::levelAt(fi, x2 - sx, y - sy) == lv) ++x2;
       spr.drawFastHLine(mx + x, my + y, x2 - x, kPal[lv > 5 ? 5 : lv]);
       x = x2;
     }
@@ -2227,17 +2237,17 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel
   // Bez tego opad zamalowuje wybrzeze i mapa staje sie kolorowa plama, z ktorej
   // nie da sie odczytac, GDZIE pada. Rysujemy tylko krawedzie pasow ladu (lewa
   // i prawa), wiec kosztuje to dwa piksele na pas, a nie caly ląd.
-  for (int row = 0; row < gmapw::MAP_H; ++row) {
-    const uint16_t a = pgm_read_word(&gmapw::LAND_ROW_OFF[row]);
-    const uint16_t b = pgm_read_word(&gmapw::LAND_ROW_OFF[row + 1]);
+  for (int row = 0; row < gmapr::MAP_H; ++row) {
+    const uint16_t a = pgm_read_word(&gmapr::LAND_ROW_OFF[row]);
+    const uint16_t b = pgm_read_word(&gmapr::LAND_ROW_OFF[row + 1]);
     for (uint16_t k = a; k < b; ++k) {
-      const uint16_t x0 = pgm_read_word(&gmapw::LAND_SPANS[k][0]);
-      const uint16_t x1 = pgm_read_word(&gmapw::LAND_SPANS[k][1]);
+      const uint16_t x0 = pgm_read_word(&gmapr::LAND_SPANS[k][0]);
+      const uint16_t x1 = pgm_read_word(&gmapr::LAND_SPANS[k][1]);
       // Piksel na KRAWEDZI KADRU to nie wybrzeze, tylko miejsce, w ktorym mapa sie
       // konczy. Rysowany dawal pionowa biala krechę wzdluz calego lewego brzegu,
       // bo lad (Pomorze) dochodzi tam do granicy obrazu.
       if (x0 > 0) spr.drawPixel(mx + x0, my + row, col::MAP_COAST_HI);
-      if (x1 < gmapw::MAP_W - 1) spr.drawPixel(mx + x1, my + row, col::MAP_COAST_HI);
+      if (x1 < gmapr::MAP_W - 1) spr.drawPixel(mx + x1, my + row, col::MAP_COAST_HI);
     }
   }
 
@@ -2245,10 +2255,10 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel
   int gx = 0, gy = 0;
   {
     const float lat = settings().lat, lon = settings().lon;
-    gx = mx + static_cast<int>((lon - gmapw::LON_MIN) / (gmapw::LON_MAX - gmapw::LON_MIN) *
-                               gmapw::MAP_W);
-    gy = my + static_cast<int>((gmapw::LAT_MAX - lat) / (gmapw::LAT_MAX - gmapw::LAT_MIN) *
-                               gmapw::MAP_H);
+    gx = mx + static_cast<int>((lon - gmapr::LON_MIN) / (gmapr::LON_MAX - gmapr::LON_MIN) *
+                               gmapr::MAP_W);
+    gy = my + static_cast<int>((gmapr::LAT_MAX - lat) / (gmapr::LAT_MAX - gmapr::LAT_MIN) *
+                               gmapr::MAP_H);
   }
   spr.drawCircle(gx, gy, 4, col::BG);
   spr.drawCircle(gx, gy, 3, col::ACCENT);
@@ -2269,7 +2279,7 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel
   viewHeader(spr, ox, hdr);
 
   // --- os czasu (na dole, na mapie) ---
-  const int ty = CY + gmapw::MAP_H - 20;
+  const int ty = CY + gmapr::MAP_H - 20;
   spr.fillRect(ox, ty, W, 20, col::BG);
 
   const int ax0 = ox + 40, ax1 = ox + W - 46;

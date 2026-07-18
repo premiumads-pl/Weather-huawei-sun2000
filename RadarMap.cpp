@@ -14,7 +14,12 @@
 namespace radarmap {
 namespace {
 
-constexpr int kZoom = 7;      // wyzej RainViewer zwraca "Zoom Level Not Supported"
+// v110: 7 -> 6. Przy oknie gmapr (300 km) zoom 7 rozciagalby okno przez TRZY kafle
+// w poziomie zamiast dwoch (sprawdzone numerycznie: gx 69.79-71.44 na z=7, kontra
+// 34.89-35.72 na z=6) — mniej pobran, a rozdzielczosc kafla i tak jest grubsza od
+// potrzebnej (radar ma piksele grubsze niz nasza mapa, patrz resample() nizej).
+// Zoom > 7 nie dziala niezaleznie od tego: RainViewer zwraca "Zoom Level Not Supported".
+constexpr int kZoom = 6;
 constexpr int kTilePx = 256;
 constexpr size_t kMaxPng = 90000;
 
@@ -38,11 +43,17 @@ bool gWantFetch = false;
 char gErr[48] = "brak danych";
 SemaphoreHandle_t gMx = nullptr;
 
-// --- geometria: nasza mapa vs kafelek RainViewera ---
-// Wyliczone raz przy starcie; caly obszar (18.0-19.2 E, 54.30-54.84 N) miesci sie
-// w jednym kafelku z=7.
-int gTileX = 0, gTileY = 0;
-float gPxX0 = 0, gPxX1 = 0, gPxY0 = 0, gPxY1 = 0;  // wycinek kafelka w pikselach
+// --- geometria: nasza mapa vs kafelki RainViewera (v110: MULTI-TILE) ---
+// Do v109 cala mapa (111 km, gmapw) miescila sie w JEDNYM kaflu z=7 — gTileX/gTileY
+// bylo para liczb, a "wycinek kafelka" (gPxX0..gPxY1) obszarem w pikselach TEGO
+// jednego kafla. Przy 300 km (gmapr) okno rozciaga sie przez WIECEJ NIZ JEDEN kafel
+// (patrz naglowek RadarMap.h) — gTileX0/X1/Y0/Y1 nizej sa wiec ZAKRESEM (WLACZNIE),
+// a gGx0/gGx1/gGy0/gGy1 to polozenie krawedzi CALEGO okna w jednostkach kafla,
+// liczone GLOBALNIE (nie w obrebie jednego kafla, jak dawne gPxX0..gPxY1) — to na
+// nich resample() nizej sprawdza, do KTOREGO kafla nalezy dany piksel rastra.
+int gTileX0 = 0, gTileX1 = 0;   // zakres kafli w poziomie (WLACZNIE)
+int gTileY0 = 0, gTileY1 = 0;   // zakres kafli w pionie (WLACZNIE)
+float gGx0 = 0, gGx1 = 0, gGy0 = 0, gGy1 = 0;  // krawedzie okna, jednostki kafla (globalne)
 
 float mercY(float latDeg) {
   const float lat = latDeg * static_cast<float>(M_PI) / 180.f;
@@ -52,21 +63,23 @@ float mercY(float latDeg) {
 void computeGeometry() {
   const float n = static_cast<float>(1 << kZoom);
 
-  const float gx0 = (gmapw::LON_MIN + 180.f) / 360.f * n;
-  const float gx1 = (gmapw::LON_MAX + 180.f) / 360.f * n;
-  const float gy0 = mercY(gmapw::LAT_MAX) * n;   // gora mapy = mniejszy y
-  const float gy1 = mercY(gmapw::LAT_MIN) * n;
+  gGx0 = (gmapr::LON_MIN + 180.f) / 360.f * n;
+  gGx1 = (gmapr::LON_MAX + 180.f) / 360.f * n;
+  gGy0 = mercY(gmapr::LAT_MAX) * n;   // gora mapy = mniejszy y
+  gGy1 = mercY(gmapr::LAT_MIN) * n;
 
-  gTileX = static_cast<int>(gx0);
-  gTileY = static_cast<int>(gy0);
+  // Zakres kafli DYNAMICZNIE z powyzszych krawedzi — NIE na sztywno (dzis wychodzi
+  // x=34..35, y=20..20, ale wpisanie tych liczb wprost przezyloby ciszej niz trzeba
+  // kolejna zmiane granic gmapr albo kZoom). floor(), bo kafel k pokrywa jednostki
+  // kafla w przedziale [k, k+1) — a wiec numer kafla to CALA czesc wspolrzednej.
+  gTileX0 = static_cast<int>(floorf(gGx0));
+  gTileX1 = static_cast<int>(floorf(gGx1));
+  gTileY0 = static_cast<int>(floorf(gGy0));
+  gTileY1 = static_cast<int>(floorf(gGy1));
 
-  gPxX0 = (gx0 - gTileX) * kTilePx;
-  gPxX1 = (gx1 - gTileX) * kTilePx;
-  gPxY0 = (gy0 - gTileY) * kTilePx;
-  gPxY1 = (gy1 - gTileY) * kTilePx;
-
-  LOG("Radar mapa: kafelek z=%d x=%d y=%d, wycinek %.0f-%.0f / %.0f-%.0f px", kZoom,
-      gTileX, gTileY, gPxX0, gPxX1, gPxY0, gPxY1);
+  LOG("Radar mapa: kafle z=%d x=%d..%d y=%d..%d (%d szt.), okno merc %.3f-%.3f / %.3f-%.3f",
+      kZoom, gTileX0, gTileX1, gTileY0, gTileY1,
+      (gTileX1 - gTileX0 + 1) * (gTileY1 - gTileY0 + 1), gGx0, gGx1, gGy0, gGy1);
 }
 
 // Paleta RainViewera -> poziom 0..5 (ta sama logika co w RadarClient).
@@ -206,21 +219,55 @@ bool httpGet(const char* url, uint8_t** buf, size_t* len, String* text) {
   return *buf != nullptr;
 }
 
-// Kafelek -> klatka mapy (przeskalowanie najblizszym sasiadem; radar i tak ma
-// grubsze piksele niz nasza mapa, wiec nie ma czego wygladzac).
-void resample(uint8_t* dst) {
+// JEDEN kafelek (tileX, tileY) -> WLASNY WYCINEK klatki mapy (przeskalowanie
+// najblizszym sasiadem; radar i tak ma piksele grubsze niz nasza mapa, wiec nie ma
+// czego wygladzac). Wolane RAZ NA KAFEL — 2x na klatke przy dzisiejszych granicach
+// gmapr (patrz fetch() nizej) — i kazde wywolanie dotyka WYLACZNIE pikseli rastra,
+// ktorych globalne polozenie wpada w [tileX,tileX+1) x [tileY,tileY+1), czyli w TEN
+// kafel; reszty rastra (nalezacej do INNEGO kafla) NIE RUSZA — pisze ja OSOBNE
+// wywolanie resample() dla sasiedniego kafla. Bo [tileX0..tileX1] x [tileY0..tileY1]
+// z computeGeometry() pokrywa z definicji CALE okno, suma wywolan dla wszystkich
+// kafli jednej klatki zapisuje kazdy piksel DOKLADNIE raz — bez dziur i bez
+// nadpisan (przy zalozeniu, ze wszystkie kafle klatki dojda; jesli nie, invalidate()
+// w fetch() zeruje CALA klatke zamiast zostawiac pol-obrazu, patrz komentarz tam).
+//
+// X i Y NIE sa traktowane tak samo (patrz tools/gen_map.py, sekcja PROJEKCJA):
+//   - X: Web Mercator jest DOKLADNIE liniowy wzgledem dlugosci geogr., wiec
+//     interpolacja liniowa miedzy gGx0/gGx1 to dokladny wzor, nie przyblizenie.
+//   - Y: Mercator jest NIELINIOWY wzgledem szerokosci geogr. gGy0/gGy1 to mercY()
+//     policzone NA KRAWEDZIACH calego okna (raz, w computeGeometry) — miedzy nimi
+//     interpolujemy LINIOWO po numerze wiersza, czyli udajemy, ze krzywa Mercatora
+//     na tym odcinku jest prosta. Blad tego uproszczenia dla wysokosci gmapr
+//     (161 km) to maks. ok. 0,76 px (policzone numerycznie, patrz tools/gen_map.py)
+//     — ponizej 1 piksela, wiec bezpieczne; ZACHOWANE bez zmian z wersji
+//     jednokaflowej (ta metoda dzialala juz przed v110, multi-tile jej nie dotyczy).
+void resample(uint8_t* dst, int tileX, int tileY) {
   for (int my = 0; my < H; ++my) {
-    const float ty = gPxY0 + (gPxY1 - gPxY0) * (my + 0.5f) / H;
+    // Globalna pozycja Y tego wiersza rastra, w jednostkach kafla.
+    const float gy = gGy0 + (gGy1 - gGy0) * (my + 0.5f) / H;
+    if (static_cast<int>(floorf(gy)) != tileY) continue;   // wiersz spoza TEGO kafla
+
+    const float ty = (gy - tileY) * kTilePx;
     const int tyi = static_cast<int>(ty);
-    if (tyi < 0 || tyi >= kTilePx) {
-      memset(dst + my * W, 0, W);
-      continue;
-    }
-    const uint8_t* src = gTile + tyi * kTilePx;
+    // Poza [0,256) tylko przy skrajnym zaokragleniu float NA SAMEJ granicy kafla
+    // (matematycznie gy-tileY in [0,1) z definicji floor() wyzej, wiec ty in [0,256)
+    // powinno zachodzic zawsze) — zerujemy zamiast zostawiac stare dane sprzed
+    // poprzedniego cyklu, to samo zabezpieczenie co w wersji jednokaflowej.
+    const uint8_t* src = (tyi >= 0 && tyi < kTilePx) ? gTile + tyi * kTilePx : nullptr;
+
+    uint8_t* row = dst + my * W;
     for (int mx = 0; mx < W; ++mx) {
-      const float tx = gPxX0 + (gPxX1 - gPxX0) * (mx + 0.5f) / W;
+      // Globalna pozycja X tej kolumny, w jednostkach kafla — liniowo (patrz wyzej).
+      const float gx = gGx0 + (gGx1 - gGx0) * (mx + 0.5f) / W;
+      if (static_cast<int>(floorf(gx)) != tileX) continue;   // kolumna spoza TEGO kafla
+
+      if (src == nullptr) {
+        row[mx] = 0;
+        continue;
+      }
+      const float tx = (gx - tileX) * kTilePx;
       const int txi = static_cast<int>(tx);
-      dst[my * W + mx] = (txi >= 0 && txi < kTilePx) ? src[txi] : 0;
+      row[mx] = (txi >= 0 && txi < kTilePx) ? src[txi] : 0;
     }
   }
 }
@@ -349,53 +396,77 @@ bool fetch() {
       continue;
     }
 
-    char url[160];
-    snprintf(url, sizeof(url), "http://%s%s/%d/%d/%d/%d/0/0_0.png", host, path, kTilePx,
-             kZoom, gTileX, gTileY);
+    // v110: KAZDA klatka to teraz TYLE pobran, ile kafli pokrywa okno gmapr (2 przy
+    // dzisiejszych granicach — patrz gTileX0/X1/Y0/Y1 z computeGeometry). Klatka
+    // liczy sie jako udana TYLKO gdy WSZYSTKIE jej kafle doszly i zdekodowaly sie:
+    // pol mapy z tej klatki i pol z poprzedniego cyklu (sprzed 10 min) to gorsze
+    // klamstwo niz uczciwy brak danych (patrz komentarz przy invalidate() wyzej),
+    // wiec pojedynczy nieudany kafel kasuje CALA klatke, nie tylko swoj wycinek —
+    // stad frameOk zamiast pojedynczego "continue" per-kafel.
+    bool frameOk = true;
+    for (int ty = gTileY0; ty <= gTileY1 && frameOk; ++ty) {
+      for (int tx = gTileX0; tx <= gTileX1 && frameOk; ++tx) {
+        char url[160];
+        snprintf(url, sizeof(url), "http://%s%s/%d/%d/%d/%d/0/0_0.png", host, path, kTilePx,
+                 kZoom, tx, ty);
 
-    uint8_t* png = nullptr;
-    size_t len = 0;
-    if (!httpGet(url, &png, &len, nullptr)) {
-      LOG("Radar mapa: klatka %d nie doszla", i);
-      invalidate(i, t, off);
-      continue;
+        uint8_t* png = nullptr;
+        size_t len = 0;
+        if (!httpGet(url, &png, &len, nullptr)) {
+          LOG("Radar mapa: klatka %d, kafel x=%d y=%d nie doszedl", i, tx, ty);
+          frameOk = false;
+          break;
+        }
+
+        // Dekoder (46 kB) w PSRAM — w SRAM nie ma tak duzego ciaglego bloku.
+        void* mem = ps_malloc(sizeof(PNG));
+        gPng = mem != nullptr ? new (mem) PNG() : nullptr;
+        if (gPng == nullptr) {
+          free(png);
+          snprintf(gErr, sizeof(gErr), "brak pamieci na dekoder");
+          return false;   // awaria pamieci jest globalna — nie ma sensu ciagnac dalej
+        }
+
+        memset(gTile, 0, kTilePx * kTilePx);
+        bool decoded = false;
+        if (gPng->openRAM(png, len, pngLine) == PNG_SUCCESS) {
+          decoded = gPng->decode(nullptr, 0) == PNG_SUCCESS;
+          gPng->close();
+        }
+        gPng->~PNG();
+        free(gPng);
+        gPng = nullptr;
+        free(png);
+
+        if (!decoded) {
+          LOG("Radar mapa: klatka %d, kafel x=%d y=%d nie zdekodowany", i, tx, ty);
+          frameOk = false;
+          break;
+        }
+
+        xSemaphoreTake(gMx, portMAX_DELAY);
+        resample(gFrames[i], tx, ty);
+        xSemaphoreGive(gMx);
+
+        // Pobran jest teraz 13x(liczba kafli) zamiast 13 — oddajemy procesor PO
+        // KAZDYM kaflu, nie tylko po kazdej klatce (inaczej netTask trzymalby
+        // radio/CPU dwa razy dluzej niz do v109 bez ani jednej okazji na przelaczenie
+        // watkow; sam fetch() trwa przez to ~2x dluzej, ale to raz na 10 minut).
+        vTaskDelay(pdMS_TO_TICKS(20));
+      }
     }
 
-    // Dekoder (46 kB) w PSRAM — w SRAM nie ma tak duzego ciaglego bloku.
-    void* mem = ps_malloc(sizeof(PNG));
-    gPng = mem != nullptr ? new (mem) PNG() : nullptr;
-    if (gPng == nullptr) {
-      free(png);
-      snprintf(gErr, sizeof(gErr), "brak pamieci na dekoder");
-      return false;
-    }
-
-    memset(gTile, 0, kTilePx * kTilePx);
-    bool decoded = false;
-    if (gPng->openRAM(png, len, pngLine) == PNG_SUCCESS) {
-      decoded = gPng->decode(nullptr, 0) == PNG_SUCCESS;
-      gPng->close();
-    }
-    gPng->~PNG();
-    free(gPng);
-    gPng = nullptr;
-    free(png);
-
-    if (!decoded) {
-      LOG("Radar mapa: klatka %d nie zdekodowana", i);
+    if (!frameOk) {
       invalidate(i, t, off);
       continue;
     }
 
     xSemaphoreTake(gMx, portMAX_DELAY);
-    resample(gFrames[i]);
     gMeta[i].epoch = t;
     gMeta[i].offsetMin = off;
     gMeta[i].valid = true;
     xSemaphoreGive(gMx);
     ++ok;
-
-    vTaskDelay(pdMS_TO_TICKS(20));   // oddajemy procesor miedzy klatkami
   }
 
   if (ok == 0) {

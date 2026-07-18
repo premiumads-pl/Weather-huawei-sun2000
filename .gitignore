@@ -14,3 +14,4 @@ previews/
 # gdyby ktoś kiedyś dodał plik z sekretami — nie wpuszczamy go do repo
 Secrets.h
 secrets.*
+tools/ne_10m_land/

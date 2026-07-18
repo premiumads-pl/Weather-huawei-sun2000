@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "MapDataWide.h"
+#include "MapDataRadar.h"
 
 // Animowana mapa opadow nad Zatoka Gdanska — 2 godziny wstecz, co 10 minut.
 //
@@ -15,22 +15,30 @@
 // plynnosci dorzuca interpolacja wektorem wiatru w WeatherUi::drawViewRadar
 // (potrzebuje gestszych klatek, zeby miec miedzy czym "dojezdzac").
 //
-// Geometria: cala nasza mapa (18.0-19.2 E, 54.30-54.84 N) miesci sie w JEDNYM
-// kafelku RainViewera na zoomie 7 (x=70, y=40) — wiec jedna klatka to jedno
-// pobranie. Zoom > 7 nie dziala: serwer zwraca obrazek "Zoom Level Not Supported".
+// Geometria (v110, POSZERZENIE Z 111 NA ~300 KM — sprostowanie: ten komentarz
+// do niedawna mowil o jednym kaflu zoom 7, co juz NIE JEST prawda): mapa to dzis
+// gmapr (300 km szerokosci, LAT 53.8457-55.2943, LON 16.2756-20.9244), nie gmapw
+// (ta zostaje wylacznie dla ekranu samolotow — patrz MapDataWide.h). Przy takiej
+// rozpietosci okno NIE miesci sie w jednym kaflu RainViewera nawet na zoomie 6:
+// pokrywa DWA kafle w poziomie i jeden w pionie (patrz RadarMap.cpp,
+// computeGeometry() — zakres liczony DYNAMICZNIE z granic gmapr, nie zaszyty).
+// Zoom 6 (nie 7): przy zoom 7 to samo okno siegaloby TRZECH kafli w poziomie
+// (sprawdzone numerycznie), zoom 6 starcza na dwa — mniej pobran, a rozdzielczosc
+// kafla i tak jest grubsza od potrzebnej (radar ma piksele grubsze niz nasza mapa).
+// Zoom > 7 nie dziala: serwer zwraca obrazek "Zoom Level Not Supported".
 //
 // Pamiec: 13 klatek x 320x172 B (=55 040 B/klatka) = 715 520 B (~715 kB) w PSRAM.
 // (Ten komentarz liczyl kiedys "7 klatek po 224x172 B = 270 kB" — 224 to szerokosc
-// mapy SPRZED przejscia na szeroka gmapw; W ponizej to od dawna gmapw::MAP_W=320,
-// wiec przy okazji 7->13 liczba wraca do prawdy.) Do v50 nie do pomyslenia; dzis
-// siedzi w PSRAM i nawet tego nie czuc.
+// mapy SPRZED przejscia na szeroka gmapw; W ponizej to od dawna 320 (dzis z gmapr,
+// tej samej wielkosci co gmapw), wiec przy okazji 7->13 liczba wraca do prawdy.)
+// Do v50 nie do pomyslenia; dzis siedzi w PSRAM i nawet tego nie czuc.
 
 namespace radarmap {
 
 // -120, -110, -100, -90, -80, -70, -60, -50, -40, -30, -20, -10, 0 min (co 10 min)
 constexpr int FRAMES = 13;
-constexpr int W = gmapw::MAP_W;
-constexpr int H = gmapw::MAP_H;
+constexpr int W = gmapr::MAP_W;
+constexpr int H = gmapr::MAP_H;
 
 struct Frame {
   uint32_t epoch = 0;       // czas klatki
