@@ -297,19 +297,39 @@ bool RadarClient::fetch(RadarSnapshot& out) {
   // Gdyby jednak zabrakło — po prostu odpuszczamy cykl i mówimy o tym w diagnostyce.
   // Dekoder (46 kB) idzie do PSRAM. Do v50 walczyl o ciagly blok w SRAM-ie i
   // przegrywal — a przez caly ten czas obok lezalo 2 MB nietknietej pamieci.
-  const uint32_t largest = ESP.getMaxAllocHeap();
-  void* mem = psramFound() ? ps_malloc(sizeof(PNG)) : nullptr;
+  //
+  // Mierzymy najwiekszy wolny blok OBU pamieci i robimy to PRZED alokacja (potem sa
+  // o 46 kB mniejsze), bo dopiero po niej wiadomo, ktora z nich dala rade — a log ma
+  // pokazac liczbe opisujaca TE pamiec, w ktorej dekoder faktycznie wylądował.
+  //
+  // Do v107 log podawal zawsze ESP.getMaxAllocHeap(), czyli SRAM, choc dekoder od v50
+  // idzie przez ps_malloc() do PSRAM-u. Wychodzilo z tego "dekoder OK (blok 42996 B,
+  // PNG=45604 B)": blok MNIEJSZY niz to, co sie w nim rzekomo zmiescilo. Wygladalo na
+  // cudem unikniete niepowodzenie i kazalo szukac oszczednosci w SRAM-ie, a te dwie
+  // liczby opisywaly po prostu dwie rozne pamieci i nie mialy ze soba nic wspolnego.
+  const uint32_t largestSram = ESP.getMaxAllocHeap();
+  const bool hasPsram = psramFound();
+  const uint32_t largestPsram = hasPsram ? ESP.getMaxAllocPsram() : 0;
+
+  void* mem = hasPsram ? ps_malloc(sizeof(PNG)) : nullptr;
   png = mem != nullptr ? new (mem) PNG() : new (std::nothrow) PNG();
   gPngInPsram = (mem != nullptr);
   if (png == nullptr) {
-    snprintf(out.errorMsg, sizeof(out.errorMsg), "Blok %lukB < 47kB",
-             static_cast<unsigned long>(largest / 1024));
-    LOG("Radar: alokacja dekodera padla. heap=%lu, blok=%lu, PNG=%u B\n",
-        static_cast<unsigned long>(heap), static_cast<unsigned long>(largest),
-        static_cast<unsigned>(sizeof(PNG)));
+    // Tu zawiodly OBIE drogi (PSRAM i SRAM), wiec podajemy oba bloki — przy jednej
+    // liczbie nie widac, czy zabraklo PSRAM-u, czy go w ogole nie bylo.
+    snprintf(out.errorMsg, sizeof(out.errorMsg), "Blok SRAM %lukB/PSRAM %lukB < 47kB",
+             static_cast<unsigned long>(largestSram / 1024),
+             static_cast<unsigned long>(largestPsram / 1024));
+    LOG("Radar: alokacja dekodera padla. heap=%lu, blok SRAM=%lu, PSRAM=%lu, PNG=%u B\n",
+        static_cast<unsigned long>(heap), static_cast<unsigned long>(largestSram),
+        static_cast<unsigned long>(largestPsram), static_cast<unsigned>(sizeof(PNG)));
     return false;
   }
-  LOG("Radar: dekoder OK (blok %lu B, PNG=%u B)\n", static_cast<unsigned long>(largest),
+  // Nazwa pamieci stoi PRZY liczbie, nie tylko przy dekoderze — inaczej znowu trzeba by
+  // z pamieci wiedziec, ktorej sterty dotyczy "blok".
+  const char* pool = gPngInPsram ? "PSRAM" : "SRAM";
+  LOG("Radar: dekoder OK w %s (najw. wolny blok %s: %lu B, PNG=%u B)\n", pool, pool,
+      static_cast<unsigned long>(gPngInPsram ? largestPsram : largestSram),
       static_cast<unsigned>(sizeof(PNG)));
 
   // --- 4. pobierz kafelek i zdekoduj ---

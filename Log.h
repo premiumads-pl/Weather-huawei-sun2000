@@ -277,3 +277,180 @@ extern PirRtc gPir;
 // Sprawdza znacznik waznosci i zeruje wszystko po zimnym starcie. Wolac w setup()
 // PRZED attachInterrupt() — inaczej pierwsze zbocze trafiloby w niezainicjowane smieci.
 void pirRtcBegin();
+
+// =====================================================================================
+// LDR: pomiar dlugoterminowy, PRZEZYWA OTA (pamiec RTC) — v108
+// =====================================================================================
+//
+// PO CO TO ISTNIEJE. W tej lazience sa DWA zrodla swiatla i pomiar na zywo (noc, 8 minut
+// stabilnego odczytu) pokazal, ze traktujemy je jak jedno, a nie sa:
+//     oba zgaszone, ustalone       4-5 mV     (R ~6,5 MOhm)
+//     tylko prysznic, ustalone   603-617 mV   (R ~35 kOhm)
+//     oba / sam kontroler       2576-3164 mV
+// Prog LDR_DIM_UP_MV = 650, wiec samo swiatlo pod prysznicem NIE PODNOSI ekranu z poziomu
+// 0 — brakuje mu ~35 mV. Wlasciciel chce, zeby podnosilo (poziom 1, BL_DIM = 130).
+//
+// DLACZEGO MIMO TO NIE RUSZAMY TU ZADNEGO PROGU. Bo dokladnie tak powstal blad v103:
+// prog wykrywania awarii LDR postawiono na JEDNYM pomiarze zrobionym w locie (251 mV
+// wziete za "ciemnosc", a to byl zmierzch — prawdziwa ciemnosc ma 17-26 mV). Skutek:
+// dzialajacy czujnik uznawany za zepsuty, ekran swiecil 130 zamiast 45, a wlasciciel
+// znalazl to siedzac po ciemku i czekajac, az ekran przygasnie. v104 wywalilo cala
+// funkcje. Te 8 minut pomiaru to nadal JEDEN wieczor przy JEDNYM ustawieniu drzwi,
+// lustra i firanki — czyli dokladnie ta sama klasa dowodu, co feralne 251 mV.
+// TA WERSJA TYLKO OBSERWUJE. Prog postawimy po tygodniu, na rozkladzie.
+//
+// CO ROZSTRZYGNIE HISTOGRAM — bo to jest jedyny powod, dla ktorego ma 16 koszy zamiast
+// szesciu: czy "tylko prysznic" tworzy CZYSTY PIK przy 603 (wtedy prog 450 jest bezpieczny
+// i zostaje 150 mV zapasu w kazda strone), czy ROZMAZUJE SIE od 450 do 750 (wtedy zaden
+// staly prog nie zadziala, bo zachodzi na zmierzch, i trzeba myslec inaczej). Szerokosc
+// piku JEST odpowiedzia. Dlatego kosze sa zageszczone w strefie spornej 256-768 mV —
+// tam mieszka i "swiezo ciemno" (251), i prysznic (603), i dzisiejszy prog (650). Poza ta
+// strefa rozdzielczosc jest nieciekawa: 2576 kontra 3164 to i tak "swiatlo zapalone".
+// min/max by tu NIE wystarczylo — to ta sama lekcja, co przy pvFailHist i widthHist:
+// decyzja jest o ROZKLADZIE, a histogram pozwala policzyc OFFLINE dowolnego kandydata
+// na prog, bez wgrywania nowej wersji na kazdy pomysl.
+//
+// GDZIE TO LEZY: RTC SLOW, tym samym mechanizmem co gPir wyzej (.rtc_noinit, NOLOAD,
+// przezywa OTA/panic/watchdog, ginie przy zaniku zasilania). Cale uzasadnienie — czemu
+// SLOW a nie FAST, czemu .rtc_noinit a nie RTC_DATA_ATTR — stoi przy PirRtc i nie bede
+// go tu powtarzal. Dwa powody, dla ktorych to NIE moze byc zwykly DRAM:
+//  1. Zapas statycznego RAM-u to 2960 B, a tools/release.sh blokuje wydanie przy 76000 B.
+//     RTC SLOW to OSOBNA pamiec (7680 B, gPir zajmuje 192 B) — nie dotyka tej bariery.
+//  2. Zbieramy TYDZIEN, a w tym czasie wyjdzie v109. Bez RTC pierwsze OTA kasuje caly
+//     zbior i pomiar nigdy sie nie domknie. gPir juz to udowodnil w praktyce:
+//     "boots: 3, gap_s: 5" — trzy restarty przezyte, stracone 5 sekund.
+//
+// PRYWATNOSC: /api/diag bywa wklejane do zgloszen bledow, a repo jest publiczne. Histogram
+// i sekundy na poziomach to sumy bez dnia i bez godziny — nie da sie z nich odtworzyc
+// zadnej konkretnej doby. ldr_events[] jest INNE: ma start_epoch, czyli WPROST date i
+// godzine. To swiadomy koszt (bez znacznika czasu zdarzenie jest bezuzyteczne — nie da
+// sie go zestawic z niczym), ale przed publicznym wklejeniem /api/diag wytnij
+// sensors.ldr_events tak samo, jak sensors.pir_by_hour.
+
+// Znacznik waznosci pamieci RTC dla LdrRtc. OSOBNY od PIR_RTC_MAGIC — i to jest cala
+// pointa: gdy podbije sie uklad pol LDR-a, pomiar PIR-a ma PRZEZYC, i odwrotnie. Jeden
+// wspolny magic kasowalby oba pomiary przy kazdej zmianie ktoregokolwiek.
+// Dolny bajt to WERSJA UKLADU pol LdrRtc — PODBIJ GO przy KAZDEJ zmianie tej struktury.
+// Inaczej po OTA nowy kod odczyta stary obraz przesuniety o pole i wyjda z tego liczby
+// wygladajace sensownie, a bedace smieciem.
+inline constexpr uint32_t LDR_RTC_MAGIC = 0x1DA70801;
+
+// --- prog detektora "zostawione swiatlo" [mV] ---
+// SUROWY prog na ldr_mv, CELOWO NIE `blLevel >= 1` i CELOWO nie cfg::LDR_DIM_DOWN_MV,
+// mimo ze ta stala ma dzis przypadkiem te sama wartosc 400. Powod jest twardy: progi
+// podswietlenia to DOKLADNIE TO, co jest przedmiotem sporu i co za tydzien zmienimy na
+// podstawie histogramu powyzej. Gdyby detektor czytal cfg::LDR_DIM_DOWN_MV, to w chwili
+// przesuniecia progu podswietlenia zmienilaby sie po cichu DEFINICJA zdarzenia — i tydzien
+// zebranych zdarzen przestalby byc porownywalny z nastepnym tygodniem, bez ani jednej
+// linijki zmiany w tym pliku. Detektor pomiarowy nie moze zalezec od wielkosci, ktora
+// pomiar ma dopiero rozstrzygnac. Ta stala zyje wlasnym zyciem i ma stac.
+//
+// Skad 400: lapie prysznic (603) i kontroler (2576-3164), a odcina ciemnosc (4-5 mV).
+// CO TO OBALA — 400 kontra "swiezo ciemno" 251 mV to tylko 1,6x zapasu i to jest MALO.
+// Dlaczego mimo to OK: wymog 20 minut CIAGLOSCI daje odpornosc, ktorej chwilowy prog dac
+// nie moze. Przelot przez 251 mV w drodze z 3164 do 4 mV trwa kilkanascie sekund i nigdy
+// nie utrzyma sie przez 20 minut. TRWALOSC ZASTEPUJE TU PRECYZJE. Nie "poprawiaj" tego na
+// wyzszy prog — wyzszy prog zgubilby prysznic (603), czyli dokladnie ten przypadek, dla
+// ktorego ten detektor powstal.
+inline constexpr uint16_t LDR_EVENT_ON_MV = 400;
+
+// Ile sekund ciaglosci robi ze "swieci sie" ZDARZENIE. 20 min: dluzej, niz trwa
+// najdluzszy sensowny prysznic, i dluzej, niz jakikolwiek przelot przez strefe sporna.
+// To jest liczba WZIETA Z SUFITU i tak ma byc traktowana — po tygodniu ldr_events[] samo
+// powie, czy 20 minut lapie realne "zostawione swiatlo", czy tylko dlugie kapiele.
+inline constexpr uint32_t LDR_EVENT_MIN_S = 20 * 60;
+
+// Zdarzenie "swiatlo swieci, a nikogo nie ma".
+struct LdrEvent {
+  uint32_t startEpoch;      // epoch poczatku CIAGLOSCI (nie momentu przekroczenia 20 min).
+                            // 0 = ciaglosc zaczela sie, zanim NTP dal czas — wtedy godziny
+                            // NIE ZNAMY i /api/diag pokaze null, zamiast zmyslac polnoc.
+  uint32_t durS;            // dlugosc ciaglosci w sekundach REALNEGO pomiaru (patrz nizej)
+  uint32_t lastPirBeforeS;  // ile sekund przed poczatkiem ciaglosci PIR widzial ruch ostatni
+                            // raz. TO JEST POLE, KTORE ODROZNIA "wyszedl i zostawil" od
+                            // "nigdy go tu nie bylo": male => ktos wyszedl i nie zgasil,
+                            // duze => swiatlo palilo sie w pustej lazience juz wczesniej.
+                            // 0xFFFFFFFF = od startu urzadzenia nie bylo ANI JEDNEGO ruchu,
+                            // czyli "nie wiem" — /api/diag pokaze null.
+};
+
+struct LdrRtc {
+  uint32_t magic;   // po zaniku zasilania RTC to SMIECI; rozstrzyga znacznik, a nie
+                    // "czy liczby wygladaja rozsadnie" — smiec potrafi wygladac rozsadnie
+
+  // --- ciaglosc pomiaru: dokladnie ta sama mechanika, co w PirRtc i z tego samego powodu ---
+  // Osobne liczniki, a nie wspoldzielone z gPir: oba pomiary maja NIEZALEZNIE przezywac
+  // podbicie cudzego magica (patrz nota przy LDR_RTC_MAGIC). Po zimnym starcie beda
+  // identyczne — i to jest w porzadku, one nie sa od tego, zeby sie roznic, tylko od tego,
+  // zeby sie NIE ZEROWAC nawzajem.
+  uint32_t startedEpoch;  // epoch POCZATKU zbierania (0 = NTP jeszcze nie dal czasu)
+  uint32_t collectedS;    // sekundy REALNEGO zbierania. To NIE to samo, co
+                          // (teraz - startedEpoch): tamto liczy TAKZE czas, gdy urzadzenie
+                          // sie restartowalo i NIC nie mierzylo. Roznica obu = ile pomiaru
+                          // zjadly restarty, i dlatego /api/diag pokazuje OBA.
+  uint32_t boots;         // ile startow przezyl ten komplet danych (OTA/panic/watchdog)
+
+  // --- 1. histogram jasnosci ---
+  // Zliczany w istniejacym bloku probkowania co 250 ms, czyli 4 probki/s. Po tygodniu:
+  // 7*86400*4 = 2,4 mln zliczen — uint32 (4,3 mld) ma tu ~1800x zapasu, przepelnic sie
+  // nie ma jak nawet gdyby pomiar chodzil lata.
+  // Kosze [mV], krawedzie zageszczone w strefie spornej 256-768 (uzasadnienie wyzej):
+  //   <8 | 8-16 | 16-32 | 32-64 | 64-128 | 128-256 | 256-384 | 384-512 | 512-640 |
+  //   640-768 | 768-1024 | 1024-1536 | 1536-2048 | 2048-2560 | 2560-3072 | >=3072
+  uint32_t hist[16];
+
+  // --- 2. sekundy na poziomach podswietlenia 0/1/2 ---
+  // PO CO: nie wiem, czy poziom "polmrok" (BL_DIM) w ogole WYSTEPUJE w tej lazience dluzej
+  // niz ulamek sekundy przy pstryknieciu wlacznika. Pasmo 650-2200 mV jest szerokie na
+  // papierze, ale zmierzone stany to 4-5 (ciemno), 603-617 (prysznic — ponizej 650, czyli
+  // nadal poziom 0!) i 2576-3164 (swiatlo, czyli poziom 2). MIEDZY nimi nie ma nic, co by
+  // tam siedzialo na stale. Jesli po tygodniu ldr_level_s[1] wyjdzie ~0 s, to znaczy, ze
+  // BL_DIM = 130 jest MARTWYM KODEM, ktory sam sobie wpisalem, i trzeba go usunac razem
+  // z cala srodkowa gałęzią kaskady. Jesli wyjdzie duzo — poziom zyje i zostaje.
+  // Tego nie da sie wyczytac z logu: LOG leci tylko przy ZMIANIE poziomu i siedzi w
+  // buforze KOLOWYM 3072 B (~47 linii, okno ~6 minut).
+  uint32_t levelS[3];
+
+  // --- 3. pierscien zdarzen "zostawione swiatlo" ---
+  // 8 slotow. Pierscien, a nie licznik: sam licznik ("bylo 12 zdarzen") nie odpowiada na
+  // pytanie, ktore ma sens ("o ktorej i jak dlugo") — a pelnej listy nie ma gdzie trzymac.
+  LdrEvent events[8];
+  uint32_t evHead;   // nastepny slot do nadpisania (pierscien nadpisuje NAJSTARSZE)
+  uint32_t evCount;  // ile zdarzen OD POCZATKU. Moze byc > 8 i wtedy wiadomo, ze pierscien
+                     // sie zawinal i najstarsze przepadly — bez tego pola pelny pierscien
+                     // wygladalby identycznie przy 8 zdarzeniach i przy 80.
+
+  // --- stan kandydata na zdarzenie (w RTC, zeby OTA nie gubilo trwajacego zdarzenia) ---
+  // "Kandydat" = trwajaca ciaglosc swiatla bez ruchu, ktora jeszcze nie dobila 20 minut.
+  // Gdyby to bylo w DRAM, kazde wydanie w srodku zdarzenia zerowaloby licznik ciaglosci
+  // i 19-minutowa ciaglosc zaczynalaby sie od nowa — czyli detektor gubilby dokladnie te
+  // zdarzenia, ktore trwaja najdluzej. To ten sam blad, co trzymanie collectedS w DRAM.
+  uint32_t candStartS;      // collectedS w chwili startu ciaglosci — dlugosc liczymy jako
+                            // ROZNICE collectedS, a nie epochow. To istotne: collectedS nie
+                            // tyka podczas restartu, wiec 20 s przerwy na OTA nie zostanie
+                            // policzone jako 20 s swiecenia, ktorego NIE WIDZIELISMY.
+  uint32_t candStartEpoch;  // epoch tej samej chwili, tylko do pokazania czlowiekowi (0 = brak NTP)
+  uint32_t candLastPirS;    // migawka "ile temu byl ruch" z chwili startu ciaglosci
+  uint32_t candActive;      // 0/1. uint32, a nie bool, WYLACZNIE dla wyrownania — cala
+                            // struktura ma byc z pol 4-bajtowych pod adresami /4 (patrz
+                            // nota o wyrownaniu przy PirRtc)
+  uint32_t evSlot;          // slot juz otwartego zdarzenia (dopisujemy do niego durS),
+                            // 0xFFFFFFFF = ciaglosc trwa, ale jeszcze nie dobila 20 minut
+};
+
+// UCZCIWOSC POMIARU — jedna dziura, ktorej NIE zalatalem i ktorej nie warto latac:
+// jesli w trakcie kandydata wypadnie restart (OTA ~20 s), to swiatlo mogloby w tym czasie
+// zgasnac i zapalic sie z powrotem, a my scalimy to w jedna ciaglosc. Realnie: okno ma
+// kilkanascie sekund, a scenariusz wymaga, zeby ktos pstryknal wlacznikiem dokladnie
+// wtedy i NIE wszedl do lazienki (bo ruch i tak zamyka kandydata). Skala bledu jest
+// widoczna wprost w ldr_meas.gap_s — u gPir wyszlo 5 s na 3 restarty. Zaslanianie tego
+// heurystyka ("po restarcie odrzuc kandydata") kosztowaloby wiecej zdarzen, niz ratuje.
+extern LdrRtc gLdr;
+
+// Sprawdza znacznik waznosci, zeruje po zimnym starcie, seeduje liczniki DRAM-owe.
+// Wolac w setup() razem z pirRtcBegin().
+void ldrRtcBegin();
+
+// Kubelek histogramu dla ldr_mv. W naglowku, bo Portal.cpp opisuje TE SAME krawedzie
+// tekstem w /api/diag i chce miec je w zasiegu wzroku obok siebie.
+uint8_t ldrHistBucket(uint16_t mv);

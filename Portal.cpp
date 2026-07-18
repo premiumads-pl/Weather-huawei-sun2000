@@ -19,6 +19,7 @@
 // a min_spiffs.csv (nasz schemat partycji) ma na to partycje: coredump, 0x3F0000, 64 kB.
 // Czyli przy KAZDYM panicu urzadzenie samo zapisuje do flasha stan wszystkich zadan
 // i przezywa to odlaczenie zasilania — tylko do tej pory nie bylo jak tego odczytac.
+#include "esp_app_desc.h"   // esp_app_get_elf_sha256() — sha DZIALAJACEGO firmware'u
 #include "esp_core_dump.h"
 #include "esp_partition.h"
 
@@ -835,17 +836,66 @@ void coredumpInfo(JsonObject o) {
     // starszego builda niz ten, ktory teraz chodzi — a do rozszyfrowania adresow trzeba
     // DOKLADNIE tego app.elf, ktory sie wywalil. Bez tego pola nie ma jak tego sprawdzic.
     s.app_elf_sha256[sizeof(s.app_elf_sha256) - 1] = '\0';
-    o["app_elf_sha"] = String(reinterpret_cast<const char*>(s.app_elf_sha256));
+    const char* dumpSha = reinterpret_cast<const char*>(s.app_elf_sha256);
+    o["app_elf_sha"] = String(dumpSha);
+
+    // ...tyle ze samo WYSTAWIENIE tego pola nie chronilo przed niczym: podawalismy je
+    // i nigdy z niczym nie porownywali, wiec zeby cokolwiek z niego wyniknelo, trzeba
+    // bylo z wlasnej woli sprawdzic sume recznie. Nikt tego nie robi, gdy odpowiedz
+    // wyglada na kompletna. Dlatego urzadzenie porownuje samo.
+    //
+    // Rdzen zapisuje w zrzucie sha256 ELF-a jako NAPIS skrocony do
+    // CONFIG_APP_RETRIEVE_LEN_ELF_SHA (=9) znakow hex — dokladnie ten sam napis, ktory
+    // esp_app_get_elf_sha256() zwraca dla biezacego firmware'u. Obie strony formatuje ta
+    // sama funkcja rdzenia (libespcoredump.a linkuje sie do app_elf_sha256_str), wiec
+    // porownanie jest znak w znak i nie zgadujemy tu formatu.
+    //
+    // NIE brac tego z esp_app_get_description()->app_elf_sha256: TAMTO pole to 32 SUROWE
+    // BAJTY, a nie napis. Porownane wprost z tym z zrzutu nie zgadzaloby sie NIGDY —
+    // i elf_match bylby kolejnym polem, ktore zawsze klamie, tym razem w druga strone.
+    char runSha[sizeof(s.app_elf_sha256)] = {};
+    esp_app_get_elf_sha256(runSha, sizeof(runSha));
+    o["app_elf_sha_running"] = String(runSha);
+    const bool elfMatch = strcmp(dumpSha, runSha) == 0;
+    o["elf_match"] = elfMatch;
 
     // Backtrace: same adresy kodu. To on odpowiada "gdzie padlo", a rozszyfrowuje sie go
     // przez: xtensa-esp32s3-elf-addr2line -pfiaC -e build/pogoda-gdynia.ino.elf <adresy>
+    // — ale TYLKO gdy elf_match == true. Patrz nizej.
     JsonArray bt = o["bt"].to<JsonArray>();
     const uint32_t depth = s.exc_bt_info.depth > 16 ? 16 : s.exc_bt_info.depth;
     for (uint32_t i = 0; i < depth; ++i) {
       snprintf(hex, sizeof(hex), "0x%08x", static_cast<unsigned>(s.exc_bt_info.bt[i]));
       bt.add(String(hex));
     }
+    // PULAPKA, w ktora naprawde sie wdepnelo: `bt_corrupted: false` NIE ZNACZY
+    // "backtrace prawdziwy". Znaczy dokladnie tyle, ze lancuch ramek jest SPOJNY SAM ZE
+    // SOBA — kazda ramka wskazuje na nastepna i rdzen doszedl po nich do konca. O tym,
+    // czy te adresy odpowiadaja JAKIEMUKOLWIEK ELF-owi, nie mowi nic i mowic nie moze:
+    // liczy je z pamieci, nie ma z czym ich zestawic.
+    //
+    // Zrzut ze starszego builda da tu wiec spokojnie `false` (lancuch BYL w porzadku
+    // w chwili panica), a addr2line z ELF-em innej wersji przetlumaczy te adresy na
+    // prawdziwe nazwy funkcji, ktore nigdy sie nawzajem nie wolaly — stos wyglada
+    // wiarygodnie i jest w calosci zmyslony. Odpowiedzia na pytanie "czy wolno to
+    // czytac" jest elf_match, a nie to pole.
     o["bt_corrupted"] = s.exc_bt_info.corrupted;
+
+    // `bt` zostaje takze przy niezgodnosci — z WLASCIWYM app.elf jest pelnowartosciowy,
+    // a to jedyny egzemplarz tych adresow, jaki istnieje. Znika za to zludzenie, ze
+    // mozna go odczytac tym, co akurat lezy w build/.
+    if (!elfMatch) {
+      o["note"] =
+          "UWAGA: zrzut pochodzi z INNEGO builda niz firmware, ktory teraz chodzi "
+          "(app_elf_sha != app_elf_sha_running). Adresy w `pc`, `vaddr` i `bt` NIE "
+          "odnosza sie do biezacego ELF-a. addr2line z build/pogoda-gdynia.ino.elf poda "
+          "z nich pelny stos z prawdziwymi nazwami funkcji — i ten stos bedzie FALSZYWY. "
+          "`bt_corrupted: false` tego nie wyklucza: mowi tylko, ze lancuch ramek jest "
+          "spojny, nie ze pasuje do tego ELF-a. Do odczytania potrzebny jest app.elf "
+          "builda o sumie app_elf_sha; jesli go nie ma — skasuj zrzut "
+          "(DELETE /api/coredump) i poczekaj na nastepny panic, ktory bedzie juz z "
+          "biezacej wersji.";
+    }
 
     // CELOWO NIE WYSTAWIAMY ex_info.exc_a[16] (rejestry a0..a15 z chwili wyjatku).
     // Cala reszta powyzej to ADRESY — wskazniki na kod i na pamiec. Rejestry to jedyne
@@ -1094,6 +1144,98 @@ void apiDiag() {
   JsonArray bh = sen["pir_by_hour"].to<JsonArray>();
   for (uint32_t v : gPir.byHour) bh.add(v);
   sen["pir_by_hour_note"] = "indeks = godzina lokalna 0-23; normuj przez collected_s, nie uptime";
+
+  // --- LDR: obserwacja v108 (histogram + poziomy + zdarzenia, PRZEZYWAJA OTA) ---
+  // Po co kazde z tych pol — patrz LdrRtc w Log.h. Skrot: w tej lazience sa dwa zrodla
+  // swiatla, samo swiatlo pod prysznicem (603-617 mV) NIE dosiega progu LDR_DIM_UP_MV
+  // (650) i nie podnosi ekranu z poziomu 0. Wlasciciel chce, zeby podnosilo. Ta wersja
+  // NICZEGO nie zmienia — zbiera tydzien danych, zeby prog postawic na rozkladzie, a nie
+  // na jednym pomiarze zrobionym w locie (tak powstal blad v103, patrz komentarz przy
+  // logice podswietlenia w pogoda-gdynia.ino).
+  //
+  // OSOBNY ldr_meas, a nie wspolny z pir_meas: liczniki maja NIEZALEZNIE przezywac
+  // podbicie cudzego magica. Po zimnym starcie obie sekcje pokaza to samo i tak ma byc.
+  JsonObject lm = sen["ldr_meas"].to<JsonObject>();
+  lm["collected_s"] = gLdr.collectedS;   // REALNY czas zbierania — TYM normuj histogram
+  lm["boots"] = gLdr.boots;
+  if (gLdr.startedEpoch > 0) {
+    lm["started_epoch"] = gLdr.startedEpoch;
+    const time_t nowT = time(nullptr);
+    if (nowT > 1700000000) {
+      const uint32_t wall = static_cast<uint32_t>(nowT) - gLdr.startedEpoch;
+      lm["wall_s"] = wall;
+      // Roznica wall_s - collected_s = ile pomiaru zjadly restarty. To jedyna liczba,
+      // ktora mowi, na ile temu histogramowi mozna ufac po tygodniu wydan OTA.
+      lm["gap_s"] = wall > gLdr.collectedS ? wall - gLdr.collectedS : 0;
+    }
+  } else {
+    lm["started_epoch"] = nullptr;   // NTP jeszcze nigdy nie dal czasu
+  }
+
+  // Histogram jasnosci. Probka co 250 ms => 4 zliczenia na sekunde: kosz/4 = SEKUNDY.
+  // Suma wszystkich koszy ~= 4 * collected_s (z dokladnoscia do reszty ostatniej sekundy).
+  JsonArray lh = sen["ldr_hist"].to<JsonArray>();
+  for (uint32_t v : gLdr.hist) lh.add(v);
+  sen["ldr_hist_bins"] =
+      "<8|8-16|16-32|32-64|64-128|128-256|256-384|384-512|512-640|640-768|768-1024|"
+      "1024-1536|1536-2048|2048-2560|2560-3072|>=3072 mV";
+  // To zdanie jest tu PO TO, zeby czytajacy za pol roku wiedzial, czego szukac, i nie
+  // musial odtwarzac calego kontekstu z pamieci. Kosze 8 i 9 sa cala stawka.
+  sen["ldr_hist_note"] =
+      "4 probki/s => kosz/4 = sekundy; kosze zageszczone w strefie spornej 256-768 mV. "
+      "Pytanie: czy sam prysznic (zmierzone 603-617) daje CZYSTY PIK w koszu 512-640 "
+      "(=> prog 450 bezpieczny), czy rozmazuje sie na kosze 7-9 (=> zaden staly prog nie "
+      "zadziala). Prog LDR_DIM_UP_MV=650 przecina kosz 640-768.";
+
+  // Sekundy na poziomach podswietlenia. Indeks = poziom: 0 ciemno (BL_NIGHT=45),
+  // 1 polmrok (BL_DIM=130), 2 swiatlo (BL_DAY=255).
+  JsonArray ll = sen["ldr_level_s"].to<JsonArray>();
+  for (uint32_t v : gLdr.levelS) ll.add(v);
+  // Suma podana WPROST, bo jest MNIEJSZA niz collected_s i ta roznica jest mylaca, gdy sie
+  // o niej nie wie: poziomy licza sie tylko wtedy, gdy petla naprawde nimi steruje (nie
+  // w portalu AP, nie podczas OTA, nie na ekranie startowym). Patrz komentarz przy tym
+  // liczniku w pogoda-gdynia.ino.
+  sen["ldr_level_s_sum"] = gLdr.levelS[0] + gLdr.levelS[1] + gLdr.levelS[2];
+  sen["ldr_level_s_note"] =
+      "0=ciemno(45) 1=polmrok(130) 2=swiatlo(255). Suma < collected_s o czas w portalu/OTA/"
+      "boocie i to nie jest blad. Pytanie: czy poziom 1 w ogole istnieje dluzej niz "
+      "pstrykniecie — jesli ~0 s, to BL_DIM jest martwym kodem do usuniecia.";
+
+  // Zdarzenia "zostawione swiatlo". PRYWATNOSC: to jedyne pole tej sekcji ze znacznikiem
+  // czasu — przed wklejeniem /api/diag do publicznego zgloszenia wytnij je razem
+  // z pir_by_hour (patrz nota o prywatnosci przy LdrRtc w Log.h).
+  JsonArray le = sen["ldr_events"].to<JsonArray>();
+  // Pierscien nadpisuje najstarsze, wiec kolejnosc w tablicy != kolejnosc w czasie.
+  // Rozwijamy od najstarszego zachowanego, zeby czytalo sie chronologicznie: dopoki
+  // evCount <= 8 nic sie nie zawinelo i zaczynamy od 0, potem najstarszy siedzi w evHead.
+  const uint32_t evN = gLdr.evCount < 8 ? gLdr.evCount : 8;
+  const uint32_t evFirst = gLdr.evCount < 8 ? 0 : gLdr.evHead;
+  for (uint32_t i = 0; i < evN; ++i) {
+    const uint32_t idx = (evFirst + i) % 8;
+    const LdrEvent& e = gLdr.events[idx];
+    JsonObject eo = le.add<JsonObject>();
+    // 0 => ciaglosc zaczela sie przed pierwszym NTP i godziny NIE ZNAMY. Brak danych ma
+    // wygladac jak brak danych — ta sama lekcja co viHas* i pir_min_ms wyzej.
+    if (e.startEpoch > 0) eo["start_epoch"] = e.startEpoch;
+    else eo["start_epoch"] = nullptr;
+    eo["dur_s"] = e.durS;
+    // 0xFFFFFFFF => od startu urzadzenia nie bylo ANI JEDNEGO ruchu, czyli "nie wiem".
+    // Surowo czytaloby sie to jak "ostatni ruch byl 136 lat temu".
+    if (e.lastPirBeforeS != 0xFFFFFFFF) eo["last_pir_before_s"] = e.lastPirBeforeS;
+    else eo["last_pir_before_s"] = nullptr;
+    // Zdarzenie trafia do pierscienia W CHWILI dobicia 20 minut, a nie po zgasnieciu
+    // swiatla — wiec dur_s otwartego wciaz rosnie i bez tej flagi wygladaloby jak
+    // zamkniete. Bez niej "swieci sie TERAZ od godziny" i "swiecilo sie godzine wczoraj"
+    // sa nierozroznialne, a to jest cala roznica miedzy alarmem a statystyka.
+    if (gLdr.evSlot == idx) eo["open"] = true;
+  }
+  sen["ldr_events_total"] = gLdr.evCount;   // > 8 => pierscien sie zawinal, najstarsze przepadly
+  sen["ldr_events_note"] =
+      "zdarzenie = ldr_mv >= 400 nieprzerwanie ORAZ zero ruchu PIR przez > 20 min. "
+      "Prog 400 mV jest SUROWY i celowo niezalezny od progow podswietlenia (LDR_*), bo to "
+      "wlasnie one sa przedmiotem sporu — detektor nie moze zalezec od wielkosci, ktora "
+      "pomiar ma rozstrzygnac. dur_s liczy sie w collected_s, wiec restart pauzuje "
+      "zdarzenie, zamiast doliczac czas, ktorego nie widzielismy.";
 
   String out;
   serializeJsonPretty(j, out);

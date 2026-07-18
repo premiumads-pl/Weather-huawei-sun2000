@@ -71,6 +71,47 @@ if [ "$STATIC" -gt "$LIMIT" ]; then
 fi
 rm -f build.log
 
+# --- BARIERA 2: ADRES gPir W RTC ---------------------------------------------
+# gPir trzyma statystyki PIR zbierane TYGODNIAMI i ma je przezyc OTA. Przezyje tylko
+# wtedy, gdy nowa wersja szuka ich pod TYM SAMYM adresem, pod ktorym zapisala je stara.
+#
+# Problem: RTC_NOINIT_ATTR to _SECTION_ATTR_IMPL(".rtc_noinit", __COUNTER__) — kazda
+# zmienna dostaje wlasna sekcje .rtc_noinit.<licznik>, a linker sklada je przez
+# *(.rtc_noinit .rtc_noinit.*) BEZ SORT(). Czyli o adresie gPir decyduje KOLEJNOSC
+# EMISJI SEKCJI przez GCC, a nie zaden kontrakt. Dolozenie drugiej zmiennej (gLdr w
+# v108) potrafi przesunac gPir — i wtedy magic sie nie zgadza, kod robi zimny start
+# i kasuje zbior. Na biurku wyglada to DOKLADNIE jak poprawny pierwszy rozruch.
+# Awaria jest cicha. Ten bezpiecznik zamienia ja w glosna.
+#
+# 0x50000200 = _rtc_noinit_start. W v107 gPir byl jedyna zmienna rtc_noinit, wiec stal
+# tam z koniecznosci; od v108 stoi tam, bo gLdr zadeklarowano NAD nim (GCC emituje
+# sekcje w kolejnosci odwrotnej do deklaracji — zaobserwowane, nie gwarantowane).
+#
+# Jesli to STOPUJE, a Ty naprawde chcesz przeniesc gPir: pogodz sie ze strata zbioru
+# albo zrob to porzadnie (jedna struktura z podstrukturami — ukladu pol WEWNATRZ
+# struktury pilnuje ABI) i dopiero wtedy zmien ten adres tutaj.
+NM=$(find "$HOME/Library/Arduino15/packages/esp32/tools" -name "xtensa-esp32s3-elf-nm" -type f 2>/dev/null | head -1)
+ELF=$(find build -name "*.ino.elf" | head -1)
+GPIR_WANT=50000200
+if [ -z "$NM" ] || [ -z "$ELF" ]; then
+  echo ""
+  echo "!!! STOP: nie znalazlem nm ('${NM}') albo ELF-a ('${ELF}')."
+  echo "!!! Bariera adresu gPir bylaby slepa — nie ryzykuje kasowania statystyk PIR."
+  sed -i '' "s/#define FW_VERSION ${NEW}/#define FW_VERSION ${CUR}/" Version.h
+  exit 1
+fi
+GPIR_AT=$("$NM" "$ELF" | awk '$3=="gPir"{print $1}' | head -1)
+if [ -z "$GPIR_AT" ]; then GPIR_AT="(brak symbolu)"; fi
+echo "==> gPir @ 0x${GPIR_AT} (oczekiwane 0x${GPIR_WANT})"
+if [ "$GPIR_AT" != "$GPIR_WANT" ]; then
+  echo ""
+  echo "!!! STOP: gPir stoi pod 0x${GPIR_AT}, a stara wersja zapisala dane pod 0x${GPIR_WANT}."
+  echo "!!! To OTA SKASUJE zbierane statystyki PIR i nie powie o tym ani slowa."
+  echo "!!! Patrz komentarz nad ta bariera. Cofam podniesienie wersji."
+  sed -i '' "s/#define FW_VERSION ${NEW}/#define FW_VERSION ${CUR}/" Version.h
+  exit 1
+fi
+
 BIN=$(ls build/*.ino.bin | head -1)
 cp "$BIN" build/firmware.bin
 SIZE=$(stat -f%z build/firmware.bin)

@@ -148,7 +148,39 @@ Diag* gDiagIsr = nullptr;           // zlapane raz w setup(), zeby ISR nie wolal
 // FAST!) i dlaczego ISR moze tu pisac — patrz PirRtc w Log.h.
 // RTC_NOINIT_ATTR => sekcja .rtc_noinit jest NOLOAD: nikt tego nie inicjalizuje ani przy
 // starcie, ani po resecie. Dlatego BEZ inicjalizatora (byloby zignorowane) i dlatego
-// pirRtcBegin() musi sam sprawdzic znacznik waznosci.
+// pirRtcBegin()/ldrRtcBegin() musza same sprawdzic znacznik waznosci.
+//
+// !!! KOLEJNOSC TYCH DWOCH LINII JEST CZESCIA KONTRAKTU — gPir MA STAC NA KONCU !!!
+//
+// To NIE jest kwestia stylu, tylko ADRESU, a adres decyduje o tym, czy trwajacy tydzien
+// pomiaru PIR przezyje te aktualizacje:
+//  * RTC_NOINIT_ATTR to `_SECTION_ATTR_IMPL(".rtc_noinit", __COUNTER__)` (esp_attr.h:98),
+//    czyli KAZDA zmienna dostaje WLASNA sekcje `.rtc_noinit.<licznik>`.
+//  * Linker sklada je przez `*(.rtc_noinit .rtc_noinit.*)` (sections.ld:122) BEZ SORT(),
+//    czyli w kolejnosci, w jakiej wypadna z pliku .o.
+//  * GCC emituje te sekcje w KOLEJNOSCI ODWROTNEJ do deklaracji. To nie jest gwarancja
+//    jezyka ani ABI — to OBSERWACJA, sprawdzona przez zamiane tych dwoch linii miejscami
+//    i porownanie `nm` (adresy zamienily sie symetrycznie). Dlatego zmienna zadeklarowana
+//    JAKO OSTATNIA laduje w RTC JAKO PIERWSZA, pod 0x50000200.
+//
+// Konsekwencja, ktora kosztowala pierwsze podejscie do v108: przy gLdr zadeklarowanym pod
+// gPir-em gPir pojechal z 0x50000200 na 0x500002d8 — czyli nowy kod czytalby PirRtc spod
+// adresu, pod ktorym nikt nigdy nic nie zapisal. Magic by sie nie zgodzil, pirRtcBegin()
+// zrobilby zimny start i SKASOWAL zbierany tydzien. Zlapal to `nm`, a nie test na biurku,
+// bo na biurku to wyglada dokladnie jak poprawny zimny start — i to jest cala pointa
+// wymogu sprawdzania `nm` przy kazdej zmianie w RTC.
+//
+// Stan potwierdzony w tym obrazie: gPir @ 0x50000200 (tak samo, jak w dzialajacym v107 —
+// dane przezyja OTA), gLdr @ 0x500002c0, czyli tuz ZA nim, na pamieci, ktorej nikt nigdy
+// nie pisal. Magic gLdr sie nie zgodzi i pomiar LDR wystartuje od zera — i o to chodzi,
+// on jest nowy.
+//
+// ZANIM DOLOZYSZ TRZECIA ZMIENNA RTC: wstaw ja NAD gPir (gPir zostaje ostatni) i SPRAWDZ
+// `nm`, ze gPir nadal siedzi na 0x50000200. Jesli kiedys ta obserwacja o GCC przestanie sie
+// trzymac, wlasciwym lekiem jest JEDNA struktura z podstrukturami
+// (`struct { PirRtc pir; LdrRtc ldr; }` z osobnymi magicami w srodku), bo ukladu pol
+// WEWNATRZ struktury pilnuje ABI, a nie szczescie w kolejnosci emisji sekcji.
+RTC_NOINIT_ATTR LdrRtc gLdr;
 RTC_NOINIT_ATTR PirRtc gPir;
 
 // Stan chwilowy ISR-a — ZOSTAJE W DRAM, celowo. To znaczniki millis(), a millis() zeruje
@@ -181,6 +213,135 @@ void pirRtcBegin() {
   }
   gPirBookedRises = gPir.rises;
   gPirTickMs = millis();
+}
+
+// --- LDR: pomiar dlugoterminowy w RTC (v108) — patrz LdrRtc w Log.h ---
+// Sam obiekt gLdr stoi na gorze, tuz NAD gPir: jego miejsce w pliku decyduje o ADRESIE
+// w RTC i o tym, czy pomiar PIR przezyje te aktualizacje (patrz komentarz przy gPir).
+//
+// Ile zbocz w gore detektor zdarzen juz "zobaczyl". Osobny licznik od gPirBookedRises, bo
+// tamten ksieguje byHour i jest przesuwany w INNYM miejscu petli — wspoldzielenie znaczyloby,
+// ze ktokolwiek pierwszy go przesunie, ukradnie drugiemu informacje o ruchu.
+// W DRAM (nie w RTC), bo to tylko migawka do liczenia PRZYROSTU: po restarcie seedujemy ja
+// z gPir.rises w ldrRtcBegin(). Ruch, ktory wypadl dokladnie na czas restartu, przepada —
+// i tak ma byc, bo naprawde go nie widzielismy (patrz nota o uczciwosci pomiaru w Log.h).
+uint32_t gLdrBookedRises = 0;
+uint32_t gLdrLevelTickMs = 0;   // millis() ostatniego doliczenia ldr_level_s
+uint32_t gLdrLevelAccMs = 0;    // reszta ponizej sekundy — bez niej gubilibysmy po ~33 ms
+                                // na KAZDY obrot petli 30 fps, czyli prawie caly pomiar
+
+void ldrRtcBegin() {
+  if (gLdr.magic == LDR_RTC_MAGIC) {
+    ++gLdr.boots;
+    LOG("LDR: histogram z RTC przezyl restart — zbieram od %lu s, start #%lu, zdarzen %lu\n",
+        (unsigned long)gLdr.collectedS, (unsigned long)gLdr.boots, (unsigned long)gLdr.evCount);
+  } else {
+    memset(&gLdr, 0, sizeof(gLdr));
+    // 0xFFFFFFFF = "zaden slot nie jest otwarty". 0 znaczyloby "otwarty jest slot 0" i
+    // pierwsza ciaglosc po zimnym starcie dopisywalaby durS do nieistniejacego zdarzenia.
+    gLdr.evSlot = 0xFFFFFFFF;
+    gLdr.boots = 1;
+    gLdr.magic = LDR_RTC_MAGIC;
+    LOG("LDR: RTC puste lub z innego ukladu pol — zimny start, histogram wyzerowany\n");
+  }
+  // Seed z RTC, nie z zera: po OTA gPir.rises jest juz duze, a gdyby ten licznik startowal
+  // od zera, pierwszy obrot petli zobaczylby ROZNICE rowna calej historii ruchu i uznal to
+  // za "wlasnie ktos wszedl" — czyli zamknalby kandydata, ktory przezyl aktualizacje.
+  gLdrBookedRises = gPir.rises;
+  gLdrLevelTickMs = millis();
+}
+
+// Krawedzie koszy sa POWTORZONE tekstem w /api/diag (ldr_hist_bins) — tak samo, jak przy
+// PIR-ze i z tego samego powodu: ten plik ma juz za soba trzy komentarze, ktore rozjechaly
+// sie z kodem, a opis lecacy OBOK DANYCH rozjezdza sie trudniej.
+// Bez IRAM_ATTR, w odroznieniu od pirWidthBucket: to wola loop(), nigdy ISR.
+uint8_t ldrHistBucket(uint16_t mv) {
+  if (mv < 8) return 0;      // oba zgaszone: zmierzone 4-5 mV siedzi TUTAJ
+  if (mv < 16) return 1;
+  if (mv < 32) return 2;     // "prawdziwa ciemnosc" z v104: 17-26 mV
+  if (mv < 64) return 3;
+  if (mv < 128) return 4;
+  if (mv < 256) return 5;
+  if (mv < 384) return 6;    // od tego kosza zaczyna sie strefa sporna; 251 mV ("zmierzch",
+                             // ktory v103 wzialo za ciemnosc) siedzi w koszu obok, <256
+  if (mv < 512) return 7;
+  if (mv < 640) return 8;    // sam prysznic: zmierzone 603-617 mV
+  if (mv < 768) return 9;    // dzisiejszy prog LDR_DIM_UP_MV = 650 przecina TEN kosz
+  if (mv < 1024) return 10;
+  if (mv < 1536) return 11;
+  if (mv < 2048) return 12;
+  if (mv < 2560) return 13;
+  if (mv < 3072) return 14;  // kontroler: zmierzone 2576-3164 rozklada sie na kosze 14 i 15
+  return 15;
+}
+
+// --- detektor "zostawione swiatlo" — wolany RAZ NA SEKUNDE z loop() ---
+// Definicja zdarzenia: ldr_mv >= LDR_EVENT_ON_MV NIEPRZERWANIE i ZERO ruchu PIR, dluzej
+// niz LDR_EVENT_MIN_S. Uzasadnienie obu liczb stoi przy stalych w Log.h.
+//
+// Dlaczego ruch bierzemy z PRZYROSTU gPir.rises, a nie z diag().pirState: pirState jest
+// odswiezany co 250 ms i pokazuje POZIOM. Impuls AM312 trwa ~2 s, wiec poziom zlapalby
+// wiekszosc ruchow — ale nie ma gwarancji, ze zlapie kazdy, a przy ruchu na granicy okna
+// martwego mozna go przegapic. Zbocza liczy ISR i one nie gina. To jest detektor
+// dwudziestominutowej CISZY: przegapiony ruch to falszywe zdarzenie, czyli dokladnie ten
+// blad, ktorego ta wersja ma nie robic.
+void ldrEventTick() {
+  const uint32_t rises = gPir.rises;
+  const bool motion = (rises != gLdrBookedRises);
+  gLdrBookedRises = rises;
+
+  const bool light = diag().ldrMv >= LDR_EVENT_ON_MV;
+
+  if (!light || motion) {
+    // Zamkniecie: swiatlo zgaslo albo ktos wszedl. Zdarzenia NIE trzeba nigdzie
+    // "dopisywac" — jesli dobilo 20 minut, siedzi juz w pierscieniu z aktualnym durS
+    // (dopisywanym co sekunde nizej). Ta kolejnosc jest celowa: zdarzenie jest widoczne
+    // w /api/diag JUZ W TRAKCIE trwania, a nie dopiero po zgasnieciu swiatla — czyli
+    // wtedy, kiedy jest komukolwiek do czegokolwiek potrzebne.
+    if (gLdr.candActive && gLdr.evSlot != 0xFFFFFFFF) {
+      LOG("LDR: koniec zdarzenia — swiatlo %s po %lu s\n",
+          motion ? "przerwane ruchem" : "zgaszone",
+          (unsigned long)(gLdr.collectedS - gLdr.candStartS));
+    }
+    gLdr.candActive = 0;
+    gLdr.evSlot = 0xFFFFFFFF;
+    return;
+  }
+
+  if (!gLdr.candActive) {
+    gLdr.candActive = 1;
+    gLdr.candStartS = gLdr.collectedS;
+    gLdr.evSlot = 0xFFFFFFFF;
+
+    const time_t tt = time(nullptr);
+    // Bez NTP godziny NIE ZNAMY. 0 => /api/diag pokaze null. Ta sama zasada, co przy
+    // pir_by_hour: lepiej stracic znacznik czasu, niz zmyslic polnoc.
+    gLdr.candStartEpoch = (tt > 1700000000) ? static_cast<uint32_t>(tt) : 0;
+
+    // Migawka "ile temu byl ruch" — liczona TERAZ, bo za 20 minut pirLastAt bedzie juz
+    // opisywac inna chwile. pirLastAt to millis(), wiec zeruje sie przy restarcie:
+    // 0 znaczy "od startu urzadzenia nie bylo ANI JEDNEGO ruchu", czyli "nie wiem".
+    const uint32_t pirAt = diag().pirLastAt;
+    gLdr.candLastPirS = (pirAt == 0) ? 0xFFFFFFFF : (millis() - pirAt) / 1000;
+  }
+
+  // Dlugosc liczona w collectedS, NIE w epochu — restart pauzuje ciaglosc zamiast
+  // ja zrywac i zamiast doliczac czas, ktorego nie widzielismy (patrz LdrRtc).
+  const uint32_t dur = gLdr.collectedS - gLdr.candStartS;
+  if (dur < LDR_EVENT_MIN_S) return;
+
+  if (gLdr.evSlot == 0xFFFFFFFF) {
+    // Ciaglosc wlasnie dobila progu — bierzemy slot. Pierscien nadpisuje NAJSTARSZE.
+    gLdr.evSlot = gLdr.evHead;
+    gLdr.evHead = (gLdr.evHead + 1) % 8;
+    ++gLdr.evCount;
+    gLdr.events[gLdr.evSlot].startEpoch = gLdr.candStartEpoch;
+    gLdr.events[gLdr.evSlot].lastPirBeforeS = gLdr.candLastPirS;
+    LOG("LDR: zdarzenie #%lu — swiatlo %u mV, bez ruchu od %lu s\n",
+        (unsigned long)gLdr.evCount, (unsigned)diag().ldrMv,
+        (unsigned long)(gLdr.candLastPirS == 0xFFFFFFFF ? 0 : gLdr.candLastPirS) + dur);
+  }
+  gLdr.events[gLdr.evSlot].durS = dur;
 }
 
 // Granice koszy opisane przy PirRtc::widthHist/gapHist w Log.h i powtorzone w /api/diag
@@ -1053,6 +1214,9 @@ void setup() {
   // Odwrotnie pierwsze zbocze trafiloby w gDiagIsr == nullptr i przepadloby, a gorzej —
   // pirRtcBegin() wyzerowaloby po nim liczniki albo doliczyloby je do smieci z RTC.
   pirRtcBegin();
+  // PO pirRtcBegin(), bo seeduje gLdrBookedRises z gPir.rises — przed nim czytaloby albo
+  // smiec z RTC (zimny start), albo wartosc, ktora pirRtcBegin() zaraz wyzeruje.
+  ldrRtcBegin();
   gDiagIsr = &diag();
   attachInterrupt(digitalPinToInterrupt(cfg::PIN_PIR), pirIsr, CHANGE);
 
@@ -1161,6 +1325,17 @@ void loop() {
       diag().ldrRaw = static_cast<uint16_t>(acc / 8);
       diag().ldrMv = static_cast<uint16_t>(accMv / 8);
       diag().pirState = digitalRead(cfg::PIN_PIR) != 0;
+
+      // Histogram jasnosci (v108, patrz LdrRtc w Log.h). Zliczamy TU, w istniejacym bloku
+      // 250 ms, a nie w osobnym timerze — bo to jedyne miejsce, w ktorym ldrMv jest SWIEZE.
+      // Drugi timer albo trafialby w te sama probke dwa razy (i zawyzal kosze bez powodu),
+      // albo probkowalby wlasnym rytmem i wtedy histogram opisywalby INNY sygnal niz ten,
+      // ktory steruje ekranem — czyli mierzylby nie to, o co pytamy.
+      // Staly rytm 250 ms jest tu warunkiem sensu: kosz = liczba probek, wiec zliczenia
+      // przeliczaja sie na SEKUNDY tylko dlatego, ze kazda probka wazy tyle samo (1/4 s).
+      // Blok stoi PONAD wczesnymi return-ami loop(), wiec czas w portalu AP i na ekranie
+      // startowym tez jest probkowany — tak jak collectedS, ktorym sie to normuje.
+      ++gLdr.hist[ldrHistBucket(diag().ldrMv)];
     }
   }
 
@@ -1202,7 +1377,15 @@ void loop() {
     const uint32_t dt = now - gPirTickMs;
     if (dt >= 1000) {
       gPir.collectedS += dt / 1000;
+      gLdr.collectedS += dt / 1000;   // ten sam przyrost, osobny licznik — patrz LdrRtc
       gPirTickMs += (dt / 1000) * 1000;
+
+      // --- LDR: detektor "zostawione swiatlo" (v108, patrz LdrRtc w Log.h) ---
+      // Wolane RAZ NA SEKUNDE, w tym samym `if` co collectedS — nie przez wygode, tylko
+      // dlatego, ze dlugosc ciaglosci liczymy wlasnie w collectedS. Gdyby to bylo w
+      // osobnym warunku, oba liczniki moglyby sie rozjechac o obrot petli i zdarzenie
+      // twierdziloby, ze trwa dluzej, niz pomiar w ogole zbieral.
+      ldrEventTick();
     }
 
     // startedEpoch ustawiamy raz, przy pierwszym czasie z NTP. Odejmowanie collectedS
@@ -1373,6 +1556,32 @@ void loop() {
     if (blLevel == 1 && ldrMv >= cfg::LDR_DAY_UP_MV) blLevel = 2;    // polmrok -> swiatlo
     if (blLevel == 2 && ldrMv < cfg::LDR_DAY_DOWN_MV) blLevel = 1;   // swiatlo -> polmrok
     if (blLevel == 1 && ldrMv < cfg::LDR_DIM_DOWN_MV) blLevel = 0;   // polmrok -> ciemno
+  }
+
+  // --- ile czasu ekran realnie spedza na kazdym poziomie (v108, patrz LdrRtc w Log.h) ---
+  // Miejsce jest CELOWE i odwrotne niz przy histogramie: ten licznik stoi TUTAJ, PONIZEJ
+  // wczesnych return-ow loop(), a nie na gorze razem z probkowaniem. Powod: blLevel jest
+  // wyliczany dopiero tu i tylko tu wolamy setBacklightTarget(). W portalu AP, podczas OTA
+  // i na ekranie startowym ten blok sie NIE WYKONUJE, wiec zaden poziom wtedy nie
+  // obowiazuje — doliczanie tamtych sekund do ostatnio znanego poziomu byloby zmyslaniem.
+  // Konsekwencja, ktora trzeba znac czytajac /api/diag: suma ldr_level_s jest MNIEJSZA niz
+  // collected_s, dokladnie o czas w portalu/OTA/na bootowaniu. To nie blad — to ta sama
+  // roznica, co collected_s kontra wall_s, tylko o pietro nizej. Dlatego /api/diag podaje
+  // ldr_level_s_sum wprost, zeby nikt nie musial jej sumowac w glowie i sie zastanawiac.
+  {
+    const uint32_t dt = now - gLdrLevelTickMs;
+    gLdrLevelTickMs = now;
+    // dt >= 2000 znaczy "tego bloku nie bylo tu przez chwile" (OTA, portal, ekran IP) —
+    // przy 30 fps normalne dt to ~33 ms. Takiej dziury NIE ksiegujemy pod zaden poziom,
+    // tylko resynchronizujemy zegar. To samo zalatwia pierwszy przebieg po starcie, gdzie
+    // gLdrLevelTickMs pochodzi jeszcze z setup() i dt liczy sie w sekundach laczenia z WiFi.
+    if (dt < 2000) {
+      gLdrLevelAccMs += dt;
+      if (gLdrLevelAccMs >= 1000) {
+        gLdr.levelS[blLevel] += gLdrLevelAccMs / 1000;
+        gLdrLevelAccMs %= 1000;   // reszta zostaje — patrz komentarz przy deklaracji
+      }
+    }
   }
 
   // Log tylko przy ZMIANIE — w petli 30 fps kazdy inny wariant zalalby bufor logu

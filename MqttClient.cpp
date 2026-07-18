@@ -212,8 +212,12 @@ bool publishConfig(const Ent& e) {
 // (uzytkownik wpisuje "Łazienka", "Schody"), a liczba zalezy od tego, ile ich
 // skonfigurowal. Budujemy wiec Ent na stosie — publishConfig i tak uzywa wskaznikow
 // od razu, jeszcze przed powrotem.
-int sendBleDiscovery() {
+// `total` (wyjscie): ile encji BLE PROBOWALISMY wystawic. Bez tego wywolujacy zna sam
+// licznik udanych i nie ma go do czego odniesc — a "ile ich w ogole mialo byc" zalezy
+// od NVS i nie da sie tego policzyc z zewnatrz.
+int sendBleDiscovery(int& total) {
   int ok = 0;
+  total = 0;
   // BLE_USABLE, nie "4". Zaszyta czworka byla TRZECIA kopia tej samej petli
   // (ekran i .ino juz poprawione) i jedyna, ktora zostala: czujnik nr 5 pojawilby
   // sie na wyswietlaczu, ale NIGDY nie dostalby encji w Home Assistancie — bez
@@ -240,6 +244,7 @@ int sendBleDiscovery() {
     };
 
     for (const Def& d : defs) {
+      ++total;
       char key[16], field[8], name[40];
       snprintf(key, sizeof(key), "ble%d_%s", i, d.suffix);
       snprintf(field, sizeof(field), "s%d%s", i, d.suffix);
@@ -254,17 +259,25 @@ int sendBleDiscovery() {
 }
 
 void sendDiscovery() {
-  int ok = sendBleDiscovery();
+  int bleTotal = 0;
+  const int bleOk = sendBleDiscovery(bleTotal);
+
+  int entOk = 0;
   for (int i = 0; i < kEntCount; ++i) {
     if (publishConfig(kEnts[i])) {
-      ++ok;
+      ++entOk;
     }
     // 22 pakiety po ~490 B pod rzad potrafia zapchac okno TCP — oddajemy procesor,
     // zeby webTask (nizszy priorytet, ten sam rdzen) nie zglodnial.
     vTaskDelay(pdMS_TO_TICKS(5));
   }
-  LOG("MQTT: discovery %d/%d encji, heap %lu\n", ok, kEntCount,
-      static_cast<unsigned long>(ESP.getFreeHeap()));
+
+  // Dwa liczniki, nie jeden. Do v107 szlo tu "discovery %d/%d" z sumy BLE+stale jako
+  // licznikiem i samego kEntCount jako mianownikiem — czyli "38/22", bo mianownik
+  // opisywal tylko druga polowe licznika. Czytalo sie to jak "38 z 22" i zamiast
+  // powiedziec "wszystko poszlo", kazalo szukac nieistniejacej awarii.
+  LOG("MQTT: discovery BLE %d/%d + stale %d/%d encji, heap %lu\n", bleOk, bleTotal, entOk,
+      kEntCount, static_cast<unsigned long>(ESP.getFreeHeap()));
 }
 
 // ------------------------------------------------------------------ transport --
