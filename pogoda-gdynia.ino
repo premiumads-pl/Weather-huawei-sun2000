@@ -1399,6 +1399,19 @@ void loop() {
       }
     }
 
+    // To samo dla LDR. Pole istnialo i bylo czytane w /api/diag od v108, ale NIKT go
+    // nie ustawial — ldr_meas.started_epoch wychodzil zawsze null (zlapane na urzadzeniu
+    // po wydaniu v108: pir_meas mial epoch, ldr_meas nie). Same zdarzenia "zostawione
+    // swiatlo" maja wlasny znacznik (LdrEvent.startEpoch z candStartEpoch) i dzialaly —
+    // to bylo tylko martwe pole "zbieram od", nie utrata godzin zdarzen. Odejmowanie
+    // collectedS jak przy PIR: startedEpoch ma znaczyc POCZATEK pomiaru, nie moment NTP.
+    if (gLdr.startedEpoch == 0) {
+      const time_t tt = time(nullptr);
+      if (tt > 1700000000) {
+        gLdr.startedEpoch = static_cast<uint32_t>(tt) - gLdr.collectedS;
+      }
+    }
+
     // Rytm doby. Ksiegujemy PRZYROST zbocz w gore, a nie pojedyncze zdarzenie — przy
     // 30 fps loop widzi kazde zbocze AM312 (impuls ~2 s), ale przyrost jest odporny
     // takze wtedy, gdy petla utknie na dluzej (OTA, portal, wolny render).

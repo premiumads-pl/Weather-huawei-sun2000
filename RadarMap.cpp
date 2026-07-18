@@ -18,7 +18,10 @@ constexpr int kZoom = 7;      // wyzej RainViewer zwraca "Zoom Level Not Support
 constexpr int kTilePx = 256;
 constexpr size_t kMaxPng = 90000;
 
-// Bufory w PSRAM. 7 klatek po 224x172 B = 270 kB — w SRAM nie do pomyslenia.
+// Bufory w PSRAM. 13 klatek x 320x172 B (55 040 B/klatka) = 715 520 B (~715 kB)
+// — w SRAM nie do pomyslenia (budzet SRAM jest <76000 B na CALY program, patrz
+// tools/release.sh). Wzgledem 7 klatek (do v109) to +330 kB PSRAM — nie liczy
+// sie do bariery SRAM, bo ps_calloc() nizej nie rusza sterty wewnetrznej.
 uint8_t* gFrames[FRAMES] = {};
 uint8_t* gTile = nullptr;    // 256x256 poziomow, bufor roboczy jednego kafelka
 Frame gMeta[FRAMES];
@@ -312,24 +315,28 @@ bool fetch() {
   else if (strncmp(host, "http://", 7) == 0) host += 7;
   JsonArrayConst past = doc["radar"]["past"];
   const int n = past.size();
-  // Bierzemy co DRUGA klatke, liczac wstecz, wiec i=0 siega indeksu n-13 — sama
-  // liczba FRAMES nie wystarczy, potrzeba 2*FRAMES-1. Straznik na FRAMES przepuszczal
-  // n w przedziale 7-12: wtedy dla i=0 i i=1 wychodzilo idx < 0, klatki 0-1 zostawaly
-  // z POPRZEDNIEGO cyklu (sprzed 10 minut), a gCount = FRAMES i return true meldowaly
-  // komplet. RainViewer po awarii lub restarcie odbudowuje historie i przez
-  // kilkanascie minut oddaje mniej niz 13 klatek — wtedy to sie odpalalo.
-  constexpr int kNeed = 2 * FRAMES - 1;
+  // Do v109 bralismy co DRUGA klatke (7 z 13, co 20 min), wiec i=0 siegalo indeksu
+  // n-13 i sama liczba FRAMES nie wystarczala — trzeba bylo 2*FRAMES-1. Teraz
+  // FRAMES=13 i bierzemy KAZDA klatke, wiec i=0 siega n-FRAMES: te dwie liczby sa
+  // tym samym, kNeed = FRAMES bez mnoznika.
+  // Straznik sam w sobie zostaje z tego samego powodu co zawsze: RainViewer po
+  // awarii lub restarcie odbudowuje historie i przez kilkanascie minut oddaje
+  // mniej niz 13 klatek. Bez tego warunku ujemne idx po prostu nie ruszylyby
+  // starych danych w gFrames, a gCount = FRAMES i return true zglaszalyby komplet,
+  // mimo ze czesc klatek zostalaby sprzed poprzedniego cyklu.
+  constexpr int kNeed = FRAMES;
   if (n < kNeed) {
     snprintf(gErr, sizeof(gErr), "tylko %d z %d klatek", n, kNeed);
     return false;
   }
 
-  // Bierzemy co druga klatke z konca: -120, -100, ..., 0 minut.
+  // Bierzemy KAZDA klatke z konca: -120, -110, ..., 0 minut (RainViewer i tak
+  // oddaje co 10 min — nie ma juz powodu co druga pomijac, patrz naglowek pliku).
   const time_t nowT = time(nullptr);
   int ok = 0;
 
   for (int i = 0; i < FRAMES; ++i) {
-    const int idx = n - 1 - (FRAMES - 1 - i) * 2;   // po strazniku zawsze >= 0
+    const int idx = n - 1 - (FRAMES - 1 - i);   // po strazniku zawsze >= 0
 
     JsonObjectConst f = past[idx];
     const char* path = f["path"];
@@ -453,7 +460,7 @@ bool demo() {
 // prawdziwy front. Sluzy do obejrzenia wizualizacji, gdy nie pada.
 void setDemo(bool on) {
   // Bez kompletu buforow nie ma czego wypelnic. Sprawdzenie samego gFrames[0] nie
-  // wystarczalo: petla nizej pisze do wszystkich siedmiu klatek, a begin() mogl
+  // wystarczalo: petla nizej pisze do wszystkich FRAMES klatek, a begin() mogl
   // zostawic czesc z nich pod NULL-em (patrz gReady).
   if (on && !gReady) return;
   gDemo = on;
@@ -472,7 +479,12 @@ void setDemo(bool on) {
   // na klatke. Pierwsza wersja robila 73 px skoku przy pasie 124 px szerokim —
   // oko dopasowywalo wtedy lewa krawedz nowej klatki do prawej krawedzi starej
   // i widzialo ruch DO TYLU (efekt kola wozu). Animacja szla do przodu, ale
-  // wygladala na cofajaca sie. Teraz: 26 px skoku przy pasie ~92 px.
+  // wygladala na cofajaca sie.
+  // Krok to 155 px / (FRAMES-1), wiec skaluje sie SAM wraz z FRAMES: przy 7
+  // klatkach (do v109) wychodzilo 25,8 px skoku przy pasie ~92 px, przy 13
+  // (co 10 min zamiast co 20) wychodzi 12,9 px — margines do polowy pasa tylko
+  // urosl, wiec przejscie 7->13 nie wymagalo tu zadnej zmiany wzoru, tylko
+  // uaktualnienia liczb w tym komentarzu.
   for (int i = 0; i < FRAMES; ++i) {
     const float cx = 30.f + 155.f * (i / static_cast<float>(FRAMES - 1));
 
@@ -494,8 +506,13 @@ void setDemo(bool on) {
         gFrames[i][y * W + x] = lv;
       }
     }
-    gMeta[i].epoch = nowT > 1700000000 ? nowT - (FRAMES - 1 - i) * 20 * 60 : 0;
-    gMeta[i].offsetMin = -(FRAMES - 1 - i) * 20;
+    // 10, nie 20: symulacja ma imitowac PRAWDZIWY cykl (13 klatek co 10 min = te
+    // same 2 h wstecz co fetch() wyzej). "20" tutaj dawaloby metadane klamiace
+    // 4 h wstecz (12*20=240 min), podczas gdy narysowany front pokrywa tylko 2 h
+    // (cx idzie po tym samym zakresie 155 px co przed 7->13) — os czasu pod mapa
+    // (WeatherUi::drawViewRadar) pokazywalaby wtedy zle godziny przy kazdej klatce.
+    gMeta[i].epoch = nowT > 1700000000 ? nowT - (FRAMES - 1 - i) * 10 * 60 : 0;
+    gMeta[i].offsetMin = -(FRAMES - 1 - i) * 10;
     gMeta[i].valid = true;
   }
   xSemaphoreGive(gMx);

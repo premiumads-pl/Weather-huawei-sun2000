@@ -179,8 +179,27 @@ constexpr uint32_t HEAP_WARN = 45000;
 constexpr uint32_t HEAP_FULL = 160000;  // pełna skala wskaźnika
 constexpr uint32_t VIEW_HOLD_FLIGHTS_MS = 15000;
 constexpr uint32_t VIEW_HOLD_STATS_MS = VIEW_HOLD_MS;   // tyle samo co reszta
-constexpr uint32_t VIEW_HOLD_RADAR_MS = 16000;  // tyle, zeby animacja zdazyla przejsc 2x
+// Pelny cykl animacji radaru to (n+2)*RADAR_FRAME_MS: n klatek + 2 "przystanki"
+// pauzy na najnowszej (patrz WeatherUi::drawViewRadar). Przy 13 klatkach (v109,
+// bylo 7, co 20 min) to (13+2)*650 = 9750 ms, wiec dwa pelne cykle to 19,5 s.
+// Stara wartosc 16000 byla dobrana pod 7 klatek ((7+2)*650=5850 ms, tam "2x" to
+// 11,7 s, z zapasem) — po przejsciu 7->13 obcinalaby animacje w ~64% DRUGIEJ
+// petli, czyli widz nie zobaczylby juz dwoch pelnych przejsc. 20000 daje ~2,05
+// cyklu — wraca do tego, co obiecuje komentarz ponizej.
+constexpr uint32_t VIEW_HOLD_RADAR_MS = 20000;  // tyle, zeby animacja zdazyla przejsc 2x
 constexpr uint32_t RADAR_MAP_REFRESH_MS = 10UL * 60UL * 1000UL;
 constexpr uint32_t RADAR_FRAME_MS = 650;       // wolniej = oko nadaza za frontem
+
+// Fronty opadowe plyna z wiatrem na wysokosci, na ktorej "widzi" je radar
+// (echo z chmur rzedu 700 hPa, ~3 km) — nie z wiatrem PRZYZIEMNYM (10 m), jedynym,
+// jaki mamy z Open-Meteo. Ten na wysokosci bywa typowo 1,5-2,5x szybszy, bo znika
+// tarcie o teren/zabudowe. RADAR_FLOW_GAIN mnozy windKmh z API, zeby wektor ruchu
+// echa na ekranie (WeatherUi::drawViewRadar) lepiej zgadzal sie z tym, co realnie
+// widac na kolejnych klatkach.
+// To JAWNE PRZYBLIZENIE, nie pomiar — nie udawajmy inaczej. Wartosc do kalibracji,
+// gdy zbierzemy realny ruch echa (kilka frontow, porownanie przesuniecia klatka
+// do klatki z tym, co ten wspolczynnik przewiduje) — 2.0 to punkt startowy
+// z literatury meteorologicznej, nie zmierzony na tym konkretnym niebie.
+constexpr float RADAR_FLOW_GAIN = 2.0f;
 
 }  // namespace cfg

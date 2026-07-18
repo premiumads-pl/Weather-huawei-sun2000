@@ -201,7 +201,7 @@ class WeatherUi {
   void drawViewDays(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
   void drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, const PvHistory& hist);
   void drawViewFlights(TFT_eSPI& spr, int ox, float t, const FlightModel& fl);
-  void drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs);
+  void drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel& w, uint32_t nowMs);
   void drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
   void drawViewBoiler(TFT_eSPI& spr, int ox, float t);
   void drawGasChart(TFT_eSPI& spr, int ox, float e);

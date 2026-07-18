@@ -1409,7 +1409,7 @@ void WeatherUi::drawView(TFT_eSPI& spr, uint8_t view, int ox, float t, const Wea
       else drawNoData(spr, ox, "Pobieram prognozę...");
       break;
     case cfg::VIEW_RADAR:
-      drawViewRadar(spr, ox, t, nowMs);
+      drawViewRadar(spr, ox, t, w, nowMs);
       break;
     case cfg::VIEW_HOME:
       drawViewHome(spr, ox, t, w);
@@ -2066,7 +2066,8 @@ void WeatherUi::drawOtaDirect(int progress, const char* msg) {
 // ostatnie 2 godziny. Nie mieszamy tego z ekranem samolotow — dwie warstwy danych
 // na jednej mapie zrobilyby z niej kaszę.
 
-void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
+void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel& w,
+                               uint32_t nowMs) {
   const float e = easeOutCubic(t);
 
   const int n = radarmap::count();
@@ -2086,6 +2087,91 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
   diag().radarFrame = fi;
   diag().radarFrameMin = fr.offsetMin;
 
+  // --- wektor przesuniecia chmur MIEDZY klatkami (z wiatru) ---
+  // Zamiast trzymac klatke `fi` nieruchomo przez cale RADAR_FRAME_MS, przesuwamy
+  // jej PROBKOWANIE stopniowo w kierunku wiatru: przy frameT=0 stoi w miejscu,
+  // przy frameT->1 dojezdza o caly wektor (dx,dy) — czyli mniej wiecej tam, gdzie
+  // za chwile stanie fi+1. Skok na granicy klatek wychodzi wiec maly, zamiast
+  // calego kroku ~24 px naraz (to byla POLOWA problemu "latania"; druga polowa to
+  // 7->13 klatek w RadarMap). `frameT` to INNA faza animacji niz parametr `t` tej
+  // funkcji: `t` to wejscie na EKRAN radaru (przejscie miedzy widokami), `frameT`
+  // to pozycja WEWNATRZ pojedynczej klatki radaru — nie mylic.
+  //
+  // Liczone RAZ na wywolanie (nie w petli pikseli nizej!): sin/cos i dzielenie to
+  // jedyny "ciezki" rachunek tutaj, a budzet calej klatki to 21 ms (gfx.draw_us
+  // w /api/diag) przy 19 fps — tego nie wolno ruszyc.
+  int sx = 0, sy = 0;
+  if (fi + 1 < n) {
+    // Najnowsza klatka (fi == n-1, "teraz") nie ma nastepnej, do ktorej "dojezdzac"
+    // — zostaje nieruchoma przez cala pauze na koncu animacji (patrz `steps` wyzej,
+    // fi==n-1 trzyma sie tam przez trzy odslony: ostatni normalny krok + 2 przystanki).
+    //
+    // Swiezosc pogody: bez tego martwy WiFi (stary odczyt wiatru sprzed godzin, z
+    // zupelnie innej sytuacji synoptycznej) animowalby chmury w przypadkowym
+    // kierunku. `ageMs` liczone jako signed — ten sam idiom co ago() w Portal.cpp
+    // (apiDiag()): (nowMs - okAt) na uint32 przekreca sie po ~49 dniach dzialania,
+    // a diag().weatherOkAt pisze netTask, inny watek niz ten, ktory tu rysuje —
+    // `okAt` bywa wiec "z przyszlosci" wzgledem `nowMs` zlapanego u wolajacego
+    // (paintFrame lapie nowMs RAZ, ale to nie chroni przed zapisem z INNEGO rdzenia
+    // w miedzyczasie). Ujemny wiek traktujemy wtedy jako "swiezy", tak samo jak ago().
+    const uint32_t okAt = diag().weatherOkAt;
+    const int32_t ageMs = static_cast<int32_t>(nowMs - okAt);
+    const bool wxFresh = okAt != 0 && ageMs < static_cast<int32_t>(2 * cfg::WEATHER_REFRESH_MS);
+
+    // windKmh == 0 (cisza) albo dane nieswieze -> dx=dy=0, czyli sx=sy=0 ponizej:
+    // zachowanie jak dzis, zwykly skok bez interpolacji. Bezpieczny fallback —
+    // nie zgadujemy kierunku, gdy nie mamy z czego.
+    if (wxFresh && w.current.windKmh > 0.05f) {
+      // gmapw: granice dobrane tak, zeby 1 px = 349 m w OBU osiach (patrz naglowek
+      // MapDataWide.h). Sprawdzenie: 0,54 st. szer.geogr. * 111,32 km/st. / 172 px
+      // = 349,5 m/px; 1,73 st. dl.geogr. * 111,32 km/st. * cos(54,57 st. — srodek
+      // zakresu) / 320 px = 348,9 m/px. Zgadza sie do promila w obu osiach.
+      constexpr float kMPerPx = 349.f;
+      // Klatka co RADAR_MAP_REFRESH_MS (10 min) — liczone z tej stalej, a nie z
+      // wpisanej na sztywno "10", zeby wzor sam nadazyl, gdyby cykl kiedys sie zmienil.
+      constexpr float kFrameMin = static_cast<float>(cfg::RADAR_MAP_REFRESH_MS) / 60000.f;
+
+      // Predkosc na wysokosci, na ktorej faktycznie plynie echo (patrz komentarz
+      // przy RADAR_FLOW_GAIN w Config.h — to jawne przyblizenie, nie pomiar).
+      const float speedKmh = w.current.windKmh * cfg::RADAR_FLOW_GAIN;
+      // V[km/h] * czas[h] * 1000[m/km] / (m/px) = przesuniecie w px na jedna klatke.
+      // Np. 50 km/h, gain=1: 50 * (10/60) * 1000 / 349 = 23,9 px na 10 min.
+      const float stepPx = speedKmh * (kFrameMin / 60.f) * 1000.f / kMPerPx;
+
+      // KIERUNEK — wyprowadzenie (najlatwiejsze miejsce na blad znaku w tej zmianie):
+      // windDir to kierunek, SKAD wieje wiatr (konwencja meteo/Open-Meteo), NIE dokad.
+      // Dla azymutu theta liczonego od polnocy zgodnie z ruchem wskazowek zegara
+      // (0=N, 90=E, 180=S, 270=W) wektor jednostkowy w ukladzie (East,North) to
+      // (sin(theta), cos(theta)) — sprawdzenie: theta=90 (E) daje (1,0), czysty
+      // wschod. Chmury plyna w kierunku PRZECIWNYM do windDir, czyli azymutem
+      // (windDir+180), a sin/cos(x+180) = -sin/cos(x), wiec ruch chmur w (East,North):
+      //   East  = -sin(windDir)
+      //   North = -cos(windDir)
+      // (to dokladnie standardowy meteorologiczny wzor na skladowe wiatru:
+      // u = -V*sin(kierunek), v = -V*cos(kierunek)).
+      // Na ekranie +x = East (LON rosnie w prawo — bez zmiany znaku), ale +y jest
+      // W DOL, a North to "w gore" ekranu, wiec trzeba jeszcze zanegowac North:
+      //   dx =  East  =  -sin(windDir)
+      //   dy = -North = -(-cos(windDir)) = cos(windDir)
+      // Ten sam uklad (East=+x bez zmiany znaku, North=-y) uzywa juz nizej w tym
+      // pliku strzalka kierunku lotu (~linia 1695: tx=x+sin(a)*R, ty=y-cos(a)*R dla
+      // `track`, czyli kierunku DOKAD leci samolot) — windDir to `track+180`, stad
+      // dodatkowe zanegowanie obu skladowych wzgledem tamtego wzoru.
+      // Kontrola na dwoch kierunkach z tresci zadania:
+      //   wiatr z zachodu (windDir=270): dx = -sin(270) = +1 -> na wschod (+x). OK.
+      //   wiatr z poludnia (windDir=180): dy =  cos(180) = -1 -> w gore (-y). OK —
+      //   wiatr Z poludnia niesie NA polnoc, czyli w gore ekranu.
+      const float rad = static_cast<float>(w.current.windDir) * static_cast<float>(M_PI) / 180.f;
+      const float dx = -sinf(rad) * stepPx;
+      const float dy = cosf(rad) * stepPx;
+
+      const float frameT = static_cast<float>(nowMs % cfg::RADAR_FRAME_MS) /
+                            static_cast<float>(cfg::RADAR_FRAME_MS);
+      sx = static_cast<int>(lroundf(dx * frameT));
+      sy = static_cast<int>(lroundf(dy * frameT));
+    }
+  }
+
   // --- mapa na PELNA szerokosc (osobny raster gmapw, 320 px) ---
   // Ekran samolotow dzieli miejsce z lista lotow i musi miec 224 px. Radar nie ma
   // czego dzielic, wiec dostaje caly ekran — inaczej mapa byla przycieta z bokow.
@@ -2104,8 +2190,14 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
   }
 
   // --- warstwa opadu ---
-  // Rysujemy CIAGAMI, nie pikselami: przy 224x172 = 38 tys. pikseli pojedyncze
-  // drawPixel zjadloby budzet klatki (21 ms) w calosci.
+  // Rysujemy CIAGAMI, nie pikselami: przy 320x172 = 55 tys. pikseli pojedyncze
+  // drawPixel zjadloby budzet klatki (21 ms) w calosci. (Tu bylo kiedys "224x172 =
+  // 38 tys." — 224 to szerokosc mapy SPRZED przejscia na szeroka gmapw; radar od
+  // dawna rysuje na W=gmapw::MAP_W=320.)
+  // Przesuniecie (sx,sy) jest STALE w calej klatce (liczone raz, wyzej), wiec
+  // levelAt(fi, x-sx, y-sy) dalej daje ciagi jednakowego poziomu — to przesuniecie
+  // PROBKOWANIA zrodla, a nie zmiana kosztu per piksel. levelAt() zwraca 0 poza
+  // swoim rastrem (0<=x<W, 0<=y<H), wiec ujemne x-sx/y-sy sa bezpieczne z definicji.
   static const uint16_t kPal[6] = {
       0,                       // 0 — brak opadu
       lerp565(col::MAP_SEA, col::RAIN, 0.55f),   // mzawka: ledwo widoczna
@@ -2119,13 +2211,13 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
   for (int y = 0; y < rows; ++y) {
     int x = 0;
     while (x < gmapw::MAP_W) {
-      const uint8_t lv = radarmap::levelAt(fi, x, y);
+      const uint8_t lv = radarmap::levelAt(fi, x - sx, y - sy);
       if (lv == 0) {
         ++x;
         continue;
       }
       int x2 = x + 1;
-      while (x2 < gmapw::MAP_W && radarmap::levelAt(fi, x2, y) == lv) ++x2;
+      while (x2 < gmapw::MAP_W && radarmap::levelAt(fi, x2 - sx, y - sy) == lv) ++x2;
       spr.drawFastHLine(mx + x, my + y, x2 - x, kPal[lv > 5 ? 5 : lv]);
       x = x2;
     }
