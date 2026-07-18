@@ -22,6 +22,11 @@
 #include "esp_app_desc.h"   // esp_app_get_elf_sha256() — sha DZIALAJACEGO firmware'u
 #include "esp_core_dump.h"
 #include "esp_partition.h"
+// v111: /api/diag "memfull" — zeby dalo sie zweryfikowac ekran PAMIEC zdalnie,
+// bez patrzenia na urzadzenie. Oba juz i tak zlinkowane (ESP.getFreeHeap() korzysta
+// z heap_caps_*, Ota.cpp/OtaGuard.cpp z esp_ota_ops.h) — to nie sa nowe zaleznosci.
+#include "esp_heap_caps.h"
+#include <esp_ota_ops.h>
 
 #include "Config.h"
 #include "Log.h"
@@ -268,7 +273,7 @@ Symulacja pokazuje sztuczny front — do obejrzenia, jak wygląda wizualizacja.<
 </div>
 </div><script>
 const $=i=>document.getElementById(i);
-const NAMES=['Auto','Teraz','Godziny','Radar','5 dni','W domu','Piec','Fotowoltaika','Samoloty','Statystyki'];
+const NAMES=['Auto','Teraz','Godziny','Radar','5 dni','W domu','Piec','Fotowoltaika','Samoloty','Pamięć','Ruch','Statystyki'];
 let live=true,pin=-1;
 
 function tabs(){
@@ -1050,6 +1055,75 @@ void apiDiag() {
   gfx["radar_frame"] = d.radarFrame;
   gfx["radar_min"] = d.radarFrameMin;
   gfx["spi_hz"] = 80000000;   // z User_Setup.h
+
+  // --- v111: "memfull" — WSZYSTKIE rodzaje pamieci, dla ekranu PAMIEC. Zeby dalo
+  // sie zweryfikowac ten ekran zdalnie (bez patrzenia na urzadzenie), tu leza TE
+  // SAME wywolania ESP-IDF, ktore rysuje WeatherUi::drawViewMem() — patrz komentarze
+  // przy tamtej funkcji co do znaczenia largest_block/min_ever/partycji/RTC/ROM.
+  // `mem` wyzej (sram_free/sram_min/sram_block/psram_*) zostaje NIETKNIETY — to
+  // sekcja dodatkowa, nie zamiennik.
+  JsonObject mf = j["memfull"].to<JsonObject>();
+
+  JsonObject mfSram = mf["sram"].to<JsonObject>();
+  mfSram["free"] = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  mfSram["largest_block"] = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);  // fragmentacja
+  mfSram["min_ever"] = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);        // dolek od startu
+
+  JsonObject mfPsram = mf["psram"].to<JsonObject>();
+  mfPsram["total"] = ESP.getPsramSize();
+  mfPsram["free"] = ESP.getFreePsram();
+  mfPsram["largest_block"] = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+  mfPsram["min_ever"] = heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
+
+  JsonObject mfFlash = mf["flash"].to<JsonObject>();
+  mfFlash["chip_size"] = ESP.getFlashChipSize();
+  mfFlash["sketch_size"] = ESP.getSketchSize();   // dzialajacy firmware, z naglowkiem
+  // UWAGA: to rozmiar DRUGIEJ partycji OTA (esp_ota_get_next_update_partition), NIE
+  // "ile zostalo w mojej partycji" — w tym schemacie (app0==app1) to zawsze ~1,9 MB,
+  // niezaleznie od tego, jak duzy jest dzisiejszy firmware. Realne zapelnienie
+  // partycji jest w "app" nizej (used/size).
+  mfFlash["free_sketch_space"] = ESP.getFreeSketchSpace();
+
+  const esp_partition_t* runningPart = esp_ota_get_running_partition();
+  JsonObject mfApp = mf["app"].to<JsonObject>();
+  mfApp["running"] = runningPart ? runningPart->label : "?";
+  mfApp["used"] = ESP.getSketchSize();
+  mfApp["size"] = runningPart ? runningPart->size : 0;
+
+  JsonArray parts = mf["partitions"].to<JsonArray>();
+  auto addPart = [&](const char* name, esp_partition_type_t type, esp_partition_subtype_t sub) {
+    const esp_partition_t* p = esp_partition_find_first(type, sub, nullptr);
+    JsonObject po = parts.add<JsonObject>();
+    po["name"] = name;
+    po["present"] = p != nullptr;
+    po["size"] = p ? p->size : 0;
+    po["address"] = p ? p->address : 0;
+  };
+  addPart("nvs", ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS);
+  addPart("otadata", ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA);
+  addPart("app0", ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0);
+  addPart("app1", ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1);
+  addPart("spiffs", ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS);   // zarezerwowany, nieuzywany
+  addPart("coredump", ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP);
+
+  // To samo, co j["coredump"]["present"] wyzej (coredumpInfo()) — zdublowane tu
+  // SWIADOMIE, zeby "memfull" bylo samodzielnym, kompletnym zrzutem pamieci bez
+  // koniecznosci zagladania w inna sekcje tej odpowiedzi.
+  size_t coreAddr = 0, coreSize = 0;
+  mf["coredump_present"] = esp_core_dump_image_get(&coreAddr, &coreSize) == ESP_OK && coreSize > 0;
+
+  JsonObject mfRtc = mf["rtc"].to<JsonObject>();
+  mfRtc["slow_physical"] = 8192;   // fizyczny rozmiar RTC SLOW — stala sprzetowa ESP32-S3
+  mfRtc["slow_usable"] = 7680;     // realny rozmiar sekcji .rtc_noinit — patrz Log.h przy PirRtc
+  mfRtc["slow_used"] = sizeof(PirRtc) + sizeof(LdrRtc);   // gPir + gLdr
+  mfRtc["fast_physical"] = 8192;   // RTC FAST — NIEUZYWANE w tym projekcie, patrz Log.h
+
+  mf["rom_size"] = 393216;   // 384 kB, bootrom ESP32-S3 — stala sprzetowa, tylko do odczytu
+
+  JsonObject mfStack = mf["stack"].to<JsonObject>();
+  mfStack["net_spare"] = d.stackNet;    // to samo, co mem.stack_net_spare wyzej
+  mfStack["web_spare"] = d.stackWeb;    // to samo, co mem.stack_web_spare wyzej
+  mfStack["configured_size"] = 16384;   // xTaskCreatePinnedToCore(...,16384,...) w .ino, oba zadania
 
   JsonObject o = j["ota"].to<JsonObject>();
   o["remote"] = d.otaRemote;

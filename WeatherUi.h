@@ -205,6 +205,12 @@ class WeatherUi {
   void drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
   void drawViewBoiler(TFT_eSPI& spr, int ox, float t);
   void drawGasChart(TFT_eSPI& spr, int ox, float e);
+  // v111: dwa nowe ekrany eksploracyjne (obok VIEW_STATS, ktory zostaje nietkniety).
+  // heapNow: ta sama zlapana-raz-u-wolajacego wartosc, co dostaje drawViewStats —
+  // "SRAM wolny TERAZ" ma pokazywac identyczna liczbe na obu ekranach. nowMs
+  // (tylko RUCH) sluzy do "ostatni ruch X temu" z tego samego powodu.
+  void drawViewMem(TFT_eSPI& spr, int ox, float t, uint32_t heapNow);
+  void drawViewMotion(TFT_eSPI& spr, int ox, float t, uint32_t nowMs);
   void drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs, uint32_t heapNow);
   void drawAlert(TFT_eSPI& spr, float t);
   // Podtytuł (sub) niesie powód ciszy falownika — noc, nie awaria.

@@ -152,7 +152,7 @@ constexpr uint32_t FRAME_IDLE_MS = 50;   // 20 fps na statycznym ekranie (pasek 
 // Serial. Przydatne po zmianie na dwa pasy — domyślnie wyłączone, bo to tylko log.
 constexpr bool PROFILE_FRAME = false;
 
-constexpr int VIEW_COUNT = 9;   // TERAZ / GODZINY / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / STATYSTYKI
+constexpr int VIEW_COUNT = 11;  // TERAZ / GODZINY / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / PAMIEC / RUCH / STATYSTYKI
 constexpr int VIEW_NOW = 0;     // te dwa brakowaly, wiec switch w drawView() musial
 constexpr int VIEW_HOURS = 1;   // uzywac golych literalow "case 0:" / "case 1:"
 constexpr int VIEW_RADAR = 2;   // animowana mapa opadow (pomijany, gdy nie pada)
@@ -161,7 +161,14 @@ constexpr int VIEW_HOME = 4;    // czujniki BLE — pomijany, gdy zadnego nie ma
 constexpr int VIEW_BOILER = 5;  // piec — pomijany, gdy nieautoryzowany
 constexpr int VIEW_PV = 6;
 constexpr int VIEW_FLIGHTS = 7;
-constexpr int VIEW_STATS = 8;   // ekran serwisowy
+// v111: dwa nowe ekrany serwisowe (eksploracyjne — PAMIEC/RUCH) WESZLY PRZED
+// STATS, nie po nim. Powod: static_assert w WeatherUi.cpp::drawView() wymaga
+// VIEW_STATS == VIEW_COUNT - 1 (inaczej rotacja widokow trafia w "default" i przez
+// caly czas trzymania tego widoku ekran zostaje czarny — patrz komentarz przy
+// tym switchu). Wygodniej przesunac STATS na koniec niz rozluzniac ten kontrakt.
+constexpr int VIEW_MEM = 8;     // PAMIEC: wszystkie rodzaje (SRAM/PSRAM/flash/partycje/RTC/ROM/stos)
+constexpr int VIEW_MOTION = 9;  // RUCH: PIR (rytm doby) + LDR (jasnosc) + wydajnosc rysowania (fps)
+constexpr int VIEW_STATS = 10;  // ekran serwisowy — bylo 8; MUSI zostac VIEW_COUNT-1 (patrz wyzej)
 
 // --- progi zdrowia urządzenia (wskaźniki na ekranie statystyk) ---
 // Temperatura: czujnik w ESP32-S3 mierzy strukturę (die), nie otoczenie.
@@ -179,6 +186,12 @@ constexpr uint32_t HEAP_WARN = 45000;
 constexpr uint32_t HEAP_FULL = 160000;  // pełna skala wskaźnika
 constexpr uint32_t VIEW_HOLD_FLIGHTS_MS = 15000;
 constexpr uint32_t VIEW_HOLD_STATS_MS = VIEW_HOLD_MS;   // tyle samo co reszta
+// v111: PAMIEC i RUCH sa rownie geste jak STATS (kilka-kilkanascie liczb na
+// ekranie) — dostaja wiecej czasu niz domyslne 9 s, zeby dalo sie to przeczytac.
+// Osobne stale, NIE VIEW_HOLD_STATS_MS: ekran STATYSTYKI ma zostac nietkniety,
+// wiec czas jego trzymania tez sie nie zmienia.
+constexpr uint32_t VIEW_HOLD_MEM_MS = 14000;
+constexpr uint32_t VIEW_HOLD_MOTION_MS = 14000;
 // Pelny cykl animacji radaru to (n+2)*RADAR_FRAME_MS: n klatek + 2 "przystanki"
 // pauzy na najnowszej (patrz WeatherUi::drawViewRadar). Przy 13 klatkach (v109,
 // bylo 7, co 20 min) to (13+2)*650 = 9750 ms, wiec dwa pelne cykle to 19,5 s.

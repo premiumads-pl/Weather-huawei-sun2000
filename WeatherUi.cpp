@@ -26,6 +26,13 @@
 #include "Version.h"
 #include "WeatherIcons.h"
 
+// v111: widok PAMIEC czyta te trzy wprost z ESP-IDF (heap_caps_*/partycje/OTA) —
+// juz i tak zlinkowane (ESP.getFreeHeap(), Ota.cpp, OtaGuard.cpp korzystaja z tego
+// samego), wiec to nie sa nowe zaleznosci, tylko nowe wywolania istniejacego kodu.
+#include <esp_heap_caps.h>
+#include <esp_partition.h>
+#include <esp_ota_ops.h>
+
 // ---------------------------------------------------------------- pomocnicze --
 
 namespace {
@@ -89,6 +96,17 @@ void fmtPower(char* buf, size_t n, char* unit, size_t un, int32_t w) {
   } else {
     snprintf(buf, n, "%ld", static_cast<long>(w));
     snprintf(unit, un, "W");
+  }
+}
+
+// Bajty -> tekst, jednostka dobrana automatycznie: <1 MB w kB (bez ulamka),
+// >=1 MB w MB (2 miejsca po przecinku). Ten sam pomysl co fmtPower (W/kW) wyzej —
+// spojne jednostki na ekranie PAMIEC (v111), od 20 kB (NVS) po 4 MB (flash).
+void fmtBytes(char* buf, size_t n, uint32_t bytes) {
+  if (bytes >= 1024UL * 1024UL) {
+    snprintf(buf, n, "%.2f MB", bytes / 1048576.f);
+  } else {
+    snprintf(buf, n, "%lu kB", static_cast<unsigned long>(bytes / 1024));
   }
 }
 
@@ -325,7 +343,7 @@ void WeatherUi::drawColorTest() {
 // Indeks = cfg::VIEW_*, pilnuje tego static_assert w drawView().
 const char* const kViewNames[cfg::VIEW_COUNT] = {
     "TERAZ", "GODZINY", "RADAR", "5 DNI", "W DOMU", "PIEC", "FOTOWOLTAIKA",
-    "SAMOLOTY", "STATYSTYKI"};
+    "SAMOLOTY", "PAMIĘĆ", "RUCH", "STATYSTYKI"};
 
 // Zdrowie calego systemu w jednej liczbie: 0 = OK, 1 = uwaga, 2 = awaria.
 //
@@ -1366,6 +1384,9 @@ uint32_t WeatherUi::holdFor(uint8_t view) const {
   if (view == cfg::VIEW_FLIGHTS) return cfg::VIEW_HOLD_FLIGHTS_MS;
   if (view == cfg::VIEW_STATS) return cfg::VIEW_HOLD_STATS_MS;
   if (view == cfg::VIEW_RADAR) return cfg::VIEW_HOLD_RADAR_MS;
+  // v111: geste ekrany eksploracyjne — wiecej czasu na przeczytanie (patrz Config.h).
+  if (view == cfg::VIEW_MEM) return cfg::VIEW_HOLD_MEM_MS;
+  if (view == cfg::VIEW_MOTION) return cfg::VIEW_HOLD_MOTION_MS;
   return cfg::VIEW_HOLD_MS;
 }
 
@@ -1423,6 +1444,12 @@ void WeatherUi::drawView(TFT_eSPI& spr, uint8_t view, int ox, float t, const Wea
       break;
     case cfg::VIEW_FLIGHTS:
       drawViewFlights(spr, ox, t, fl);
+      break;
+    case cfg::VIEW_MEM:
+      drawViewMem(spr, ox, t, heapNow);
+      break;
+    case cfg::VIEW_MOTION:
+      drawViewMotion(spr, ox, t, nowMs);
       break;
     case cfg::VIEW_STATS:
       drawViewStats(spr, ox, t, nowMs, heapNow);
@@ -2793,6 +2820,389 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
   gl(spr, "-24h", gx0 - 2, gy1 + 5, col::TEXT_MUTE);
   glCenter(spr, "-12h", xAt(RoomHistory::SLOTS - 1 - 72), gy1 + 5, col::TEXT_MUTE);
   glRight(spr, "teraz", gx1 + 2, gy1 + 5, col::TEXT_MUTE);
+}
+
+// ------------------------------------------------------- WIDOK: PAMIĘĆ (v111) --
+// Ekran eksploracyjny: właściciel wprost poprosił o WSZYSTKIE rodzaje pamięci na
+// jednym ekranie, żeby ocenić wizualnie, co z tego zostawić na stałe. Stąd dziewięć
+// wierszy, nie trzy — to celowe rozrośnięcie, nie przypadkowe.
+//
+// KAŻDA liczba tu woła prawdziwe API ESP-IDF/Arduino W MIEJSCU RYSOWANIA — żadna
+// nie jest zgadywana ani przepisana z noty katalogowej. Jedyny wyjątek to
+// `heapNow`: ten JEDEN parametr przychodzi ze stosu wołającego (paintFrame),
+// dokładnie jak w drawViewStats — bo o to samo chodzi w komentarzu przy
+// paintFrame ("JEDNA klatka = JEDEN moment"): wiersz "SRAM" ma pokazywać TĘ SAMĄ
+// liczbę, co karta "WOLNY SRAM" na ekranie STATYSTYKI, nawet gdy oba paski BMP
+// zrzutu ekranu dzieli od siebie transmisja HTTP. Reszta (fragmentacja sterty,
+// PSRAM, flash, tabela partycji, RTC) zmienia się dużo wolniej albo wcale (tabela
+// partycji jest stała od startu urządzenia) — czytamy ją na żywo, tak samo jak
+// drawViewStats na żywo czyta WiFi.RSSI() czy pola Diag.
+void WeatherUi::drawViewMem(TFT_eSPI& spr, int ox, float t, uint32_t heapNow) {
+  const float e = easeOutCubic(t);
+  const Diag& d = diag();
+
+  viewHeader(spr, ox, "WSZYSTKIE RODZAJE");
+
+  int y = 52;
+  constexpr int ROW_H = 17;   // ten sam odstęp, co lista źródeł na ekranie STATYSTYKI
+
+  // Wiersz: nazwa po lewej (gl, przygaszona), liczby po prawej (glRight), opcjonalny
+  // pasek zapełnienia pod spodem. Pasek WSZĘDZIE pokazuje ułamek WOLNEGO miejsca —
+  // pełny = dużo zapasu. Jedyny wyjątek to APP (OTA) niżej: tam liczy się zajętość
+  // partycji (bo pytanie brzmi "ile zjada firmware", nie "ile zostało"), ale i tak
+  // przekazuje się tu `frac` jako "wolne", a odwrócenie robi się w miejscu wywołania.
+  auto row = [&](const char* name, const char* text, bool hasBar, float frac,
+                uint16_t barColor) {
+    gl(spr, name, ox + 10, y, col::TEXT_MUTE);
+    glRight(spr, text, ox + W - 10, y, col::TEXT);
+    if (hasBar) {
+      const int bx = ox + 10, by = y + 12, bw = W - 20, bh = 3;
+      spr.fillRoundRect(bx, by, bw, bh, 1, col::PV_TRACK);
+      const int fw = static_cast<int>(bw * clampf(frac, 0.f, 1.f) * e);
+      if (fw > 0) spr.fillRoundRect(bx, by, fw, bh, 1, barColor);
+    }
+    y += ROW_H;
+  };
+
+  // --- 1. SRAM wewnętrzny (DRAM) ---
+  {
+    // heap_caps_get_largest_free_block: NAJWIĘKSZY pojedynczy kawałek, jaki da się
+    // jeszcze zaalokować JEDNYM wywołaniem — to jest FRAGMENTACJA. Gdy jest sporo
+    // mniejszy niż "wolne", sterta jest podziurawiona: sumarycznie miejsca nie
+    // brakuje, ale duża alokacja (bufor TLS, dekoder PNG radaru) może się nie zmieścić.
+    const uint32_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    // heap_caps_get_minimum_free_size: dołek OD STARTU urządzenia (nie od teraz) —
+    // ten sam sens, co biała kreska na wskaźniku "WOLNY SRAM" na ekranie STATYSTYKI.
+    const uint32_t minEver = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    char val[56];
+    snprintf(val, sizeof(val), "wolne %lu  blok %lu  dołek %lu kB",
+             static_cast<unsigned long>(heapNow / 1024),
+             static_cast<unsigned long>(largest / 1024),
+             static_cast<unsigned long>(minEver / 1024));
+    const uint16_t c = heapNow < cfg::HEAP_DANGER  ? col::ERR
+                       : heapNow < cfg::HEAP_WARN  ? col::WARN
+                                                    : col::OK;
+    // Skala paska to HEAP_FULL — TA SAMA "pełna skala wskaźnika", której używa
+    // zoneGauge() na ekranie STATYSTYKI. Nie nowa liczba, ten sam punkt odniesienia.
+    row("SRAM", val, true, static_cast<float>(heapNow) / cfg::HEAP_FULL, c);
+  }
+
+  // --- 2. PSRAM (2 MB, dźwiga bufor ekranu i dekoder PNG radaru od v50) ---
+  {
+    const uint32_t total = ESP.getPsramSize();
+    const uint32_t freeP = ESP.getFreePsram();
+    const uint32_t minEver = heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
+    char lbl[24], fS[16], mS[16];
+    fmtBytes(fS, sizeof(fS), freeP);
+    fmtBytes(mS, sizeof(mS), minEver);
+    char tS[16];
+    fmtBytes(tS, sizeof(tS), total);
+    snprintf(lbl, sizeof(lbl), "PSRAM %s", tS);
+    char val[56];
+    snprintf(val, sizeof(val), "wolne %s  dołek %s", fS, mS);
+    const float frac = total ? static_cast<float>(freeP) / total : 0.f;
+    // Brak kalibrowanych progów dla PSRAM (Config.h ma je tylko dla sterty
+    // wewnętrznej) — kolor jest neutralny, nie stanowy.
+    row(lbl, val, total > 0, frac, col::ACCENT);
+  }
+
+  // --- 3. Flash — cały układ scalony (4 MB w tym płycie) ---
+  {
+    const uint32_t chipSz = ESP.getFlashChipSize();
+    // ESP.getSketchSize(): rozmiar DZIAŁAJĄCEGO firmware'u (obraz w partycji app,
+    // z nagłówkiem) — rzędu wielkości tego samego, co firmware.bin z release, ale
+    // niekoniecznie identyczny co do bajtu (nagłówek/wyrównanie liczą się inaczej).
+    const uint32_t sketchSz = ESP.getSketchSize();
+    char fS[16], cS[16];
+    fmtBytes(fS, sizeof(fS), sketchSz);
+    fmtBytes(cS, sizeof(cS), chipSz);
+    char val[56];
+    snprintf(val, sizeof(val), "firmware %s  chip %s", fS, cS);
+    const float frac = chipSz ? static_cast<float>(chipSz - sketchSz) / chipSz : 0.f;
+    row("FLASH", val, chipSz > 0, frac, col::ACCENT);
+  }
+
+  // --- 4. Partycja APP aktywna TERAZ — ile z WŁASNEGO slotu OTA (~1,9 MB) zajmuje ---
+  {
+    const esp_partition_t* run = esp_ota_get_running_partition();
+    const uint32_t sketchSz = ESP.getSketchSize();
+    const uint32_t runSz = run ? run->size : 0;
+    const int pct = runSz ? static_cast<int>((static_cast<uint64_t>(sketchSz) * 100) / runSz) : 0;
+    char val[56];
+    snprintf(val, sizeof(val), "%s: %lu/%lu kB (%d%%)", run ? run->label : "?",
+             static_cast<unsigned long>(sketchSz / 1024),
+             static_cast<unsigned long>(runSz / 1024), pct);
+    // Progi 75%/90% SĄ ARBITRALNE — Config.h nie definiuje granicy zapełnienia
+    // partycji OTA (to inny rodzaj zasobu niż sterta). Tylko orientacyjne
+    // podświetlenie rosnącego zapełnienia, NIE zmierzony limit jak HEAP_*/CPU_T_*.
+    const uint16_t c = pct >= 90 ? col::ERR : pct >= 75 ? col::WARN : col::OK;
+    const float freeFrac = runSz ? 1.f - static_cast<float>(sketchSz) / runSz : 0.f;
+    row("APP (OTA)", val, runSz > 0, freeFrac, c);
+  }
+
+  // --- 5. Obie połówki OTA — dlatego nowy firmware zawsze mieści się na drugiej ---
+  {
+    const esp_partition_t* app0 = esp_partition_find_first(
+        ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr);
+    const esp_partition_t* app1 = esp_partition_find_first(
+        ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, nullptr);
+    char val[56];
+    snprintf(val, sizeof(val), "app0 %lu  app1 %lu kB (2x OTA)",
+             static_cast<unsigned long>(app0 ? app0->size / 1024 : 0),
+             static_cast<unsigned long>(app1 ? app1->size / 1024 : 0));
+    row("PARTYCJE", val, false, 0.f, col::TEXT);
+  }
+
+  // --- 6. Partycje danych: NVS (ustawienia), SPIFFS (istnieje, ale NIEUŻYWANY —
+  // pokazujemy rozmiar właśnie po to, żeby było widać rezerwację), coredump
+  // (zrzut awaryjny — szczegóły w /api/coredump) ---
+  {
+    const esp_partition_t* nvs = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, nullptr);
+    const esp_partition_t* spiffs = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
+    const esp_partition_t* core = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, nullptr);
+    char val[56];
+    snprintf(val, sizeof(val), "nvs %lu  spiffs %lu(nieuż.)  core %lu kB",
+             static_cast<unsigned long>(nvs ? nvs->size / 1024 : 0),
+             static_cast<unsigned long>(spiffs ? spiffs->size / 1024 : 0),
+             static_cast<unsigned long>(core ? core->size / 1024 : 0));
+    row("DANE", val, false, 0.f, col::TEXT);
+  }
+
+  // --- 7. RTC SLOW — pamięć, która PRZEŻYWA OTA (gPir/gLdr, patrz Log.h) ---
+  {
+    // 7680 B to realny rozmiar sekcji .rtc_noinit, w której siedzą gPir/gLdr —
+    // 8192 B to fizyczny rozmiar RTC SLOW (stała sprzętowa ESP32-S3); 512 B niżej
+    // zajmuje coś innego (potwierdzone przez nm/symbole linkera — patrz uzasadnienie
+    // w Log.h przy PirRtc, nie jest to zgadywane).
+    constexpr uint32_t kRtcSlowUsable = 7680;
+    constexpr uint32_t kRtcFastPhysical = 8192;  // NIEUŻYWANE w tym projekcie — patrz Log.h
+    const uint32_t used = sizeof(PirRtc) + sizeof(LdrRtc);   // gPir + gLdr
+    char val[56];
+    snprintf(val, sizeof(val), "%lu/%lu B  FAST %lu B nieuż.",
+             static_cast<unsigned long>(used),
+             static_cast<unsigned long>(kRtcSlowUsable),
+             static_cast<unsigned long>(kRtcFastPhysical));
+    row("RTC SLOW", val, true, 1.f - static_cast<float>(used) / kRtcSlowUsable, col::OK);
+  }
+
+  // --- 8. ROM (bootrom) — stała sprzętowa ESP32-S3, tylko do odczytu, kodu
+  // własnego projektu tu NIE MA. Nie da się zmierzyć "wolnego miejsca" (bo nic
+  // tu nie alokujemy) — pokazane jako ciekawostka, nie jako zasób do zarządzania.
+  row("ROM", "384 kB, tylko odczyt (bootrom)", false, 0.f, col::TEXT);
+
+  // --- 9. Stos zadań — to samo źródło, co /api/diag mem.stack_*_spare ---
+  {
+    // 16384 B to rozmiar zadany w obu xTaskCreatePinnedToCore(...,16384,...,&gWebTask,0)
+    // / (...,16384,...,&gNetTask,0) w pogoda-gdynia.ino. Nie ma na to wspólnej stałej
+    // w Config.h — jeśli te wywołania kiedyś zmienią rozmiar, tę liczbę (i próg
+    // niżej) trzeba poprawić ręcznie.
+    constexpr uint32_t kTaskStackBytes = 16384;
+    char val[56];
+    snprintf(val, sizeof(val), "net %lu  web %lu B (z %lu)",
+             static_cast<unsigned long>(d.stackNet), static_cast<unsigned long>(d.stackWeb),
+             static_cast<unsigned long>(kTaskStackBytes));
+    const uint32_t worst = d.stackNet < d.stackWeb ? d.stackNet : d.stackWeb;
+    const float worstFrac = worst / static_cast<float>(kTaskStackBytes);
+    // Progi orientacyjne (nie ma zmierzonego limitu w Config.h): poniżej 15%
+    // zapasu robi się niepokojąco blisko przepełnienia stosu, poniżej 30% — warto
+    // obserwować.
+    const uint16_t c = worstFrac < 0.15f ? col::ERR : worstFrac < 0.3f ? col::WARN : col::OK;
+    row("STOS", val, true, worstFrac, c);
+  }
+}
+
+// ------------------------------------------------------- WIDOK: RUCH (v111) ----
+// PIR (rytm doby — kiedy chodzimy do łazienki) + LDR (jasność, zdarzenia
+// "zostawione światło") + wydajność rysowania (fps) — trzy różne pomiary na
+// jednym ekranie eksploracyjnym.
+//
+// Dane PIR/LDR JUŻ ISTNIEJĄ (gPir/gLdr, RTC SLOW, zbierane od v107/v108) — tu NIC
+// nie liczymy od nowa, tylko czytamy to, co już zbiera loop()/pirIsr(). gPir i
+// gLdr są pisane na RDZENIU 1 (loop() + ISR), a to rysowanie też leci na
+// rdzeniu 1 (WeatherUi::render() woła się z loop()) — TEN SAM rdzeń, więc odczyt
+// tutaj jest bezpieczny bez żadnej blokady. To dokładnie to samo założenie, co
+// przy odczycie tych samych pól do /api/diag na rdzeniu 0 (webTask) — tam rozjazd
+// o jedną próbkę jest już zaakceptowany (patrz komentarze przy gPir w Log.h).
+void WeatherUi::drawViewMotion(TFT_eSPI& spr, int ox, float t, uint32_t nowMs) {
+  const float e = easeOutCubic(t);
+  const Diag& d = diag();
+
+  char hdr[32];
+  snprintf(hdr, sizeof(hdr), "%s  %u mV", d.pirState ? "ruch teraz" : "bez ruchu",
+           static_cast<unsigned>(d.ldrMv));
+  viewHeader(spr, ox, hdr, d.pirState ? col::OK : col::TEXT_MUTE);
+
+  // ==================================================== PIR: rytm doby (24 h) --
+  gl(spr, "PIR: RYTM DOBY (24 H)", ox + 10, 50, col::TEXT_MUTE);
+  {
+    char ago[24];
+    if (d.pirLastAt == 0) {
+      snprintf(ago, sizeof(ago), "brak od startu");
+    } else {
+      // nowMs ze stosu (jak w drawViewStats), NIE świeży millis() — inaczej ten
+      // napis mógłby pokazać inną wartość w kolejnym pasku zrzutu BMP (patrz
+      // komentarz przy paintFrame o "jedna klatka = jeden moment").
+      const uint32_t agoS = (nowMs - d.pirLastAt) / 1000;
+      if (agoS < 90) {
+        snprintf(ago, sizeof(ago), "ruch %lus temu", static_cast<unsigned long>(agoS));
+      } else if (agoS < 5400) {
+        snprintf(ago, sizeof(ago), "ruch %lu min temu", static_cast<unsigned long>(agoS / 60));
+      } else {
+        snprintf(ago, sizeof(ago), "ruch %lu h temu", static_cast<unsigned long>(agoS / 3600));
+      }
+    }
+    glRight(spr, ago, ox + W - 10, 50, d.pirState ? col::OK : col::TEXT_DIM);
+  }
+
+  {
+    constexpr int kBars = 24;
+    const int chartX = ox + 10;
+    const int chartW = W - 20;           // 300 px
+    const int pitch = chartW / kBars;    // 12 px/godzinę
+    const int barW = pitch > 3 ? pitch - 3 : 1;
+    const int chartTop = 62, chartBase = 100;   // 38 px wysokości
+
+    uint32_t mx = 1;   // >=1, zeby nie dzielic przez zero, gdy jeszcze nic nie przyszlo
+    for (int h = 0; h < kBars; ++h) {
+      if (gPir.byHour[h] > mx) mx = gPir.byHour[h];
+    }
+    // Godzina lokalna TERAZ — tylko do podświetlenia słupka, liczona świeżo (jak
+    // w drawHeader) — to zegar ścienny, nie coś, co może się rozjechać między
+    // paskami zrzutu w sposób, który by komukolwiek zaszkodził.
+    int curHour = -1;
+    const time_t nowT = time(nullptr);
+    if (nowT > 1700000000) {
+      struct tm tmv{};
+      localtime_r(&nowT, &tmv);
+      curHour = tmv.tm_hour;
+    }
+    for (int h = 0; h < kBars; ++h) {
+      const int x = chartX + h * pitch;
+      const int hh = static_cast<int>((gPir.byHour[h] / static_cast<float>(mx)) *
+                                      (chartBase - chartTop) * e);
+      const uint16_t bc = (h == curHour) ? col::ACCENT : col::WIND;
+      if (hh > 0) {
+        spr.fillRect(x, chartBase - hh, barW, hh, bc);
+      } else {
+        spr.drawFastHLine(x, chartBase - 1, barW, col::GRID);   // zerowa godzina — kreska bazowa
+      }
+    }
+    for (int h = 0; h <= 18; h += 6) {
+      char hb[4];
+      snprintf(hb, sizeof(hb), "%d", h);
+      glCenter(spr, hb, chartX + h * pitch + pitch / 2, chartBase + 4, col::TEXT_MUTE);
+    }
+
+    // "zbieram od" — to horyzont TEGO histogramu, nie uptime (gPir.collectedS
+    // przeżywa OTA, uptime zeruje się przy każdym restarcie — patrz Log.h).
+    char durBuf[16];
+    const uint32_t collS = gPir.collectedS;
+    if (collS < 3600) {
+      snprintf(durBuf, sizeof(durBuf), "%lu min", static_cast<unsigned long>(collS / 60));
+    } else if (collS < 86400) {
+      snprintf(durBuf, sizeof(durBuf), "%lu h", static_cast<unsigned long>(collS / 3600));
+    } else {
+      snprintf(durBuf, sizeof(durBuf), "%lu dni", static_cast<unsigned long>(collS / 86400));
+    }
+    char b2[32];
+    snprintf(b2, sizeof(b2), "zbieram %s", durBuf);
+    gl(spr, b2, ox + 10, 114, col::TEXT_MUTE);
+
+    const float pctActive = collS ? (gPir.totalMs / 1000.f) / collS * 100.f : 0.f;
+    char b3[40];
+    snprintf(b3, sizeof(b3), "wyzwoleń %lu (%.1f%% doby)",
+             static_cast<unsigned long>(gPir.rises), pctActive);
+    glRight(spr, b3, ox + W - 10, 114, col::TEXT_DIM);
+  }
+
+  // ==================================================== LDR: światło ----------
+  gl(spr, "LDR: POZIOMY ŚWIATŁA", ox + 10, 124, col::TEXT_MUTE);
+  {
+    char mvNow[16];
+    snprintf(mvNow, sizeof(mvNow), "%u mV", static_cast<unsigned>(d.ldrMv));
+    glRight(spr, mvNow, ox + W - 10, 124, col::TEXT_DIM);
+  }
+  {
+    // Pasek 3 kolory = 3 poziomy podświetlenia (ciemno/półmrok/jasno), szerokość
+    // proporcjonalna do sekund spędzonych na każdym — patrz LdrRtc::levelS w Log.h.
+    const uint32_t l0 = gLdr.levelS[0], l1 = gLdr.levelS[1], l2 = gLdr.levelS[2];
+    const uint32_t lsum = l0 + l1 + l2;
+    const int bx = ox + 10, by = 136, bw = W - 20, bh = 10;
+    if (lsum > 0) {
+      int w0 = static_cast<int>((l0 / static_cast<float>(lsum)) * bw * e);
+      int w1 = static_cast<int>((l1 / static_cast<float>(lsum)) * bw * e);
+      if (w0 < 0) w0 = 0;
+      if (w1 < 0) w1 = 0;
+      int w2 = static_cast<int>(bw * e) - w0 - w1;
+      if (w2 < 0) w2 = 0;
+      int xx = bx;
+      spr.fillRect(xx, by, w0, bh, col::TEXT_MUTE); xx += w0;
+      spr.fillRect(xx, by, w1, bh, col::ACCENT_WARM); xx += w1;
+      spr.fillRect(xx, by, w2, bh, col::SUN);
+    } else {
+      spr.fillRoundRect(bx, by, bw, bh, 2, col::PV_TRACK);   // jeszcze bez danych
+    }
+
+    auto fmtH = [](char* buf, size_t n, uint32_t s) {
+      if (s < 3600) snprintf(buf, n, "%lu min", static_cast<unsigned long>(s / 60));
+      else snprintf(buf, n, "%.1f h", s / 3600.f);
+    };
+    char h0[12], h1[12], h2[12];
+    fmtH(h0, sizeof(h0), l0);
+    fmtH(h1, sizeof(h1), l1);
+    fmtH(h2, sizeof(h2), l2);
+    char lv[56];
+    snprintf(lv, sizeof(lv), "ciemno %s  półmrok %s  jasno %s", h0, h1, h2);
+    gl(spr, lv, ox + 10, 150, col::TEXT_DIM);
+  }
+
+  {
+    // Ostatnie zdarzenie "zostawione światło" (pierścień ma do 8 — pełna historia
+    // w /api/diag sensors.ldr_events; tu tylko najświeższe, bo na ekranie nie ma
+    // miejsca na więcej).
+    if (gLdr.evCount == 0) {
+      gl(spr, "zdarzenia (zostawione światło): brak", ox + 10, 163, col::TEXT_MUTE);
+    } else {
+      // evHead to NASTĘPNY slot do nadpisania, więc ostatni ZAPISANY jest jeden wcześniej.
+      const uint32_t lastIdx = (gLdr.evHead + 8 - 1) % 8;
+      const LdrEvent& ev = gLdr.events[lastIdx];
+      const bool open = (gLdr.evSlot == lastIdx);   // wciąż trwa — patrz LdrRtc::evSlot w Log.h
+      char durBuf[16];
+      if (ev.durS < 3600) {
+        snprintf(durBuf, sizeof(durBuf), "%lu min", static_cast<unsigned long>(ev.durS / 60));
+      } else {
+        snprintf(durBuf, sizeof(durBuf), "%.1f h", ev.durS / 3600.f);
+      }
+      char line[64];
+      if (ev.startEpoch > 0) {
+        const time_t st = static_cast<time_t>(ev.startEpoch);
+        struct tm tmv{};
+        localtime_r(&st, &tmv);
+        snprintf(line, sizeof(line), "ostatnie zdarzenie: %02d:%02d, trwało %s%s",
+                 tmv.tm_hour, tmv.tm_min, durBuf, open ? " (TRWA)" : "");
+      } else {
+        snprintf(line, sizeof(line), "ostatnie zdarzenie: godz. nieznana, trwało %s%s",
+                 durBuf, open ? " (TRWA)" : "");
+      }
+      gl(spr, line, ox + 10, 163, open ? col::WARN : col::TEXT_DIM);
+    }
+  }
+
+  // ==================================================== wydajność rysowania ---
+  gl(spr, "WYDAJNOŚĆ RYSOWANIA", ox + 10, 182, col::TEXT_MUTE);
+  {
+    const double fpsReal = d.framePeriodUs > 0 ? 1000000.0 / d.framePeriodUs : 0.0;
+    const uint32_t busyUs = d.frameDrawUs + d.framePushUs;
+    const double fpsMax = busyUs > 0 ? 1000000.0 / busyUs : 0.0;
+    char perf[64];
+    snprintf(perf, sizeof(perf), "%.1f fps (limit ok. %.0f)  %lu+%lu us/klatkę",
+             fpsReal, fpsMax, static_cast<unsigned long>(d.frameDrawUs),
+             static_cast<unsigned long>(d.framePushUs));
+    gl(spr, perf, ox + 10, 194, col::TEXT);
+  }
 }
 
 void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
