@@ -1055,7 +1055,7 @@ void WeatherUi::drawViewRetro(TFT_eSPI& spr, int ox, float t, const WeatherModel
       spr.fillRect(ox + ccx - lastW / 2, y, lastW, unit, rcol::CLOUD_E);
     };
     cloud(196, 40, 3);
-    cloud(140, 96, 2);
+    cloud(152, 72, 2);   // wyzej niz 96: przy y=96 nachodzila na "ODCZUW nn" (y=104)
   }
 
   // ===================================================================== miasto --
@@ -1204,8 +1204,8 @@ void WeatherUi::drawViewRetroFooter(TFT_eSPI& dst, const WeatherModel& w) {
   // najszerszy przypadek to "13KM/H" = 96 px (116..212), czyli 24 px do nastepnej
   // kolumny. Trzycyfrowy wiatr (huragan) siegnie 228 px i nadal sie nie sklei.
   snprintf(buf, sizeof(buf), "%dKM/H", static_cast<int>(lroundf(w.current.windKmh)));
-  retroStrShadowed(dst, "WIATR", 116, labelY, 2, rcol::YEL);
-  retroStrShadowed(dst, buf, 116, valueY, 2, rcol::CYAN);
+  retroStrShadowed(dst, "WIATR", 124, labelY, 2, rcol::YEL);
+  retroStrShadowed(dst, buf, 124, valueY, 2, rcol::CYAN);
 
   snprintf(buf, sizeof(buf), "%d", static_cast<int>(lroundf(w.current.pressureHpa)));
   retroStrShadowed(dst, "HPA", 236, labelY, 2, rcol::YEL);
