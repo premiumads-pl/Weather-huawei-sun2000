@@ -979,6 +979,48 @@ void apiDiag() {
     eh.add(d.pvExtraHist[i]);
   }
 
+  // --- PRZYCZYNY porażek Modbusa, PRZEŻYWAJĄ restart (patrz PvRtc w Log.h) ---
+  // Po co: noc 19/20 lipca 2026 pokazała, że pv.fails/pv.extra_fails wyżej NIE
+  // wystarczają do zdiagnozowania nocnej awarii Modbusa — restart o 00:15 je wyzerował
+  // (DRAM), log (bufor ~6 minut) już wtedy nic nie pamiętał, a pv.asleep/"Falownik
+  // uśpiony" wyglądają identycznie i dla realnego snu falownika, i dla martwej sesji.
+  // Te liczniki żyją w RTC (przeżywają restart, OTA, panic) i rozbite są na DWIE
+  // RÓŻNE przyczyny x PORĘ DOBY:
+  //   connect_fail_* — ensureConnected()==false: nie ma sesji TCP w ogóle.
+  //   silent_fail_*  — sesja TCP żyje, ale `fails>=3`: rejestry przestały odpowiadać.
+  // Rozbicie dzień/noc NIE jest kosmetyką: nocą falownik naprawdę może spać (Huawei
+  // wyłącza Modbus TCP po zachodzie) i nieudane połączenie jest wtedy oczekiwane — bez
+  // rozbicia zdrowe nocne zasypianie zalewałoby TEN SAM licznik, co realna awaria, i
+  // znowu by ją zamaskowało. Duże connect_fail_night/silent_fail_night SAME W SOBIE nie
+  // są dowodem awarii (to może być zwykła noc) — dopiero porównanie noc do nocy (albo
+  // z dniem, albo w czasie) to pokazuje.
+  JsonObject pm = pv["fail_meas"].to<JsonObject>();
+  pm["connect_fail_day"] = gPvRtc.connectFailDay;
+  pm["connect_fail_night"] = gPvRtc.connectFailNight;
+  pm["silent_fail_day"] = gPvRtc.silentFailDay;
+  pm["silent_fail_night"] = gPvRtc.silentFailNight;
+  // TRZECIA, inna przyczyna (brakuje jednego rejestru mocy przy żywej sesji — patrz
+  // pv.fail_hist wyżej i komentarz przy `missing` w PvClient.cpp). Licząca się OSOBNO,
+  // celowo nie zmieszana z połączeniem/ciszą powyżej.
+  pm["missing_reg_day"] = gPvRtc.missingRegDay;
+  pm["missing_reg_night"] = gPvRtc.missingRegNight;
+
+  // "zbieram od" — dokładnie ta sama mechanika co sensors.pir_meas/ldr_meas niżej i z
+  // tego samego powodu: uptime_s zeruje się przy KAŻDYM restarcie, ten pomiar nie.
+  pm["collected_s"] = gPvRtc.collectedS;
+  pm["boots"] = gPvRtc.boots;
+  if (gPvRtc.startedEpoch > 0) {
+    pm["started_epoch"] = gPvRtc.startedEpoch;
+    const time_t nowT = time(nullptr);
+    if (nowT > 1700000000) {
+      const uint32_t wall = static_cast<uint32_t>(nowT) - gPvRtc.startedEpoch;
+      pm["wall_s"] = wall;
+      pm["gap_s"] = wall > gPvRtc.collectedS ? wall - gPvRtc.collectedS : 0;
+    }
+  } else {
+    pm["started_epoch"] = nullptr;   // NTP jeszcze nigdy nie dał czasu
+  }
+
   // --- piec: SUROWE liczniki z API (patrz Log.h) ---
   // Wystawione po to, zeby dalo sie ODCZYTAC Z URZADZENIA, czy `hours` rusza sie
   // o 0,01 czy o 0,1 (albo wcale) i czy `starts` inkrementuje sie przy kazdym

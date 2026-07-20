@@ -100,13 +100,29 @@ if [ -z "$NM" ] || [ -z "$ELF" ]; then
   sed -i '' "s/#define FW_VERSION ${NEW}/#define FW_VERSION ${CUR}/" Version.h
   exit 1
 fi
-GPIR_AT=$("$NM" "$ELF" | awk '$3=="gPir"{print $1}' | head -1)
-if [ -z "$GPIR_AT" ]; then GPIR_AT="(brak symbolu)"; fi
-echo "==> gPir @ 0x${GPIR_AT} (oczekiwane 0x${GPIR_WANT})"
-if [ "$GPIR_AT" != "$GPIR_WANT" ]; then
+# Od v113 zbiorow w RTC jest WIECEJ NIZ JEDEN i kazdy trzyma wielotygodniowy pomiar:
+#   gPir @ 0x50000200 — rytm doby, zbierany od 17.07, przezyl juz 9 restartow
+#   gLdr @ 0x500002c0 — jasnosc i zdarzenia "zostawione swiatlo", od v108
+# (gPvRtc @ 0x50000398 celowo NIE jest tu pilnowany: to najmlodszy zbior, stoi NAJWYZEJ,
+# wiec dokladanie kolejnych zmiennych przesuwa jego, a nie tamtych dwoch. Gdy uzbiera
+# dane warte ochrony — dopisz go do listy.)
+# Sprawdzamy KAZDY: przesuniecie ktoregokolwiek kasuje jego zbior po cichu, bo magic
+# sie nie zgodzi i kod zrobi "zimny start", nie do odroznienia od pierwszego uruchomienia.
+RTC_FAIL=0
+for PAIR in "gPir:50000200" "gLdr:500002c0"; do
+  SYM="${PAIR%%:*}"; WANT="${PAIR##*:}"
+  AT=$("$NM" "$ELF" | awk -v s="$SYM" '$3==s{print $1}' | head -1)
+  if [ -z "$AT" ]; then AT="(brak symbolu)"; fi
+  echo "==> ${SYM} @ 0x${AT} (oczekiwane 0x${WANT})"
+  if [ "$AT" != "$WANT" ]; then
+    echo "!!! ${SYM} PRZESUNIETY: 0x${AT} zamiast 0x${WANT}"
+    RTC_FAIL=1
+  fi
+done
+if [ "$RTC_FAIL" -ne 0 ]; then
   echo ""
-  echo "!!! STOP: gPir stoi pod 0x${GPIR_AT}, a stara wersja zapisala dane pod 0x${GPIR_WANT}."
-  echo "!!! To OTA SKASUJE zbierane statystyki PIR i nie powie o tym ani slowa."
+  echo "!!! STOP: zmienna w RTC zmienila adres. OTA SKASUJE jej zbior i nie powie ani slowa"
+  echo "!!! — na biurku wyglada to dokladnie jak poprawny pierwszy rozruch."
   echo "!!! Patrz komentarz nad ta bariera. Cofam podniesienie wersji."
   sed -i '' "s/#define FW_VERSION ${NEW}/#define FW_VERSION ${CUR}/" Version.h
   exit 1

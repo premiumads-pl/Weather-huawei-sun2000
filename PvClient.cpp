@@ -202,6 +202,17 @@ bool PvClient::fetch(PvModel& out, bool night) {
   // po zachodzie i budzi się z opóźnieniem. Zmienia się TYLKO opis braku odpowiedzi
   // (neutralny zamiast czerwonego) i częstotliwość odpytywania (o tym decyduje netTask).
   if (!ensureConnected()) {
+    // PRZYCZYNA 1/2: NIE UDAŁO SIĘ POŁĄCZYĆ — nie ma sesji TCP (falownik niedostępny,
+    // odrzucił połączenie, problem routingu). Licznik w RTC (PvRtc, patrz Log.h), bo w
+    // noc 19/20 lipca 2026 dokładnie ta gałąź (albo poniższa `fails >= 3`) wisiała
+    // ~45 minut, a po ręcznym restarcie o 00:15 nie zostało po tym ani jedno świadectwo:
+    // log to ~6 minut, ten sam licznik w DRAM wyzerowałby restart, a crasha nie było,
+    // więc nie było i zrzutu. Dzień/noc rozbite, bo to NIE kosmetyka: nocą falownik
+    // naprawdę może spać i sama ta gałąź leci wtedy normalnie (patrz `night` niżej) —
+    // bez rozbicia zdrowe nocne zasypianie zalałoby TEN SAM licznik, co realna awaria,
+    // i znowu by ją zamaskowało.
+    if (night) ++gPvRtc.connectFailNight; else ++gPvRtc.connectFailDay;
+
     out.online = false;
     out.asleep = night;
     strncpy(out.errorMsg, night ? "Falownik uśpiony" : "Falownik nie odpowiada",
@@ -304,6 +315,16 @@ bool PvClient::fetch(PvModel& out, bool night) {
   // (Tak samo wygląda zasypianie falownika o zmroku: TCP jeszcze stoi, ale rejestry
   // już milczą. Nocą nie robimy z tego alarmu.)
   if (fails >= 3) {
+    // PRZYCZYNA 2/2: POŁĄCZENIE STOI, ALE REJESTRY MILCZĄ — sesja TCP jest nawiązana
+    // (ensureConnected() wyżej zwróciło true), a odczyty nie wracają. To INNA usterka
+    // niż brak sesji wyżej (tam nie ma z kim rozmawiać, tu rozmówca nie odpowiada) i
+    // dziś obie kończą się identycznym `asleep`/"Falownik uśpiony". Licznik w RTC z
+    // tego samego powodu, co connectFail* wyżej (patrz ten komentarz) — przeżywa
+    // restart, który akurat tamtą noc skasował wszystko inne. Próg `fails >= 3` i
+    // `gSock.stop()` NIE są tu ruszane — patrz długi komentarz o kalibracji progu
+    // kilkanaście linii wyżej. Ta zmiana TYLKO liczy.
+    if (night) ++gPvRtc.silentFailNight; else ++gPvRtc.silentFailDay;
+
     gSock.stop();
     out.online = false;
     out.asleep = night;
@@ -325,6 +346,15 @@ bool PvClient::fetch(PvModel& out, bool night) {
   // ~20 s rozgrzewki Huawei i zaszkodzilby bardziej, niz pomogl.
   // Rozroznienie "spi" od "zepsuty" zostaje: nocą to nadal stan neutralny.
   if (missing != 0) {
+    // TRZECIA, INNA sytuacja — sesja żyje i większość rejestrów doszła, ale KONKRETNIE
+    // brakuje jednego z trójki rejestrów mocy (patrz uzasadnienie wyżej: houseLoadW nie
+    // wolno liczyć z dziurawych danych). Celowo NIE dopisana do connectFail*/silentFail*
+    // w PvRtc — zepsułoby to czystość obu tamtych liczników, a mechanizm awarii jest
+    // inny. Ma już diagnostykę na żywo (numer rejestru niżej, pv.fail_hist w Diag), ale
+    // ten sam problem restartu (Diag jest w DRAM) i to samo `asleep = night` w nocy
+    // dotyczy i jej — stąd osobny, restart-safe licznik (patrz PvRtc w Log.h).
+    if (night) ++gPvRtc.missingRegNight; else ++gPvRtc.missingRegDay;
+
     out.online = false;
     out.asleep = night;
     if (night) {

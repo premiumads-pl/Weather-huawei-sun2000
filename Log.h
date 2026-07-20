@@ -462,3 +462,111 @@ void ldrRtcBegin();
 // Kubelek histogramu dla ldr_mv. W naglowku, bo Portal.cpp opisuje TE SAME krawedzie
 // tekstem w /api/diag i chce miec je w zasiegu wzroku obok siebie.
 uint8_t ldrHistBucket(uint16_t mv);
+
+// =====================================================================================
+// PV: PRZYCZYNY porazek Modbusa do falownika, PRZEZYWAJA restart (pamiec RTC) — v113
+// =====================================================================================
+//
+// PO CO TO ISTNIEJE. W noc 19/20 lipca 2026 kanal Modbus do falownika padl na ok. 45 minut
+// (~23:30-00:15) i NIE zostawil ani jednego swiadectwa: urzadzenie NIE crashowalo (wiec
+// nie bylo zrzutu, was_crash: false, crashes_total bez zmian), log to bufor KOLOWY 3072 B
+// (Log.cpp:7) — okno rzedu SZESCIU MINUT, i tak skasowane recznym restartem o 00:15 — a
+// liczniki PV (fails/fail_hist w Diag) siedza w DRAM, wiec ten sam restart je wyzerowal.
+// Wlasciciel zrestartowal recznie i Modbus wrocil, ale PRZYCZYNY nie dalo sie juz ustalic.
+//
+// Najgorsze: w PvClient::fetch() WSZYSTKIE nocne sciezki bledu wygladaja identycznie —
+// `out.asleep = night` i komunikat "Falownik uspiony" leci i wtedy, gdy falownik NAPRAWDE
+// spi (Huawei wylacza Modbus TCP po zachodzie, stan normalny), i wtedy, gdy sesja jest
+// martwa (awaria). Nocny kod nie mial jak tego rozroznic — awaria mogla wisiec godzinami,
+// nie zostawiajac ani jednej linii.
+//
+// DWIE ROZNE przyczyny, ktore te liczniki rozdzielaja (numeracja jak w PvClient.cpp):
+//  1. NIE UDALO SIE POLACZYC — ensureConnected() zwrocilo false: nie ma sesji TCP wcale
+//     (falownik niedostepny, odrzucil polaczenie, problem routingu). Licznik connectFail*.
+//  2. POLACZENIE STOI, ALE REJESTRY MILCZA — sesja TCP jest nawiazana, a odczyty nie
+//     wracaja (sciezka `fails >= 3`, sesja uznana za martwa, gSock.stop()). Licznik
+//     silentFail*.
+// To SA rozne awarie (brak rozmowcy kontra rozmowca, ktory przestal odpowiadac) i dawniej
+// konczyly sie DOKLADNIE tym samym `asleep`/"Falownik uspiony". Progu `fails >= 3` ANI
+// logiki decyzyjnej ta zmiana NIE rusza (patrz dlugi komentarz przy tym progu w
+// PvClient.cpp, dlaczego nie wolno go ruszac bez danych) — dokladamy WYLACZNIE liczenie.
+//
+// ROZBICIE DZIEN/NOC JEST OBOWIAZKOWE, NIE KOSMETYCZNE. Zmienna `night` juz istnieje w
+// PvClient::fetch() (patrz pvMayBeAsleep()) — to pora, w ktorej falownikowi NAPRAWDE
+// wolno spac. Nieudane polaczenie/milczace rejestry w tym oknie sa wiec CZESTO normalne,
+// a nie awaria. Gdyby liczyc je razem z dziennymi w JEDNYM liczniku, codzienne, zdrowe
+// zasypianie falownika zalewaloby go tysiacami zdarzen i utopilo w szumie dokladnie ten
+// sygnal, ktorego szukamy — czyli odtworzylo problem, ktory ta wersja ma naprawic.
+// Rozbicie na noc/dzien to jedyny sposob, zeby "47 w nocy, 0 w dzien" znaczylo cokolwiek.
+//
+// DLACZEGO RTC, A NIE DRAM (Diag) — DOKLADNIE ten sam powod, co przy PirRtc/LdrRtc powyzej,
+// nie powtarzam go tu w calosci: RTC_NOINIT_ATTR przezywa restart programowy (OTA), panic
+// i watchdog — ginie dopiero przy odlaczeniu zasilania. Gdyby te liczniki zyly w Diag
+// (DRAM), KAZDY restart (reczny, jak tej nocy, albo OTA) zerowalby je — czyli po dokladnie
+// takiej awarii, jaka ta zmiana ma diagnozowac, liczniki wrocilyby do zera razem z
+// restartem, ktory ja zakonczyl. Bylby to licznik dzialajacy az do chwili, w ktorej jest
+// najbardziej potrzebny.
+//
+// NAZWA ZMIENNEJ: `gPv` jest juz zajete (PvModel gPv{} w pogoda-gdynia.ino — biezacy
+// odczyt do UI/MQTT), wiec instancja tej struktury nazywa sie `gPvRtc`, w odroznieniu od
+// gPir/gLdr, ktore takiej kolizji nie mialy.
+//
+// KOLEJNOSC DEKLARACJI W .ino: gPvRtc stoi NAD gLdr (czyli PRZED nim w pliku) — patrz
+// wielki komentarz przy `RTC_NOINIT_ATTR PvRtc gPvRtc;` w pogoda-gdynia.ino. Krotko: GCC
+// emituje sekcje .rtc_noinit w kolejnosci ODWROTNEJ do deklaracji, wiec ostatnia
+// zadeklarowana zmienna (gPir) laduje pod NAJNIZSZYM adresem. Wstawienie gPvRtc NAD gLdr
+// zostawia gPir @ 0x50000200 i gLdr @ 0x500002c0 NIETKNIETE, a gPvRtc dostaje adres NAD
+// gLdr. `tools/release.sh` ma automatyczna bariere na adres gPir — jesli sie ruszy,
+// wydanie zatrzyma sie samo; adresu gLdr/gPvRtc ten skrypt NIE pilnuje, trzeba je
+// zweryfikowac recznie przez `nm` przy KAZDEJ zmianie w tej trojce.
+inline constexpr uint32_t PV_RTC_MAGIC = 0x50564301;  // 'P' 'V' 'C' + wersja ukladu pol (01)
+
+struct PvRtc {
+  uint32_t magic;   // po zaniku zasilania RTC to SMIECI; rozstrzyga znacznik, nie "czy
+                    // liczby wygladaja rozsadnie" — ta sama uwaga, co przy PirRtc/LdrRtc
+
+  // --- ciaglosc pomiaru: dokladnie ta sama mechanika, co w PirRtc/LdrRtc i z tego samego
+  // powodu (patrz komentarze tam) — OSOBNE liczniki, zeby podbicie UKLADU POL jednej
+  // struktury (zmiana wersji w dolnym bajcie jej magica) nie zerowalo pozostalych dwoch.
+  uint32_t startedEpoch;  // epoch POCZATKU zbierania (0 = NTP jeszcze nie dal czasu)
+  uint32_t collectedS;    // sumaryczne sekundy REALNEGO zbierania (bez przerw na restarty);
+                          // tyka w TYM SAMYM miejscu loop(), co gPir.collectedS/gLdr.collectedS
+                          // (jeden wspolny `dt`), wiec wszystkie trzy licza to samo okno
+                          // czasu i sa ze soba porownywalne 1:1.
+  uint32_t boots;         // ile razy wystartowalismy na tym komplecie danych (OTA/panic/restart)
+
+  // --- PRZYCZYNA x PORA DOBY — uzasadnienie obu osi w komentarzu nad struktura powyzej ---
+  uint32_t connectFailDay;    // ensureConnected()==false, dzien: falownik naprawde nie
+                              // odpowiada na TCP (falownik/siec/routing) — to nie sen
+  uint32_t connectFailNight;  // to samo w oknie, w ktorym falownikowi wolno spac — MOZE
+                              // byc normalny sen, a moze byc ta sama awaria co w dzien;
+                              // rozklad w czasie (nie zalozenie z gory) mowi, ktore to
+  uint32_t silentFailDay;     // sesja TCP zyje (ensureConnected()==true), ale `fails>=3`:
+                              // rejestry przestaly odpowiadac — INNA usterka niz powyzej
+  uint32_t silentFailNight;   // to samo noca — sen falownika normalnie objawia sie WLASNIE
+                              // tym stanem (TCP stoi, rejestry milcza), wiec ten licznik
+                              // bedzie w nocy wysoki i to sam w sobie NIE jest dowod awarii —
+                              // dopiero porownanie noc do nocy (albo do dnia) to pokazuje
+
+  // --- OPCJONALNE rozszerzenie, NIE jedna z dwoch powyzszych przyczyn ---
+  // `missing != 0` w PvClient.cpp (brak JEDNEGO rejestru mocy przy zywej sesji) to TRZECIA,
+  // inna sytuacja: ma juz wlasna diagnostyke na zywo (numer rejestru w errorMsg, histogram
+  // w Diag.pvFailHist) i CELOWO nie jest wliczana do connectFail*/silentFail* powyzej — to
+  // zepsuloby czystosc obu tamtych licznikow. Liczymy ja jednak TEZ osobno, bo ten sam
+  // problem restartu (Diag jest w DRAM) i to samo `out.asleep=night`/"Falownik uspiony" w
+  // nocy dotyczy i jej.
+  uint32_t missingRegDay;
+  uint32_t missingRegNight;
+};
+
+// Definicja (z RTC_NOINIT_ATTR) siedzi w pogoda-gdynia.ino, tuz NAD gLdr — patrz wielki
+// komentarz o kolejnosci sekcji RTC przy tej deklaracji.
+extern PvRtc gPvRtc;
+
+// Sprawdza znacznik waznosci i zeruje wszystko po zimnym starcie. Memset na zero jest tu
+// bezpieczny w calosci: kazde pole tej struktury to licznik, dla ktorego 0 uczciwie znaczy
+// "jeszcze sie nie zdarzylo" — w odroznieniu od PirRtc/LdrRtc nie ma tu zadnego pola typu
+// "0xFFFFFFFF = brak danych", wiec po memset nie trzeba nic dodatkowo ustawiac. Wolac w
+// setup(); kolejnosc wzgledem pirRtcBegin()/ldrRtcBegin() jest bez znaczenia (gPvRtc nie
+// jest z niczym wspoldzielona).
+void pvRtcBegin();

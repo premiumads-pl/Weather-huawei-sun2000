@@ -150,7 +150,7 @@ Diag* gDiagIsr = nullptr;           // zlapane raz w setup(), zeby ISR nie wolal
 // starcie, ani po resecie. Dlatego BEZ inicjalizatora (byloby zignorowane) i dlatego
 // pirRtcBegin()/ldrRtcBegin() musza same sprawdzic znacznik waznosci.
 //
-// !!! KOLEJNOSC TYCH DWOCH LINII JEST CZESCIA KONTRAKTU — gPir MA STAC NA KONCU !!!
+// !!! KOLEJNOSC TYCH TRZECH LINII JEST CZESCIA KONTRAKTU — gPir MA STAC NA KONCU !!!
 //
 // To NIE jest kwestia stylu, tylko ADRESU, a adres decyduje o tym, czy trwajacy tydzien
 // pomiaru PIR przezyje te aktualizacje:
@@ -175,13 +175,32 @@ Diag* gDiagIsr = nullptr;           // zlapane raz w setup(), zeby ISR nie wolal
 // nie pisal. Magic gLdr sie nie zgodzi i pomiar LDR wystartuje od zera — i o to chodzi,
 // on jest nowy.
 //
-// ZANIM DOLOZYSZ TRZECIA ZMIENNA RTC: wstaw ja NAD gPir (gPir zostaje ostatni) i SPRAWDZ
-// `nm`, ze gPir nadal siedzi na 0x50000200. Jesli kiedys ta obserwacja o GCC przestanie sie
-// trzymac, wlasciwym lekiem jest JEDNA struktura z podstrukturami
-// (`struct { PirRtc pir; LdrRtc ldr; }` z osobnymi magicami w srodku), bo ukladu pol
-// WEWNATRZ struktury pilnuje ABI, a nie szczescie w kolejnosci emisji sekcji.
-RTC_NOINIT_ATTR LdrRtc gLdr;
-RTC_NOINIT_ATTR PirRtc gPir;
+// TRZECIA ZMIENNA RTC (v113): gPvRtc, wstawiona DOKLADNIE wg powyzszej zasady — NAD gLdr,
+// gPir zostaje ostatni. Liczy PRZYCZYNY porazek Modbusa do falownika (PvRtc, patrz Log.h) —
+// bez tego rozbicia noc 19/20 lipca 2026 (padl kanal Modbus, reczny restart o 00:15
+// skasowal wszystko, co moglo powiedziec dlaczego) nie zostawila ani jednego uzytecznego
+// licznika. Nazwa `gPv` jest juz zajeta (PvModel gPv{} nizej w tym pliku — biezacy odczyt
+// do UI/MQTT), stad `gPvRtc`.
+//
+// Adres gPvRtc NIE zostal w tej sesji potwierdzony realnym `nm` (nie bylo tu dzialajacego
+// zestawu narzedzi ESP32 — patrz notatka w PR/diffie). Jest WYLICZONY z sizeof(LdrRtc) =
+// 216 B (4 pola * 4 B + hist[16] + levelS[3] + events[8] * 3 pola + evHead/evCount/
+// candStartS/candStartEpoch/candLastPirS/candActive/evSlot): gLdr @ 0x500002c0 + 0xD8 =
+// 0x50000398. ZWERYFIKUJ `nm` na zbudowanym ELF-ie PRZED wydaniem (patrz automatyczna
+// bariera na adres gPir w tools/release.sh — ten sam pomysl, ale ten skrypt pilnuje
+// TYLKO gPir; gLdr i gPvRtc trzeba sprawdzic recznie).
+//
+// ZANIM DOLOZYSZ CZWARTA ZMIENNA RTC: wstaw ja NAD gPvRtc (gPvRtc, gLdr, gPir zostaja w
+// tej kolejnosci) i SPRAWDZ `nm`, ze cala trojka nadal stoi pod tymi samymi adresami.
+// Jesli kiedys ta obserwacja o GCC przestanie sie trzymac, wlasciwym lekiem jest JEDNA
+// struktura z podstrukturami (`struct { PirRtc pir; LdrRtc ldr; PvRtc pv; }` z osobnymi
+// magicami w srodku), bo ukladu pol WEWNATRZ struktury pilnuje ABI, a nie szczescie w
+// kolejnosci emisji sekcji.
+RTC_NOINIT_ATTR PvRtc gPvRtc;   // nowa (v113) — dostaje NAJWYZSZY adres: zadeklarowana
+                                // JAKO PIERWSZA z trojki, wiec GCC wyemituje jej sekcje
+                                // JAKO OSTATNIA (patrz "KOLEJNOSC ODWROTNA" wyzej)
+RTC_NOINIT_ATTR LdrRtc gLdr;    // zostaje 0x500002c0 — NIETKNIETE dolozeniem gPvRtc
+RTC_NOINIT_ATTR PirRtc gPir;    // zostaje 0x50000200 — pilnuje automat w tools/release.sh
 
 // Stan chwilowy ISR-a — ZOSTAJE W DRAM, celowo. To znaczniki millis(), a millis() zeruje
 // sie przy restarcie: w RTC przezylyby OTA jako liczby bez znaczenia i pierwsza przerwa
@@ -249,6 +268,23 @@ void ldrRtcBegin() {
   // za "wlasnie ktos wszedl" — czyli zamknalby kandydata, ktory przezyl aktualizacje.
   gLdrBookedRises = gPir.rises;
   gLdrLevelTickMs = millis();
+}
+
+// --- PV: liczniki przyczyn porazek Modbusa, PRZEZYWAJA restart (patrz PvRtc w Log.h) ---
+// Prostsza od pirRtcBegin()/ldrRtcBegin(): kazde pole PvRtc to licznik, dla ktorego 0
+// uczciwie znaczy "jeszcze sie nie zdarzylo" — w odroznieniu od PIR/LDR nie ma tu zadnego
+// pola typu "0xFFFFFFFF = brak danych", wiec po memset nie trzeba nic dodatkowo ustawiac.
+void pvRtcBegin() {
+  if (gPvRtc.magic == PV_RTC_MAGIC) {
+    ++gPvRtc.boots;
+    LOG("PV: liczniki przyczyn Modbusa z RTC przezyly restart — zbieram od %lu s, start #%lu\n",
+        (unsigned long)gPvRtc.collectedS, (unsigned long)gPvRtc.boots);
+  } else {
+    memset(&gPvRtc, 0, sizeof(gPvRtc));
+    gPvRtc.boots = 1;
+    gPvRtc.magic = PV_RTC_MAGIC;
+    LOG("PV: RTC puste lub z innego ukladu pol — zimny start, liczniki Modbusa wyzerowane\n");
+  }
 }
 
 // Krawedzie koszy sa POWTORZONE tekstem w /api/diag (ldr_hist_bins) — tak samo, jak przy
@@ -1217,6 +1253,9 @@ void setup() {
   // PO pirRtcBegin(), bo seeduje gLdrBookedRises z gPir.rises — przed nim czytaloby albo
   // smiec z RTC (zimny start), albo wartosc, ktora pirRtcBegin() zaraz wyzeruje.
   ldrRtcBegin();
+  // Bez zaleznosci od powyzszych dwoch (gPvRtc nie jest z nimi wspoldzielona) — kolejnosc
+  // wzgledem pirRtcBegin()/ldrRtcBegin() jest tu bez znaczenia.
+  pvRtcBegin();
   gDiagIsr = &diag();
   attachInterrupt(digitalPinToInterrupt(cfg::PIN_PIR), pirIsr, CHANGE);
 
@@ -1384,6 +1423,7 @@ void loop() {
     if (dt >= 1000) {
       gPir.collectedS += dt / 1000;
       gLdr.collectedS += dt / 1000;   // ten sam przyrost, osobny licznik — patrz LdrRtc
+      gPvRtc.collectedS += dt / 1000; // trzeci licznik, ten sam przyrost — patrz PvRtc
       gPirTickMs += (dt / 1000) * 1000;
 
       // --- LDR: detektor "zostawione swiatlo" (v108, patrz LdrRtc w Log.h) ---
@@ -1415,6 +1455,16 @@ void loop() {
       const time_t tt = time(nullptr);
       if (tt > 1700000000) {
         gLdr.startedEpoch = static_cast<uint32_t>(tt) - gLdr.collectedS;
+      }
+    }
+
+    // To samo dla PV (patrz PvRtc w Log.h) — wszystkie trzy liczniki (gPir/gLdr/gPvRtc)
+    // tykaja z JEDNEGO wspolnego `dt` wyzej, wiec "zbieram od" kazdego z nich opisuje
+    // dokladnie to samo okno czasu i mozna je porownywac 1:1.
+    if (gPvRtc.startedEpoch == 0) {
+      const time_t tt = time(nullptr);
+      if (tt > 1700000000) {
+        gPvRtc.startedEpoch = static_cast<uint32_t>(tt) - gPvRtc.collectedS;
       }
     }
 
