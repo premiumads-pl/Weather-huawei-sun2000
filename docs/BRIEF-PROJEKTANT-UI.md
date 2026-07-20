@@ -9,7 +9,7 @@
 
 ## 1. Czym jest to urządzenie
 
-Wyświetlacz informacyjny **wiszący na ścianie w łazience**. Patrzy się na niego **z odległości 1,5–3 m, przelotnie, często kątem oka**, zwykle robiąc coś innego.
+Wyświetlacz informacyjny **wiszący na ścianie w łazience**. Patrzy się na niego **z odległości do 2 m, przelotnie, często kątem oka**, zwykle robiąc coś innego.
 
 Urządzenie **samo przełącza ekrany w rotacji**. Czasy są zróżnicowane i zweryfikowane w kodzie:
 
@@ -53,6 +53,8 @@ Zmienia się automatycznie na podstawie czujnika światła, trzy poziomy (skala 
 | światło zapalone | **255** |
 
 Projekt musi być czytelny także przy **45** — kontrast nie może opierać się na subtelnych różnicach jasności, bo przy przygaszeniu ciemne kolory zlewają się ze sobą.
+
+Zmiana jasności **nie jest skokowa** — podświetlenie przechodzi rampą, krokiem 6 na klatkę, więc pełne zejście 255 → 45 trwa ułamek sekundy do ok. 2 s (zależnie od tego, ile progów przekracza naraz). Sam czujnik reaguje szybko: w zmierzonym przypadku zgaszenie światła przeprowadziło odczyt przez wszystkie trzy poziomy **w tej samej sekundzie**. Projektant nie musi tego uwzględniać w układzie — ale warto wiedzieć, że przejście jest płynne, nie migawkowe.
 
 ---
 
@@ -249,6 +251,29 @@ Punkt odniesienia: grafika z gry platformowej w stylu Mario — ceglane platform
 W panelu WWW mają pojawić się **przyciski „Wygląd V1" i „Wygląd V2"**. Wybór zapamiętywany w pamięci nieulotnej — ma przeżywać restart i aktualizację.
 
 **Konsekwencja:** dwa wyglądy to dwa komplety kodu rysującego w jednym firmware. Przy 260 kB wolnego flasha jest to wykonalne, ale im bardziej V2 opiera się na istniejących mechanizmach (te same fonty, te same prymitywy), tym taniej. Największe ryzyko to **nowy komplet ikon pogody** — patrz punkt 7.
+
+### 11.1 Co zrobić, gdy 260 kB nie wystarczy — rezerwy flasha
+
+Pytanie jest zasadne i odpowiedź brzmi: **tak, da się zwolnić więcej, zachowując OTA** — ale dwie drogi różnią się fundamentalnie kosztem operacyjnym.
+
+**Droga A — bez dotykania urządzenia (zalecana jako pierwsza).**
+Zmniejszyć to, co zajmuje najwięcej, czyli **ikony pogody (~98 kB)**. Dziś każda to pełny obraz 64×64 w RGB565 plus osobny kanał przezroczystości — 12 288 B na sztukę. Ikona pogodowa ma jednak kilkanaście barw, nie 65 tysięcy. Przejście na **paletę indeksowaną** (4 bity na piksel + mała tablica kolorów) daje ok. 4 kB na ikonę zamiast 12 kB, czyli **oszczędność rzędu 60–65 kB** przy identycznym wyglądzie. Dodatkowo obrazy z dużymi jednolitymi obszarami dobrze się pakują prostą kompresją.
+To jest **zwykła zmiana kodu — wchodzi przez aktualizację po sieci.**
+
+**Droga B — wymaga fizycznego podłączenia kablem.**
+Urządzenie używa gotowego układu partycji, w którym siedzi **nieużywany obszar SPIFFS o rozmiarze 128 kB** (zweryfikowane: żaden plik w projekcie go nie dotyka; istnieje tylko jako pozycja w tablicy). Własny układ partycji bez tego obszaru pozwala powiększyć **obie** partycje aplikacji o **64 kB każdą** — przy pełnym zachowaniu OTA, bo obie połówki zostają.
+
+**Ale:** tablica partycji leży poza obszarem, który aktualizacja po sieci potrafi nadpisać. Aktualizacja OTA wgrywa wyłącznie obraz aplikacji do drugiej połówki — **nie zmienia układu flasha**. Zmiana wymaga jednorazowego wgrania przez USB, a to urządzenie wisi w łazience i jest na stałe odłączone od komputera. Ta droga jest więc możliwa, ale realna tylko przy okazji, gdy urządzenie i tak trafi do warsztatu.
+
+**Podsumowanie rezerw:**
+
+| Źródło | Ile daje | Wymaga USB? |
+|---|---|---|
+| Paleta indeksowana zamiast pełnego koloru w ikonach | ~60–65 kB | **nie** |
+| Likwidacja nieużywanego obszaru SPIFFS | +64 kB na partycję | **tak** |
+| Zmniejszenie obszaru na zrzuty awaryjne (64 → 32 kB) | +16 kB na partycję | **tak**, i kosztem diagnostyki |
+
+Czyli realistycznie: **~325 kB bez ruszania urządzenia**, ~390 kB gdyby kiedyś trafiło pod kabel. Rezygnacja z OTA (jedna wielka partycja) dałaby ~1,9 MB, ale oznaczałaby koniec aktualizacji po sieci — **odpada**.
 
 ---
 
