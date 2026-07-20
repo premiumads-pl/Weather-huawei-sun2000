@@ -1357,6 +1357,13 @@ void setup() {
 
   portal::setViewHandler([](int i) { ui.pinView(i); },
                          [](int& cur, int& pin) { ui.viewState(cur, pin); });
+  // Podswietlenie: test sprzetu + podglad wysterowania (patrz Portal.h).
+  portal::setBacklightHandler(
+      [](uint8_t v, uint32_t ms) { ui.testBacklight(v, ms); },
+      [](uint8_t& cur, uint8_t& tgt) {
+        cur = ui.backlightCurrent();
+        tgt = ui.backlightTarget();
+      });
 
   // BLE dopiero TERAZ — bufor ekranu (66 kB) jest już zaalokowany, więc stos
   // Bluetooth bierze z tego, co zostało, a nie odwrotnie. Gdyby zabrakło sterty,

@@ -83,6 +83,9 @@ struct WifiCfgGuard {
 void (*gScreenshot)(WiFiClient&) = nullptr;
 void (*gViewSet)(int) = nullptr;
 void (*gViewGet)(int&, int&) = nullptr;
+// Podswietlenie — patrz setBacklightHandler() w Portal.h.
+void (*gBlTest)(uint8_t, uint32_t) = nullptr;
+void (*gBlGet)(uint8_t&, uint8_t&) = nullptr;
 char apIpStr[20] = "192.168.4.1";
 
 const char kApSsid[] = "Pogoda-Setup";
@@ -1232,6 +1235,15 @@ void apiDiag() {
   JsonObject sen = j["sensors"].to<JsonObject>();
   sen["ldr_raw"] = d.ldrRaw;
   sen["ldr_mv"] = d.ldrMv;
+  // Co kod REALNIE wystawia na PWM podswietlenia. Rozstrzyga spor "ekran sie nie
+  // przyciemnia": jesli bl_current spada, a ekran swieci pelnia — problem jest
+  // w okablowaniu pinu, nie w logice (patrz WeatherUi::backlightCurrent()).
+  if (gBlGet != nullptr) {
+    uint8_t blCur = 0, blTgt = 0;
+    gBlGet(blCur, blTgt);
+    sen["bl_current"] = blCur;
+    sen["bl_target"] = blTgt;
+  }
   sen["pir"] = d.pirState;
   sen["pir_last_s"] = ago(d.pirLastAt);
 
@@ -1542,6 +1554,28 @@ void apiCoredumpErase() {
   String out;
   serializeJson(o, out);
   server.send(200, "application/json", out);
+}
+
+// Test podswietlenia: /api/bl?v=0..255&ms=5000 — wymus jasnosc na chwile, potem
+// automat z LDR wraca sam. Po co: wlasciciel zglosil, ze ekran sie nie przyciemnia,
+// a kod wyglada poprawnie. Jesli po tym wywolaniu ekran NIE zmieni jasnosci, to pin
+// podswietlenia nie jest sterowany z GPIO i zaden software tego nie naprawi.
+// Ograniczenie czasowe jest CELOWE — urzadzenie nie ma klawiatury, wiec trwale 0
+// zostawiloby czarny ekran bez drogi powrotu.
+void apiBacklight() {
+  if (gBlTest == nullptr) {
+    server.send(200, "application/json", "{\"ok\":false,\"msg\":\"brak obslugi\"}");
+    return;
+  }
+  const int v = server.hasArg("v") ? server.arg("v").toInt() : 255;
+  long ms = server.hasArg("ms") ? server.arg("ms").toInt() : 5000;
+  if (ms < 500) ms = 500;
+  if (ms > 30000) ms = 30000;   // gorny limit, zeby test nie zostal na noc
+  gBlTest(static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v)), static_cast<uint32_t>(ms));
+  char buf[96];
+  snprintf(buf, sizeof(buf), "{\"ok\":true,\"v\":%d,\"ms\":%ld}",
+           v < 0 ? 0 : (v > 255 ? 255 : v), ms);
+  server.send(200, "application/json", buf);
 }
 
 void apiView() {
@@ -1932,6 +1966,7 @@ void routes() {
   server.on("/api/coredump/raw", HTTP_GET, apiCoredumpRaw);
   server.on("/api/screen", apiScreen);
   server.on("/api/view", apiView);
+  server.on("/api/bl", apiBacklight);
   server.on("/api/ble", HTTP_GET, apiBleList);
   server.on("/api/ble", HTTP_POST, apiBleSet);
   server.on("/api/blegw", HTTP_POST, apiBleGw);
@@ -1975,6 +2010,11 @@ void scanUnlock() {
   if (gScanMx != nullptr) {
     xSemaphoreGive(gScanMx);
   }
+}
+
+void setBacklightHandler(void (*testFn)(uint8_t, uint32_t), void (*getFn)(uint8_t&, uint8_t&)) {
+  gBlTest = testFn;
+  gBlGet = getFn;
 }
 
 void setViewHandler(void (*setFn)(int), void (*getFn)(int&, int&)) {

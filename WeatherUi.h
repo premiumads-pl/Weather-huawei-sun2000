@@ -101,7 +101,29 @@ class WeatherUi {
   }
 
   void raiseAlert(const Alert& a, uint32_t nowMs);
-  void setBacklightTarget(uint8_t v) { blTarget_ = v; }
+  void setBacklightTarget(uint8_t v) {
+    // Wymuszenie z panelu (testBacklight) ma pierwszenstwo nad automatem z LDR —
+    // inaczej petla loop() nadpisywalaby test w nastepnej klatce i nie dalo by sie
+    // niczego sprawdzic zdalnie.
+    if (blForceUntil_ != 0) return;
+    blTarget_ = v;
+  }
+
+  // Diagnostyka podswietlenia: co kod REALNIE wystawia na PWM. Wlasciciel zglosil,
+  // ze ekran "nie przyciemnia sie w ogole" — a kod wyglada poprawnie. Te dwie liczby
+  // rozstrzygaja spor: jesli blCurrent spada do 45, a ekran swieci pelnia, to znaczy
+  // ze pin podswietlenia NIE jest sterowany z GPIO (np. wpiety na stale do zasilania)
+  // i zaden software tego nie naprawi. Bez tego pomiaru zgadywalibysmy.
+  uint8_t backlightCurrent() const { return blCurrent_; }
+  uint8_t backlightTarget() const { return blTarget_; }
+
+  // Test sprzetu: wymus jasnosc na `ms` milisekund, potem wroc do automatu z LDR.
+  // Ograniczone czasowo CELOWO — urzadzenie wisi w lazience bez klawiatury, wiec
+  // pomylkowe ustawienie 0 na stale zostawiloby czarny ekran bez drogi powrotu.
+  void testBacklight(uint8_t v, uint32_t ms) {
+    blForceUntil_ = millis() + ms;
+    blTarget_ = v;
+  }
   void tickBacklight();
 
  private:
@@ -188,6 +210,8 @@ class WeatherUi {
   // podświetlenie
   uint8_t blCurrent_ = 0;
   uint8_t blTarget_ = 255;
+  // 0 = automat z LDR rzadzi. Niezerowe = trwa test z panelu, do tego millis().
+  uint32_t blForceUntil_ = 0;
 
   // temperatura rdzenia ESP32-S3 (odczyt co 2 s)
   float cpuTempC_ = 0.f;

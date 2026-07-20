@@ -274,6 +274,12 @@ bool WeatherUi::begin() {
 }
 
 void WeatherUi::tickBacklight() {
+  // Koniec wymuszenia z panelu — oddajemy sterowanie automatowi z LDR. Sprawdzane
+  // TU, bo tickBacklight() jest wolane z kazdej sciezki rysowania, wiec test wygasnie
+  // nawet gdyby petla glowna akurat stala na ekranie startowym albo w portalu.
+  if (blForceUntil_ != 0 && static_cast<int32_t>(millis() - blForceUntil_) >= 0) {
+    blForceUntil_ = 0;
+  }
   if (blCurrent_ == blTarget_) {
     return;
   }

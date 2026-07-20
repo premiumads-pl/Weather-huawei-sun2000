@@ -46,4 +46,9 @@ void setScreenshotHandler(void (*fn)(WiFiClient&));
 // Sterowanie ekranem z panelu: set(idx) — idx<0 wraca do rotacji; get(cur, pin).
 void setViewHandler(void (*setFn)(int), void (*getFn)(int&, int&));
 
+// Podswietlenie: test sprzetu (wymus jasnosc na czas) + podglad, co kod realnie
+// wystawia na PWM. Sluzy do rozstrzygniecia, czy pin podswietlenia jest w ogole
+// sterowany z GPIO — patrz komentarz przy WeatherUi::backlightCurrent().
+void setBacklightHandler(void (*testFn)(uint8_t, uint32_t), void (*getFn)(uint8_t&, uint8_t&));
+
 }  // namespace portal
