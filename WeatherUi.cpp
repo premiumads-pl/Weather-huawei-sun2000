@@ -1037,12 +1037,17 @@ void WeatherUi::drawViewRetro(TFT_eSPI& spr, int ox, float t, const WeatherModel
   {
     auto cloud = [&](int ccx, int cyTop, int scale) {
       static const int kUnits[4] = {6, 14, 18, 14};
-      const int unit = 4 * scale;
+      // JEDNOSTKA = skala, a NIE 4*skala. Pierwsza wersja mnozyla przez 4 i chmura
+      // przy scale=3 miala 18*12 = 216 px szerokosci — pol ekranu bieli, ktora
+      // zaslaniala temperature (zweryfikowane zrzutem z urzadzenia). Tu jednostki
+      // 6/14/18/14 sa w PIKSELACH skali: przy scale=3 daje to 54 px, czyli chmurke.
+      const int unit = scale;
+      const int band = 2 * scale;   // wysokosc jednego pasa chmury
       int y = cyTop, lastW = kUnits[3] * unit;
       for (int i = 0; i < 4; ++i) {
         const int wpx = kUnits[i] * unit;
-        spr.fillRect(ox + ccx - wpx / 2, y, wpx, unit, rcol::CLOUD);
-        y += unit;
+        spr.fillRect(ox + ccx - wpx / 2, y, wpx, band, rcol::CLOUD);
+        y += band;
         lastW = wpx;
       }
       // Podswietlony spod chmury — jakby slonce przebijalo od dolu; ten sam trik
@@ -1192,13 +1197,19 @@ void WeatherUi::drawViewRetroFooter(TFT_eSPI& dst, const WeatherModel& w) {
   retroStrShadowed(dst, "WILGOC", 8, labelY, 2, rcol::YEL);
   retroStrShadowed(dst, buf, 8, valueY, 2, rcol::WHITE);
 
-  snprintf(buf, sizeof(buf), "%d KM/H", static_cast<int>(lroundf(w.current.windKmh)));
-  retroStrShadowed(dst, "WIATR", 112, labelY, 2, rcol::YEL);
-  retroStrShadowed(dst, buf, 112, valueY, 2, rcol::CYAN);
+  // Kolumny 8 / 116 / 236 i wiatr BEZ spacji przed jednostka. Pierwsza wersja miala
+  // 8/112/240 oraz "%d KM/H": przy dwucyfrowym wietrze wartosc konczyla sie na 224 px,
+  // a cisnienie zaczynalo na 240 — 16 px przerwy przy znakach szerokich na 16 px
+  // czytalo sie jak jedno slowo ("13 KM/H1012" na zrzucie z urzadzenia). Teraz
+  // najszerszy przypadek to "13KM/H" = 96 px (116..212), czyli 24 px do nastepnej
+  // kolumny. Trzycyfrowy wiatr (huragan) siegnie 228 px i nadal sie nie sklei.
+  snprintf(buf, sizeof(buf), "%dKM/H", static_cast<int>(lroundf(w.current.windKmh)));
+  retroStrShadowed(dst, "WIATR", 116, labelY, 2, rcol::YEL);
+  retroStrShadowed(dst, buf, 116, valueY, 2, rcol::CYAN);
 
   snprintf(buf, sizeof(buf), "%d", static_cast<int>(lroundf(w.current.pressureHpa)));
-  retroStrShadowed(dst, "HPA", 240, labelY, 2, rcol::YEL);
-  retroStrShadowed(dst, buf, 240, valueY, 2, rcol::WHITE);
+  retroStrShadowed(dst, "HPA", 236, labelY, 2, rcol::YEL);
+  retroStrShadowed(dst, buf, 236, valueY, 2, rcol::WHITE);
 }
 
 // ------------------------------------------------------------ WIDOK 1: TERAZ --
