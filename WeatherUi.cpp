@@ -25,6 +25,8 @@
 #include "Settings.h"
 #include "Version.h"
 #include "WeatherIcons.h"
+#include "RetroFont.h"
+#include "RetroSprites.h"
 
 // v111: widok PAMIEC czyta te trzy wprost z ESP-IDF (heap_caps_*/partycje/OTA) —
 // juz i tak zlinkowane (ESP.getFreeHeap(), Ota.cpp, OtaGuard.cpp korzystaja z tego
@@ -342,7 +344,7 @@ void WeatherUi::drawColorTest() {
 // i nie mieszczilo sie, a "FOTOWOLTAIKA" (najdluzsza z tych ponizej) ma 112 px.
 // Indeks = cfg::VIEW_*, pilnuje tego static_assert w drawView().
 const char* const kViewNames[cfg::VIEW_COUNT] = {
-    "TERAZ", "GODZINY", "RADAR", "5 DNI", "W DOMU", "PIEC", "FOTOWOLTAIKA",
+    "RETRO", "TERAZ", "GODZINY", "RADAR", "5 DNI", "W DOMU", "PIEC", "FOTOWOLTAIKA",
     "SAMOLOTY", "PAMIĘĆ", "RUCH", "STATYSTYKI"};
 
 // Zdrowie calego systemu w jednej liczbie: 0 = OK, 1 = uwaga, 2 = awaria.
@@ -703,6 +705,500 @@ static void drawWeatherDesc(TFT_eSPI& spr, int cx, const char* text, const char*
   }
   plCenter(spr, PLF14, a, cx, 111, color);
   plCenter(spr, PLF14, b, cx, 125, color);
+}
+
+// -------------------------------------------------------------- WIDOK 0: RETRO --
+// Ekran ozdobny w stylu gry platformowej z przelomu lat 80/90 (Mario), pierwszy w
+// rotacji (cfg::VIEW_RETRO == 0). Rysuje WLASNY HUD gorny i dolny w stylu 8-bit —
+// patrz komentarze w WeatherUi.h przy deklaracji i w paintFrame()/render() przy
+// miejscach, gdzie z tego powodu omija wspolna belke/pasek postepu/stopke PV.
+// Grafika (font, sprite Maria) jest w RetroFont.h / RetroSprites.h — tu tylko
+// ja rysujemy i doklejamy tlo (niebo, slonce, chmury, miasto, platforma, blok "?").
+
+namespace {
+
+// Paleta z zaakceptowanego mockupu (RGB888 -> RGB565 przez C565() z Colors.h).
+// Osobna od namespace col:: — to inny jezyk wizualny (gra 8-bitowa), mieszanie
+// jej z paleta panelu danych zacieraloby granice miedzy dwoma stylami ekranow.
+namespace rcol {
+// SKY_T/SKY_M/SKY_B (z mockupu) NIE zyja tu jako gotowe RGB565 — gradient nieba
+// (patrz drawViewRetro) kwantyzuje kazdy kanal PRZED spakowaniem do 565, wiec
+// potrzebuje surowych skladowych 0-255, nie tego zapakowanego koloru. Zeby nie
+// trzymac tych samych trzech liczb w dwoch miejscach (i nie ryzykowac rozjazdu),
+// stale RGB888 sa inline w petli gradientu, a tu zostaje tylko komentarz z ich
+// nazwami dla latwego dopasowania do mockupu: SKY_T=(74,58,107), SKY_M=(122,106,155),
+// SKY_B=(150,184,216). SKY_M ponizej to jedyna z trzech, ktora jest tez uzywana
+// jako gotowy kolor (blaknięcie napisu "+1" w kolor nieba).
+constexpr uint16_t SKY_M   = C565(122, 106, 155);
+constexpr uint16_t SUN_A   = C565(255, 208, 112);
+constexpr uint16_t SUN_B   = C565(255, 144, 80);
+constexpr uint16_t CLOUD   = C565(232, 240, 250);
+constexpr uint16_t CLOUD_E = C565(255, 232, 160);
+constexpr uint16_t BRICK   = C565(200, 96, 88);
+constexpr uint16_t BRICK_D = C565(160, 72, 64);
+constexpr uint16_t BRICK_L = C565(232, 136, 120);
+constexpr uint16_t MOSS    = C565(136, 192, 64);
+constexpr uint16_t CITY_1  = C565(106, 122, 155);
+constexpr uint16_t CITY_2  = C565(88, 100, 132);
+constexpr uint16_t RED     = C565(224, 64, 64);
+constexpr uint16_t WHITE   = C565(248, 248, 248);
+constexpr uint16_t YEL     = C565(248, 208, 32);
+constexpr uint16_t CYAN    = C565(120, 224, 240);
+constexpr uint16_t HUD     = C565(28, 24, 44);
+constexpr uint16_t HUD_LN  = C565(70, 60, 100);
+constexpr uint16_t BLACK   = C565(0, 0, 0);
+}  // namespace rcol
+
+// ---- tekst RetroFontu ---------------------------------------------------------
+
+// Jeden znak jako siatka kwadratow scale x scale. Sasiadujace w poziomie zapalone
+// bity sklejamy w JEDEN szerszy fillRect zamiast osobnego wywolania na kazda
+// kolumne — przy s=6 (wielka temperatura) i przy dwoch wlasnych HUD-ach na tym
+// ekranie to roznica miedzy setkami a tysiacami wywolan na klatke (patrz ograniczenie
+// fps w zadaniu: nigdy pojedynczy prymityw na piksel po calym ekranie).
+void retroChar(TFT_eSPI& s, char c, int x, int y, int scale, uint16_t color) {
+  const int idx = retrofont::index(c);
+  if (idx < 0) return;   // znak spoza zestawu (patrz retroAscii) — po prostu pomijamy
+  for (int row = 0; row < 8; ++row) {
+    const uint8_t bits = pgm_read_byte(&retrofont::GLYPHS[idx][row]);
+    if (bits == 0) continue;
+    int col = 0;
+    while (col < 8) {
+      if (!(bits & (0x80 >> col))) { ++col; continue; }
+      int end = col;
+      while (end < 8 && (bits & (0x80 >> end))) ++end;
+      s.fillRect(x + col * scale, y + row * scale, (end - col) * scale, scale, color);
+      col = end;
+    }
+  }
+}
+
+// Napis: krok miedzy znakami to 9*scale (8 px znaku + 1 px odstepu). GLYPHS same w
+// sobie nie rezerwuja marginesu — niektore (np. '0') rysuja az do kolumny 7 — wiec
+// bez tego dodatkowego odstepu litery by sie stykaly.
+int retroStr(TFT_eSPI& s, const char* t, int x, int y, int scale, uint16_t color) {
+  int cx = x;
+  for (const char* p = t; *p; ++p) {
+    retroChar(s, *p, cx, y, scale, color);
+    cx += 9 * scale;
+  }
+  return cx - x;
+}
+
+// Kazdy napis na tym ekranie dostaje czarny cien, przesuniety o `scale` w prawo
+// i w dol, rysowany PRZED wlasciwym tekstem — bez tego jasne litery gina na tle
+// nieba/chmur (niebo tego ekranu jest zamierzenie ciemne u gory, patrz kwantyzacja
+// nizej).
+int retroStrShadowed(TFT_eSPI& s, const char* t, int x, int y, int scale, uint16_t color) {
+  retroStr(s, t, x + scale, y + scale, scale, rcol::BLACK);
+  return retroStr(s, t, x, y, scale, color);
+}
+
+// UTF-8 -> WIELKIE ASCII zrozumiale dla RetroFontu (ktory nie ma malych liter ani
+// polskich znakow — patrz naglowek RetroFont.h). Polskie litery to w UTF-8 zawsze
+// sekwencje DWUBAJTOWE (0xC3/0xC4/0xC5 + drugi bajt) — trzeba je rozpoznac jawnie:
+// bez tego kazdy z dwoch bajtow lecialby do fontu osobno, a to albo znika (indeks
+// -1), albo przypadkiem trafia w zupelnie inny, przypadkowy znak z tablicy glifow.
+// Uzyte i dla nazwy miasta (z ustawien — uzytkownik moze wpisac cokolwiek), i dla
+// opisu pogody (patrz drawViewRetro).
+void retroAscii(char* dst, size_t dstSize, const char* src) {
+  size_t o = 0;
+  auto p = reinterpret_cast<const unsigned char*>(src);
+  while (*p != 0 && o + 1 < dstSize) {
+    char rep = 0;
+    if (p[0] == 0xC4 && p[1] != 0) {
+      switch (p[1]) {
+        case 0x84: case 0x85: rep = 'A'; break;  // Ą ą
+        case 0x86: case 0x87: rep = 'C'; break;  // Ć ć
+        case 0x98: case 0x99: rep = 'E'; break;  // Ę ę
+      }
+      if (rep) dst[o++] = rep;
+      p += 2;
+      continue;
+    }
+    if (p[0] == 0xC5 && p[1] != 0) {
+      switch (p[1]) {
+        case 0x81: case 0x82: rep = 'L'; break;  // Ł ł
+        case 0x83: case 0x84: rep = 'N'; break;  // Ń ń
+        case 0x9A: case 0x9B: rep = 'S'; break;  // Ś ś
+        case 0xB9: case 0xBA: rep = 'Z'; break;  // Ź ź
+        case 0xBB: case 0xBC: rep = 'Z'; break;  // Ż ż
+      }
+      if (rep) dst[o++] = rep;
+      p += 2;
+      continue;
+    }
+    if (p[0] == 0xC3 && p[1] != 0) {
+      switch (p[1]) {
+        case 0x93: case 0xB3: rep = 'O'; break;  // Ó ó
+      }
+      if (rep) dst[o++] = rep;
+      p += 2;
+      continue;
+    }
+    char c = static_cast<char>(*p);
+    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    dst[o++] = c;
+    ++p;
+  }
+  dst[o] = '\0';
+}
+
+// ---- deterministyczny "szum" ---------------------------------------------------
+
+// Hash liczby -> liczba: to samo wejscie ZAWSZE daje to samo wyjscie. Sylwetka
+// miasta i kepki mchu potrzebuja czegos, co WYGLADA losowo, ale rand()/millis()
+// jako zrodlo dawaloby przy KAZDYM przerysowaniu (20 razy na sekunde) inny uklad —
+// tlo migotaloby zamiast stac w miejscu.
+uint32_t hash32(uint32_t x) {
+  x ^= x >> 16; x *= 0x7feb352dU;
+  x ^= x >> 15; x *= 0x846ca68bU;
+  x ^= x >> 16;
+  return x;
+}
+
+// Jedna warstwa dachow: bloki 12-24 px szerokie, 14-54 px wysokie, z kilkoma
+// jasniejszymi "oknami". `seed` rozroznia warstwy (dalsza/blizsza), inaczej
+// bylyby identyczne, tylko przesuniete o 6 px w pionie.
+void drawCityLayer(TFT_eSPI& s, int ox, int baseY, uint16_t color, uint32_t seed) {
+  constexpr uint16_t kWin = C565(255, 224, 160);   // cieple, zapalone okno
+  int x = 0, i = 0;
+  while (x < W) {
+    const uint32_t h1 = hash32(seed + static_cast<uint32_t>(i) * 131u);
+    const uint32_t h2 = hash32(seed + static_cast<uint32_t>(i) * 131u + 17u);
+    const int bw = 12 + static_cast<int>(h1 % 13u);   // 12..24
+    const int bh = 14 + static_cast<int>(h2 % 41u);   // 14..54
+    const int by = baseY - bh;
+    s.fillRect(ox + x, by, bw, bh, color);
+    for (int wy = by + 3; wy + 2 <= baseY - 3; wy += 6) {
+      for (int wx = x + 3; wx + 2 <= x + bw - 3; wx += 6) {
+        // Nie kazde okno swieci — ktore, decyduje hash (zawsze ten sam wynik).
+        const uint32_t hw = hash32(seed + static_cast<uint32_t>(wx) * 977u +
+                                    static_cast<uint32_t>(wy) * 131u);
+        if ((hw & 3u) == 0u) {
+          s.fillRect(ox + wx, wy, 2, 2, kWin);
+        }
+      }
+    }
+    x += bw + 2;
+    ++i;
+  }
+}
+
+// ---- Mario ----------------------------------------------------------------------
+
+// Sprite 16x16 (nibble/piksel — patrz RetroSprites.h), powiekszony do scale x scale.
+// Indeks 0 w palecie = przezroczysty (pomijamy). Serie tego samego koloru w
+// poziomie sklejamy w jeden fillRect (jak w retroChar) — bez tego kazda klatka
+// biegu to 256 wywolan, x4 klatki, 20 razy na sekunde.
+void drawMario(TFT_eSPI& s, int x, int y, int frame, int scale) {
+  if (x + mariospr::W * scale < 0 || x > W) return;   // cala klatka poza ekranem
+  const uint8_t* d = mariospr::DATA[frame];
+  for (int row = 0; row < mariospr::H; ++row) {
+    int col = 0;
+    while (col < mariospr::W) {
+      const uint8_t byte = pgm_read_byte(&d[row * (mariospr::W / 2) + col / 2]);
+      const uint8_t nib = (col % 2 == 0) ? (byte >> 4) : (byte & 0x0F);
+      if (nib == 0) { ++col; continue; }
+      int end = col + 1;
+      while (end < mariospr::W) {
+        const uint8_t b2 = pgm_read_byte(&d[row * (mariospr::W / 2) + end / 2]);
+        const uint8_t n2 = (end % 2 == 0) ? (b2 >> 4) : (b2 & 0x0F);
+        if (n2 != nib) break;
+        ++end;
+      }
+      const uint16_t color = pgm_read_word(&mariospr::PALETTE[nib]);
+      s.fillRect(x + col * scale, y + row * scale, (end - col) * scale, scale, color);
+      col = end;
+    }
+  }
+}
+
+// Grzybek premii: noga jasnobezowa, czerwony kapelusz z bialymi kropkami. Rysowany
+// proceduralnie (nie sprite'em z RetroSprites.h) — to jedyne miejsce na tym
+// ekranie, ktore go potrzebuje, wiec nie oplaca sie trzymac dla niego osobnej
+// bitmapy w plikach z grafika.
+void drawMushroom(TFT_eSPI& s, int x, int groundY) {
+  constexpr int w = 14, capH = 6, stemH = 6;
+  constexpr uint16_t stem = C565(240, 232, 208);
+  constexpr uint16_t cap = C565(216, 48, 48);
+  constexpr uint16_t capShade = C565(150, 32, 32);
+  constexpr uint16_t white = C565(248, 248, 248);
+  const int y0 = groundY - capH - stemH;
+  // KOLEJNOSC MA ZNACZENIE: kapelusz (pelna wysokosc capH*2, zeby wyszedl okragly
+  // dol, nie plaski) rysujemy PRZED noga. Gdyby noga posla pierwsza, kapelusz —
+  // wyzszy i rysowany na calej szerokosci az do y0+capH*2 — zamalowalby ja
+  // calkowicie (oba prostokaty konczylyby sie na tym samym dolnym brzegu). Noga
+  // na wierzchu wystaje spod zaokraglonego brzegu kapelusza, tak jak w oryginale.
+  s.fillRoundRect(x, y0, w, capH * 2, capH, cap);
+  s.fillRect(x + 3, y0 + capH, w - 6, stemH, stem);
+  s.drawFastHLine(x + 1, y0 + capH, w - 2, capShade);
+  s.fillRect(x + 2, y0 + 1, 2, 2, white);
+  s.fillRect(x + w - 4, y0 + 1, 2, 2, white);
+  s.fillRect(x + w / 2 - 1, y0 + 3, 2, 2, white);
+}
+
+// Znak zapytania na bloku premii. NIE idzie przez RetroFont — ten w ogole nie
+// deklaruje '?' w FIRST_CHARS (RetroFont.h), a to jednorazowa ikona gry, nie
+// tekst, wiec nie ma powodu poszerzac wspolnego fontu dla jednego miejsca.
+void drawQMark(TFT_eSPI& s, int x, int y, int scale, uint16_t color) {
+  static const uint8_t kBits[8] = {0x3C, 0x66, 0x06, 0x0C, 0x18, 0x00, 0x18, 0x00};
+  for (int row = 0; row < 8; ++row) {
+    const uint8_t bits = kBits[row];
+    for (int col = 0; col < 8; ++col) {
+      if (bits & (0x80 >> col)) {
+        s.fillRect(x + col * scale, y + row * scale, scale, scale, color);
+      }
+    }
+  }
+}
+
+}  // namespace
+
+void WeatherUi::drawViewRetro(TFT_eSPI& spr, int ox, float t, const WeatherModel& w,
+                               uint32_t nowMs) {
+  // Brak wjazdu/wyjazdu osobno od reszty tresci — cala klatka (HUD wlacznie)
+  // slizga sie razem pod `ox`, tak jak w kazdym innym drawView*.
+  (void)t;
+  const WeatherSnapshot& c = w.current;
+
+  // ================================================================= HUD gorny --
+  spr.fillRect(ox, 0, W, 25, rcol::HUD);
+  spr.drawFastHLine(ox, 25, W, rcol::HUD_LN);
+
+  {
+    // Nazwa miasta jest z ustawien (uzytkownik moze ja zmienic w panelu WWW) —
+    // retroAscii() zabezpiecza przed polskimi znakami, ktorych ten font nie ma.
+    char cityBuf[40];
+    retroAscii(cityBuf, sizeof(cityBuf), settings().city);
+    retroStrShadowed(spr, cityBuf, ox + 6, 4, 2, rcol::WHITE);
+  }
+  {
+    // Zegar scienny czytamy swiezo (jak drawHeader/drawViewMotion), NIE z nowMs —
+    // to kalendarz, nie animacja. Rozjazd o pojedyncza sekunde miedzy paskami
+    // zrzutu (albo miedzy dwiema polowkami przejscia) nikomu nie zaszkodzi — ten
+    // sam kompromis co w drawHeader.
+    const time_t now = time(nullptr);
+    char dateBuf[8], timeBuf[8];
+    if (now < 1700000000) {
+      snprintf(dateBuf, sizeof(dateBuf), "--.--");
+      snprintf(timeBuf, sizeof(timeBuf), "--:--");
+    } else {
+      struct tm tmv{};
+      localtime_r(&now, &tmv);
+      snprintf(dateBuf, sizeof(dateBuf), "%02d-%02d", tmv.tm_mday, tmv.tm_mon + 1);
+      snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+    }
+    retroStrShadowed(spr, dateBuf, ox + 118, 4, 2, rcol::YEL);
+    retroStrShadowed(spr, timeBuf, ox + 214, 4, 2, rcol::CYAN);
+  }
+
+  // ===================================================================== niebo --
+  // Kwantyzacja (v & 0xF0, 16 poziomow na kanal zamiast 256) to CELOWY "retro
+  // banding" z gry 8-bitowej — nie oszczednosc i nie przypadek zaokraglenia.
+  // Gladki gradient (bez tej linijki) wygladalby na tym ekranie jak z INNEGO,
+  // wspolczesnego widoku pogodowego — ktos "poprawiajac" to na czysty lerp565
+  // zepsulby caly efekt.
+  constexpr int skyTop = 26, skyBot = 186;
+  for (int y = skyTop; y < skyBot; ++y) {
+    const float f = static_cast<float>(y - skyTop) / static_cast<float>(skyBot - skyTop - 1);
+    uint8_t r, g, b;
+    if (f < 0.5f) {
+      const float ff = f / 0.5f;
+      r = static_cast<uint8_t>(74.f + (122.f - 74.f) * ff);
+      g = static_cast<uint8_t>(58.f + (106.f - 58.f) * ff);
+      b = static_cast<uint8_t>(107.f + (155.f - 107.f) * ff);
+    } else {
+      const float ff = (f - 0.5f) / 0.5f;
+      r = static_cast<uint8_t>(122.f + (150.f - 122.f) * ff);
+      g = static_cast<uint8_t>(106.f + (184.f - 106.f) * ff);
+      b = static_cast<uint8_t>(155.f + (216.f - 155.f) * ff);
+    }
+    spr.drawFastHLine(ox, y, W, C565(r & 0xF0, g & 0xF0, b & 0xF0));
+  }
+
+  // ===================================================================== slonce --
+  {
+    constexpr int cx = 250, cy = 58, r = 26, cell = 4;
+    for (int by = cy - r; by < cy + r; by += cell) {
+      for (int bx = cx - r; bx < cx + r; bx += cell) {
+        const int dx = (bx + cell / 2) - cx;
+        const int dy = (by + cell / 2) - cy;
+        if (dx * dx + dy * dy > r * r) continue;   // poza okregiem — pomijamy kwadrat
+        // Kwadraty 4x4, NIE okragle piksele: to slonce z gry 8-bitowej (Mario), a
+        // reszta apki rysuje pogode oblymi ikonami (WeatherIcons.h) — okrag by tu
+        // zaprzeczyl calej stylistyce tego jednego ekranu.
+        spr.fillRect(ox + bx, by, cell, cell, dy < -4 ? rcol::SUN_A : rcol::SUN_B);
+      }
+    }
+  }
+
+  // ===================================================================== chmury --
+  {
+    auto cloud = [&](int ccx, int cyTop, int scale) {
+      static const int kUnits[4] = {6, 14, 18, 14};
+      const int unit = 4 * scale;
+      int y = cyTop, lastW = kUnits[3] * unit;
+      for (int i = 0; i < 4; ++i) {
+        const int wpx = kUnits[i] * unit;
+        spr.fillRect(ox + ccx - wpx / 2, y, wpx, unit, rcol::CLOUD);
+        y += unit;
+        lastW = wpx;
+      }
+      // Podswietlony spod chmury — jakby slonce przebijalo od dolu; ten sam trik
+      // co w tlach klasycznych platformowek z tamtej epoki.
+      spr.fillRect(ox + ccx - lastW / 2, y, lastW, unit, rcol::CLOUD_E);
+    };
+    cloud(196, 40, 3);
+    cloud(140, 96, 2);
+  }
+
+  // ===================================================================== miasto --
+  // Deterministyczny generator (hash32 z indeksu budynku, ZERO stanu/seeda od
+  // czasu) — inaczej sylwetka migotalaby przy kazdym z 20 przerysowan na sekunde.
+  drawCityLayer(spr, ox, 176, rcol::CITY_2, 1000u);   // dalsza warstwa — rysowana pierwsza
+  drawCityLayer(spr, ox, 182, rcol::CITY_1, 7000u);   // blizsza warstwa — na wierzchu
+
+  // =============================================================== blok "?" -----
+  {
+    constexpr int qx = 268, qy = 112, qs = 24;
+    spr.fillRect(ox + qx, qy, qs, qs, rcol::RED);
+    spr.drawFastHLine(ox + qx, qy, qs, lerp565(rcol::RED, rcol::WHITE, 0.35f));
+    spr.drawFastVLine(ox + qx, qy, qs, lerp565(rcol::RED, rcol::WHITE, 0.20f));
+    spr.drawFastHLine(ox + qx, qy + qs - 1, qs, lerp565(rcol::RED, rcol::BLACK, 0.35f));
+    spr.drawFastVLine(ox + qx + qs - 1, qy, qs, lerp565(rcol::RED, rcol::BLACK, 0.20f));
+    drawQMark(spr, ox + qx, qy, 3, rcol::YEL);
+  }
+
+  // ============================================================= platforma ------
+  {
+    constexpr int py0 = 186, py1 = 196;
+    spr.fillRect(ox, py0, W, py1 - py0, rcol::BRICK_D);   // spoiny jako tlo
+    for (int by = py0; by < py1; by += 8) {
+      // "Running bond": co drugi rzad przesuniety o pol cegly, inaczej spoiny
+      // ulozylyby sie w rowna siatke i wygladaloby to jak plytki, nie mur.
+      const int rowIdx = (by - py0) / 8;
+      const int offset = (rowIdx % 2) * 4;
+      const int remain = py1 - by;
+      const int bh = remain < 7 ? remain : 7;
+      if (bh <= 0) continue;
+      for (int bx = -offset; bx < W; bx += 8) {
+        spr.fillRect(ox + bx, by, 7, bh, rcol::BRICK);
+      }
+    }
+    spr.drawFastHLine(ox, py0, W, rcol::BRICK_L);   // gorna krawedz jasniejsza
+    // Mech na wierzchu: 2-3 px, NIEREGULARNY (hash32 na x) — rowny pasek od razu
+    // zdradzalby, ze jest generowany, a nie "porosnietymi cegly".
+    for (int x = 0; x < W; x += 3) {
+      const int tuft = 2 + static_cast<int>(hash32(static_cast<uint32_t>(x) + 5000u) % 2u);
+      spr.fillRect(ox + x, py0 - tuft, 3, tuft, rcol::MOSS);
+    }
+  }
+
+  // ================================================ rabek dolnego HUD-u ---------
+  // Bufor rysowania siega tylko do y=VIEW_H-1=205 — reszta pasa HUD dolnego
+  // (206..239) to terytorium stopki PV, POZA buforem (patrz drawViewRetroFooter
+  // i miejsce jej wywolania w render()/streamScreenshot()). Tu malujemy TYLKO ten
+  // sam kolor co tamta funkcja, zeby zszycie na y=206 bylo niewidoczne — bez
+  // tekstu: polowa znaku wpadlaby w bufor, polowa w stopke, i rwalaby sie w pol.
+  spr.fillRect(ox, 196, W, VIEW_H - 196, rcol::HUD);
+  spr.drawFastHLine(ox, 196, W, rcol::HUD_LN);
+
+  // =============================================================== Mario --------
+  // Pozycja, klatka, grzybek i "+1" to CZYSTA funkcja nowMs — zero wewnetrznego
+  // stanu w klasie. Nie przypadek: /api/screen renderuje klatke w paskach
+  // (paintFrame wolane wielokrotnie z TYM SAMYM nowMs) i przejscia rysuja ten sam
+  // widok dwa razy w jednej klatce (raz jako prevView_, raz jako view_) — gdyby
+  // pozycja Maria zalezala od millis() czytanego NA MIEJSCU, kazde z tych wywolan
+  // zobaczyloby inny czas i klatki rozjechalyby sie w miejscu zszycia (dokladnie
+  // ten problem rozwiazano juz w drawViewStats/drawViewMotion — patrz ich komentarze
+  // o "jedna klatka = jeden moment").
+  constexpr uint32_t kCycleMs = 13000;      // pelny przebieg ~13 s (mieści się w 12-15 s)
+  constexpr float kXStart = -40.f, kXEnd = 340.f;
+  constexpr int kMushroomTriggerX = 188;    // mario_x+16>=204  <=>  mario_x>=188
+  constexpr uint32_t kPopMs = 1200;         // czas unoszenia/gasniecia napisu "+1"
+  constexpr int kMushroomX = 214;
+  constexpr int kGroundY = 186;             // GY z opisu — stopy Maria i grzybek stoja tu
+
+  const uint32_t cyclePos = nowMs % kCycleMs;
+  const float frac = static_cast<float>(cyclePos) / static_cast<float>(kCycleMs);
+  const int marioX = static_cast<int>(kXStart + frac * (kXEnd - kXStart));
+
+  // Ten sam wzor co marioX (nie osobna stala), zeby "moment podniesienia grzybka"
+  // nigdy nie rozjechal sie z faktyczna pozycja Maria, np. po zmianie kCycleMs.
+  const float triggerFrac = (kMushroomTriggerX - kXStart) / (kXEnd - kXStart);
+  const uint32_t triggerMs = static_cast<uint32_t>(triggerFrac * kCycleMs);
+
+  if (cyclePos < triggerMs) {
+    drawMushroom(spr, ox + kMushroomX, kGroundY);
+  } else if (cyclePos - triggerMs < kPopMs) {
+    const float popT = static_cast<float>(cyclePos - triggerMs) / static_cast<float>(kPopMs);
+    const int popY = (kGroundY - 18) - static_cast<int>(popT * 16);
+    // "Gasniecie" bez prawdziwej alfy (fillRect jej nie ma) — przyblizone
+    // przenikaniem koloru w kolor nieba w tej okolicy ekranu.
+    const uint16_t faded = lerp565(rcol::YEL, rcol::SKY_M, popT);
+    retroStrShadowed(spr, "+1", ox + kMushroomX, popY, 2, faded);
+  }
+  // W pozostalym oknie cyklu (grzybek juz zniknal, "+1" juz zgaslo) nie rysujemy
+  // nic — nowy cykl (cyclePos < triggerMs po zawinieciu) przywraca grzybka.
+
+  {
+    constexpr int marioScale = 2;
+    const int frame = static_cast<int>((nowMs / 110) % 4);   // 0,1,2,3 = stoi,bieg1,bieg2,bieg1
+    drawMario(spr, ox + marioX, kGroundY - mariospr::H * marioScale, frame, marioScale);
+  }
+
+  // ========================================================== dane pogodowe -----
+  char tempBuf[8];
+  snprintf(tempBuf, sizeof(tempBuf), "%d", static_cast<int>(lroundf(c.tempC)));
+  retroStrShadowed(spr, tempBuf, ox + 12, 44, 6, rcol::WHITE);
+  retroStrShadowed(spr, "*C", ox + 114, 48, 3, rcol::YEL);
+
+  char feelsBuf[16];
+  snprintf(feelsBuf, sizeof(feelsBuf), "ODCZUW %d", static_cast<int>(lroundf(c.feelsC)));
+  retroStrShadowed(spr, feelsBuf, ox + 12, 104, 2, rcol::WHITE);
+
+  {
+    // labelForCode(), NIE descForCode(): descForCode ma 28 wariantow ("Częściowe
+    // zachmurzenie", "Silny marznący deszcz"...) — za dlugie na s=2 przy x=12.
+    // labelForCode() to te same krotkie 8 kategorii, co ikona pogody gdzie indziej
+    // w apce ("Słonecznie", "Burza"...) — stad przyklad z zadania "SŁONECZNIE".
+    char descBuf[16];
+    retroAscii(descBuf, sizeof(descBuf), wxico::labelForCode(c.weatherCode));
+    retroStrShadowed(spr, descBuf, ox + 12, 126, 2, rcol::YEL);
+  }
+}
+
+// HUD dolny RETRO. To DOKLADNIE ten sam pas (y=VIEW_H..SCREEN_H-1 = 206..239) co
+// stopka PV (drawFooterTo) — wywolujacy (render()/streamScreenshot()) wybiera
+// jedno z dwoch, nigdy oba na raz. `dst` generyczny z tego samego powodu co w
+// drawFooterTo: dziala i na zywym TFT, i na pasku zrzutu ekranu.
+void WeatherUi::drawViewRetroFooter(TFT_eSPI& dst, const WeatherModel& w) {
+  const int y = VIEW_H;   // 206
+  if (!dst.checkViewport(0, y, W, cfg::SCREEN_H - VIEW_H)) {
+    return;
+  }
+  dst.fillRect(0, y, W, cfg::SCREEN_H - VIEW_H, rcol::HUD);
+  // Brak danych (jeszcze przed pierwszym pobraniem): pusty pasek zamiast zer,
+  // ktore wygladalyby jak realny (zerowy) odczyt wilgotnosci/wiatru/cisnienia.
+  if (!w.ready) {
+    return;
+  }
+
+  const int labelY = y + 1, valueY = y + 18;
+  char buf[16];
+
+  snprintf(buf, sizeof(buf), "%d%%", w.current.humidity);
+  retroStrShadowed(dst, "WILGOC", 8, labelY, 2, rcol::YEL);
+  retroStrShadowed(dst, buf, 8, valueY, 2, rcol::WHITE);
+
+  snprintf(buf, sizeof(buf), "%d KM/H", static_cast<int>(lroundf(w.current.windKmh)));
+  retroStrShadowed(dst, "WIATR", 112, labelY, 2, rcol::YEL);
+  retroStrShadowed(dst, buf, 112, valueY, 2, rcol::CYAN);
+
+  snprintf(buf, sizeof(buf), "%d", static_cast<int>(lroundf(w.current.pressureHpa)));
+  retroStrShadowed(dst, "HPA", 240, labelY, 2, rcol::YEL);
+  retroStrShadowed(dst, buf, 240, valueY, 2, rcol::WHITE);
 }
 
 // ------------------------------------------------------------ WIDOK 1: TERAZ --
@@ -1418,6 +1914,10 @@ void WeatherUi::drawView(TFT_eSPI& spr, uint8_t view, int ox, float t, const Wea
   static_assert(cfg::VIEW_STATS == cfg::VIEW_COUNT - 1,
                 "ostatni widok musi byc VIEW_COUNT-1 — inaczej rotacja trafia w default");
   switch (view) {
+    case cfg::VIEW_RETRO:
+      if (w.ready) drawViewRetro(spr, ox, t, w, nowMs);
+      else drawNoData(spr, ox, "Pobieram prognozę...");
+      break;
     case cfg::VIEW_NOW:
       if (w.ready) drawViewNow(spr, ox, t, w);
       else drawNoData(spr, ox, "Pobieram prognozę...");
@@ -1481,8 +1981,18 @@ void WeatherUi::paintFrame(TFT_eSPI& spr, const WeatherModel& w, const PvModel& 
     drawView(spr, view_, 0, enterT, w, pv, hist, fl, nowMs, heapNow);
   }
 
-  drawHeader(spr, w, wifiOk, nowMs);
-  drawProgress(spr, nowMs);
+  // RETRO rysuje WLASNY HUD gorny (nazwa miasta/data/godzina w stylu 8-bit) na
+  // y=0..25 i wlasny pasek na dole (patrz drawViewRetro/drawViewRetroFooter) —
+  // wspolna belka (zegar/kropka zdrowia/tytul) i segmentowany pasek postepu
+  // wygladalyby na nim jak inny motyw nabity na sile z gory. Chowamy je, gdy RETRO
+  // jest ktorakolwiek ze stron aktywnego przejscia (nie tylko view_), zeby podczas
+  // 340 ms slidu obie strony byly spojne — nie "chrome miga na pol ekranu".
+  const bool hideChrome =
+      view_ == cfg::VIEW_RETRO || (transitioning_ && prevView_ == cfg::VIEW_RETRO);
+  if (!hideChrome) {
+    drawHeader(spr, w, wifiOk, nowMs);
+    drawProgress(spr, nowMs);
+  }
 }
 
 bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory& hist,
@@ -1591,7 +2101,20 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
   diag().frameDrawUs = (diag().frameDrawUs * 7 + tPaint) / 8;
   diag().framePushUs = (diag().framePushUs * 7 + tPush) / 8;
 
-  drawFooter(pv, wifiOk);   // poza buforem, wprost na TFT
+  // RETRO zajmuje caly dolny pasek (y=206..239) wlasnym HUD-em (WILGOC/WIATR/HPA) —
+  // patrz komentarz przy drawViewRetroFooter. Poza tym widokiem dokladnie stara
+  // sciezka: drawFooter(), bez zadnej zmiany.
+  if (view_ == cfg::VIEW_RETRO) {
+    drawViewRetroFooter(tft_, w);
+    // Cache w drawFooter() (lastAc_/lastGrid_/...) nic nie wie o tym, ze fizyczne
+    // piksele pod nim wlasnie pokazywaly zupelnie inny widok. Bez tego resetu, gdy
+    // po powrocie z RETRO wartosci PV akurat sie nie zmienily, drawFooter()
+    // uznaloby "nic nowego" i NIE przemalowalby stopki — zostalyby na ekranie
+    // piksele HUD-u RETRO pod (juz innym) aktualnym widokiem.
+    footerInit_ = false;
+  } else {
+    drawFooter(pv, wifiOk);   // poza buforem, wprost na TFT
+  }
   tickBacklight();
 
   if (cfg::PROFILE_FRAME) {
@@ -3599,7 +4122,14 @@ void WeatherUi::streamScreenshot(WiFiClient& client, const WeatherModel& w, cons
     // paintFrame czyści 0..205, drawFooterTo maluje 206..239 — razem cały ekran,
     // więc świeżo wyzerowany sprite nie prześwituje nigdzie na czarno.
     paintFrame(shot, w, pv, hist, fl, wifiOk, nowMs, heapNow);
-    drawFooterTo(shot, pv, wifiOk);  // sama sprawdzi, czy wpada w ten pasek
+    // Ten sam widok co live-render: RETRO ma wlasny dolny HUD zamiast stopki PV
+    // (patrz analogiczna galaz w render()) — inaczej podglad w przegladarce
+    // pokazywalby pod zrzutem RETRO stopke z mocą fotowoltaiki, ktorej tu nie ma.
+    if (view_ == cfg::VIEW_RETRO) {
+      drawViewRetroFooter(shot, w);
+    } else {
+      drawFooterTo(shot, pv, wifiOk);  // sama sprawdzi, czy wpada w ten pasek
+    }
 
     for (int y = top + SHOT_H - 1; y >= top; --y) {
       for (int x = 0; x < WD; ++x) {

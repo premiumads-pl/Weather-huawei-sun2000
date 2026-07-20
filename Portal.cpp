@@ -273,7 +273,7 @@ Symulacja pokazuje sztuczny front — do obejrzenia, jak wygląda wizualizacja.<
 </div>
 </div><script>
 const $=i=>document.getElementById(i);
-const NAMES=['Auto','Teraz','Godziny','Radar','5 dni','W domu','Piec','Fotowoltaika','Samoloty','Pamięć','Ruch','Statystyki'];
+const NAMES=['Auto','Retro','Teraz','Godziny','Radar','5 dni','W domu','Piec','Fotowoltaika','Samoloty','Pamięć','Ruch','Statystyki'];
 let live=true,pin=-1;
 
 function tabs(){

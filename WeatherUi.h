@@ -196,6 +196,15 @@ class WeatherUi {
   void drawView(TFT_eSPI& spr, uint8_t view, int ox, float t, const WeatherModel& w,
                 const PvModel& pv, const PvHistory& hist, const FlightModel& fl,
                 uint32_t nowMs, uint32_t heapNow);
+  // v114: ekran ozdobny (patrz WeatherUi.cpp, sekcja "WIDOK 0: RETRO"). Ma WLASNY
+  // HUD gorny i dolny (stylizowane na 8-bit), wiec w odroznieniu od reszty widokow
+  // NIE korzysta ze wspolnego drawHeader/drawProgress/drawFooter — paintFrame()
+  // i render()/streamScreenshot() maja z tego powodu osobna galaz dla VIEW_RETRO.
+  void drawViewRetro(TFT_eSPI& spr, int ox, float t, const WeatherModel& w, uint32_t nowMs);
+  // Dolny pasek RETRO (WILGOC/WIATR/HPA) zajmuje dokladnie to miejsce co stopka PV
+  // (y=206..239, poza buforem VIEW_H) — patrz drawFooterTo(). Ten sam wzorzec:
+  // dowolny cel (TFT na żywo albo pasek zrzutu), zeby dzialalo w obu miejscach.
+  void drawViewRetroFooter(TFT_eSPI& dst, const WeatherModel& w);
   void drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
   void drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
   void drawViewDays(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);

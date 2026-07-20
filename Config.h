@@ -152,23 +152,31 @@ constexpr uint32_t FRAME_IDLE_MS = 50;   // 20 fps na statycznym ekranie (pasek 
 // Serial. Przydatne po zmianie na dwa pasy — domyślnie wyłączone, bo to tylko log.
 constexpr bool PROFILE_FRAME = false;
 
-constexpr int VIEW_COUNT = 11;  // TERAZ / GODZINY / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / PAMIEC / RUCH / STATYSTYKI
-constexpr int VIEW_NOW = 0;     // te dwa brakowaly, wiec switch w drawView() musial
-constexpr int VIEW_HOURS = 1;   // uzywac golych literalow "case 0:" / "case 1:"
-constexpr int VIEW_RADAR = 2;   // animowana mapa opadow (pomijany, gdy nie pada)
-constexpr int VIEW_DAYS = 3;
-constexpr int VIEW_HOME = 4;    // czujniki BLE — pomijany, gdy zadnego nie ma
-constexpr int VIEW_BOILER = 5;  // piec — pomijany, gdy nieautoryzowany
-constexpr int VIEW_PV = 6;
-constexpr int VIEW_FLIGHTS = 7;
+constexpr int VIEW_COUNT = 12;  // RETRO / TERAZ / GODZINY / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / PAMIEC / RUCH / STATYSTYKI
+// v114: RETRO wszedl PIERWSZY w rotacji (wyrazne zyczenie wlasciciela — ma je
+// widziec zaraz po starcie, przed TERAZ). To przesuwa WSZYSTKIE pozostale numery
+// widokow o +1 wzgledem v113 (VIEW_NOW byl 0, teraz jest 1, itd.). Zrodlem prawdy
+// dla numeru widoku jest WYLACZNIE ta stala (cfg::VIEW_*) — dawniej (przed
+// wprowadzeniem VIEW_NOW/VIEW_HOURS) switch w drawView() mial gole "case 0:" /
+// "case 1:" i przezyl niezauwazony przez kilka wersji. Kazde nowe uzycie numeru
+// widoku ma isc przez cfg::VIEW_*, nigdy przez literal.
+constexpr int VIEW_RETRO = 0;   // ekran ozdobny w stylu gry platformowej 8/16-bit (Mario) — WeatherUi::drawViewRetro
+constexpr int VIEW_NOW = 1;
+constexpr int VIEW_HOURS = 2;
+constexpr int VIEW_RADAR = 3;   // animowana mapa opadow (pomijany, gdy nie pada)
+constexpr int VIEW_DAYS = 4;
+constexpr int VIEW_HOME = 5;    // czujniki BLE — pomijany, gdy zadnego nie ma
+constexpr int VIEW_BOILER = 6;  // piec — pomijany, gdy nieautoryzowany
+constexpr int VIEW_PV = 7;
+constexpr int VIEW_FLIGHTS = 8;
 // v111: dwa nowe ekrany serwisowe (eksploracyjne — PAMIEC/RUCH) WESZLY PRZED
 // STATS, nie po nim. Powod: static_assert w WeatherUi.cpp::drawView() wymaga
 // VIEW_STATS == VIEW_COUNT - 1 (inaczej rotacja widokow trafia w "default" i przez
 // caly czas trzymania tego widoku ekran zostaje czarny — patrz komentarz przy
 // tym switchu). Wygodniej przesunac STATS na koniec niz rozluzniac ten kontrakt.
-constexpr int VIEW_MEM = 8;     // PAMIEC: wszystkie rodzaje (SRAM/PSRAM/flash/partycje/RTC/ROM/stos)
-constexpr int VIEW_MOTION = 9;  // RUCH: PIR (rytm doby) + LDR (jasnosc) + wydajnosc rysowania (fps)
-constexpr int VIEW_STATS = 10;  // ekran serwisowy — bylo 8; MUSI zostac VIEW_COUNT-1 (patrz wyzej)
+constexpr int VIEW_MEM = 9;     // PAMIEC: wszystkie rodzaje (SRAM/PSRAM/flash/partycje/RTC/ROM/stos)
+constexpr int VIEW_MOTION = 10; // RUCH: PIR (rytm doby) + LDR (jasnosc) + wydajnosc rysowania (fps)
+constexpr int VIEW_STATS = 11;  // ekran serwisowy — MUSI zostac VIEW_COUNT-1 (patrz wyzej)
 
 // --- progi zdrowia urządzenia (wskaźniki na ekranie statystyk) ---
 // Temperatura: czujnik w ESP32-S3 mierzy strukturę (die), nie otoczenie.
