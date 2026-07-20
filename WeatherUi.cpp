@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <ctime>
 
+#include "AirClient.h"
 #include "BleGateway.h"
 #include "Colors.h"
 #include "Config.h"
@@ -72,6 +73,22 @@ uint16_t tempColor(float c) {
   if (c < 24.f) return lerp565(col::T_MILD, col::T_WARM, (c - 14.f) / 10.f);
   if (c < 32.f) return lerp565(col::T_WARM, col::T_HOT, (c - 24.f) / 8.f);
   return col::T_HOT;
+}
+
+// Kolor indeksu jakosci powietrza (1..6, tabela ARMAAG — patrz AirClient.cpp).
+// DYSKRETNY, nie interpolowany jak tempColor() wyzej: to sa oddzielne KLASY oceny
+// ("dobre" kontra "zle"), nie ciagla skala fizyczna, wiec plynne przejscie miedzy
+// kolorami sugerowaloby stany posrednie, ktorych tabela nie zna.
+uint16_t airIndexColor(int index) {
+  switch (index) {
+    case 1: return col::AIR_GOOD;
+    case 2: return col::AIR_FAIR;
+    case 3: return col::AIR_MODERATE;
+    case 4: return col::AIR_POOR;
+    case 5: return col::AIR_BAD;
+    case 6: return col::AIR_SEVERE;
+    default: return col::TEXT_MUTE;   // 0 = nie da sie policzyc
+  }
 }
 
 const char* windDirName(int deg) {
@@ -345,7 +362,7 @@ void WeatherUi::drawColorTest() {
 // Indeks = cfg::VIEW_*, pilnuje tego static_assert w drawView().
 const char* const kViewNames[cfg::VIEW_COUNT] = {
     "RETRO", "TERAZ", "GODZINY", "RADAR", "5 DNI", "W DOMU", "PIEC", "FOTOWOLTAIKA",
-    "SAMOLOTY", "PAMIĘĆ", "RUCH", "STATYSTYKI"};
+    "SAMOLOTY", "POWIETRZE", "PAMIĘĆ", "RUCH", "STATYSTYKI"};
 
 // Zdrowie calego systemu w jednej liczbie: 0 = OK, 1 = uwaga, 2 = awaria.
 //
@@ -507,7 +524,8 @@ void WeatherUi::drawProgress(TFT_eSPI& spr, uint32_t nowMs) {
     // wlasny, przygaszony kolor — widac, ze istnieje, ale nie ma czego pokazac.
     const bool skipped = (i == cfg::VIEW_RADAR && !radarmap::hasRain()) ||
                          (i == cfg::VIEW_HOME && ble::count() == 0) ||
-                         (i == cfg::VIEW_BOILER && !settings().hasViessmann());
+                         (i == cfg::VIEW_BOILER && !settings().hasViessmann()) ||
+                         (i == cfg::VIEW_AIR && (!air_ || !air_->ready));
     if (skipped) {
       spr.fillRect(x, cfg::PROG_Y, wSeg, cfg::PROG_H, lerp565(col::BG, col::RAIN, 0.30f));
       continue;
@@ -1956,6 +1974,12 @@ void WeatherUi::drawView(TFT_eSPI& spr, uint8_t view, int ox, float t, const Wea
     case cfg::VIEW_FLIGHTS:
       drawViewFlights(spr, ox, t, fl);
       break;
+    case cfg::VIEW_AIR:
+      // Bez "if (w.ready)" jak przy NOW/HOURS/DAYS: ten widok zalezy od WLASNEGO
+      // modelu (air_), nie od WeatherModel — gotowosc sprawdza on sam w srodku
+      // (tak samo jak PV/BOILER/HOME czytaja swoje wlasne modele).
+      drawViewAir(spr, ox, t, w);
+      break;
     case cfg::VIEW_MEM:
       drawViewMem(spr, ox, t, heapNow);
       break;
@@ -2074,6 +2098,13 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
       }
       if (view_ == cfg::VIEW_BOILER && !settings().hasViessmann()) {
         view_ = static_cast<uint8_t>(cfg::VIEW_PV);
+      }
+      // POWIETRZE bez danych z ZADNEJ stacji (GA17 i GA24) to pusty ekran co minute —
+      // pomijamy go tak samo jak RADAR bez opadu i W DOMU bez czujnikow. Skacze na
+      // NASTEPNY widok (PAMIEC), bo AIR juz jest ostatnim "zwyklym" ekranem przed
+      // trojka serwisowa, ktora nigdy nie jest pomijana.
+      if (view_ == cfg::VIEW_AIR && (!air_ || !air_->ready)) {
+        view_ = static_cast<uint8_t>(cfg::VIEW_MEM);
       }
       transitioning_ = true;
       transStart_ = nowMs;
@@ -3356,6 +3387,122 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
   glRight(spr, "teraz", gx1 + 2, gy1 + 5, col::TEXT_MUTE);
 }
 
+// ------------------------------------------------------- WIDOK: POWIETRZE (v117) --
+// Miejska siec czujnikow Gdyni (ARMAAG/sensorbox.pl) — GA17 (Sandomierska 3, Maly
+// Kack) to stacja GLOWNA wlasciciela, GA24 (Halicka 8) automatyczny ZAPAS. Pobieranie,
+// fallback GA17->GA24 i indeks licza sie w AirClient.cpp/AirData.h — ten ekran TYLKO
+// rysuje gotowy AirModel, dokladnie jak PV/loty czytaja gotowy PvModel/FlightModel.
+//
+// STACJA MUSI BYC WIDOCZNA — to nie jest kosmetyka. Gdyby ekran cicho pokazywal
+// liczby z GA24 (Halicka), wlasciciel patrzylby na pomiar spod innego adresu, myslac,
+// ze to czujnik "pod nosem" (Sandomierska). Ta sama zasada, co litera E/S przy
+// czujnikach BLE (patrz WeatherUi::drawViewHome) — KTO naprawde dostarczyl pomiar
+// musi byc czytelne na pierwszy rzut oka, nigdy domyslne.
+void WeatherUi::drawViewAir(TFT_eSPI& spr, int ox, float t, const WeatherModel& w) {
+  const float e = easeOutCubic(t);
+  static const AirModel kEmptyAir{};
+  const AirModel& am = air_ ? *air_ : kEmptyAir;
+
+  if (!am.ready) {
+    // render() i drawProgress() JUZ pomijaja ten widok w rotacji, gdy !ready (patrz
+    // warunek `skipped` w obu miejscach, tak samo jak przy RADAR bez opadu) — ta
+    // galaz odpala sie wiec tylko po recznym przypieciu z panelu WWW (pinView),
+    // gdzie pomijanie automatyczne nie obowiazuje.
+    drawNoData(spr, ox, "Brak danych: GA17 i GA24",
+               am.errorMsg[0] ? am.errorMsg : "sprawdzam ponownie za chwilę");
+    return;
+  }
+
+  // --- wiek najswiezszej probki PM ("X min temu") — liczony z EPOCH (czas pomiaru
+  // na stacji), NIE z millis() naszego ostatniego fetch'a (ten drugi jest osobno w
+  // /api/diag jako air.ok_ago_s — patrz Portal.cpp). To rozne pytania: "jak dawno MY
+  // sie polaczylismy" kontra "jak stary jest POMIAR, na ktory patrzysz". ---
+  const time_t nowT = time(nullptr);
+  char ageStr[24];
+  snprintf(ageStr, sizeof(ageStr), "wiek nieznany");
+  bool stale = false;
+  if (am.sampleEpoch > 0 && nowT > 1700000000 &&
+      nowT >= static_cast<time_t>(am.sampleEpoch)) {
+    const uint32_t ageS = static_cast<uint32_t>(nowT - static_cast<time_t>(am.sampleEpoch));
+    stale = ageS > AIR_STALE_S;   // ta sama granica, co przy decyzji GA17->GA24
+    if (ageS < 120) {
+      snprintf(ageStr, sizeof(ageStr), "%lus temu", static_cast<unsigned long>(ageS));
+    } else if (ageS < 3600) {
+      snprintf(ageStr, sizeof(ageStr), "%lu min temu", static_cast<unsigned long>(ageS / 60));
+    } else {
+      snprintf(ageStr, sizeof(ageStr), "%.1f h temu", ageS / 3600.f);
+    }
+  }
+  viewHeader(spr, ox, ageStr, stale ? col::WARN : col::TEXT_MUTE);
+
+  // --- stacja: od razu pod belka, pelnym PLF14 (nie malym gl()) — ma byc NIEMOZLIWE
+  // do przeoczenia, patrz uzasadnienie nad funkcja. Kolor WARN przy zapasie: nie tylko
+  // slowo "(ZAPAS)", ale i barwa ma krzyczec "to NIE jest Twoja stacja". ---
+  char stLbl[32];
+  snprintf(stLbl, sizeof(stLbl), am.usingFallback ? "%s (ZAPAS)" : "%s", am.stationName);
+  plStr(spr, PLF14, stLbl, ox + 10, 58, am.usingFallback ? col::WARN : col::TEXT);
+
+  // --- indeks ogolny: duzy napis slowny, kolor = klasa ARMAAG (patrz airIndexColor) ---
+  plCenter(spr, PLF18, airIndexName(am.index), ox + W / 2, 94, airIndexColor(am.index));
+
+  // --- dwie karty PM10 / PM2.5 — kolor KAZDEJ to jej WLASNY czastkowy indeks (nie
+  // indeks ogolny!), zeby bylo widac, KTORY skladnik naprawde ustala wynik ogolny
+  // (zawsze ten sam, GORSZY z dwoch — patrz uzasadnienie "maksimum, nie srednia" przy
+  // koncu AirClient::parsePayload). Wzorzec kafelkow jak w drawViewPv/drawViewBoiler.
+  struct Card {
+    const char* label;
+    bool has;
+    float v;
+    int idx;
+  };
+  const Card cards[2] = {
+      {"PM10", am.hasPm10, am.pm10, am.indexPm10},
+      {"PM2.5", am.hasPm25, am.pm25, am.indexPm25},
+  };
+
+  const int cy0 = 108, chh = 56;
+  const int cw = (W - 20 - 10) / 2;   // 2 karty na szerokosc, 10 px marginesu, 10 px odstepu
+  for (int i = 0; i < 2; ++i) {
+    const int x = ox + 10 + i * (cw + 10);
+    const uint16_t cc = cards[i].has ? airIndexColor(cards[i].idx) : col::TEXT_MUTE;
+    const int grow = static_cast<int>(chh * clampf(e * 1.4f - i * 0.12f, 0.f, 1.f));
+    if (grow < 4) continue;
+    spr.fillRoundRect(x, cy0 + (chh - grow), cw, grow, 8, col::BG_CARD);
+    if (grow < chh - 2) continue;
+    spr.fillRoundRect(x, cy0, 3, chh, 1, cc);
+    plStr(spr, PLF14, cards[i].label, x + 10, cy0 + 18, col::TEXT_DIM);
+    if (cards[i].has) {
+      char val[10];
+      snprintf(val, sizeof(val), "%.1f", cards[i].v);
+      const int vw = pltxt::drawString(spr, PLF18, val, x + 10, cy0 + 44, cc, cc);
+      // ASCII "ug/m3", NIE "µg/m³": PlFont10/14/18 nie maja glifu U+00B5 (mikro), a
+      // PLF14/18 nie maja tez U+00B3 (superskrypt 3) — sprawdzone wprost w tablicach
+      // kodow (PlFont*Codepoints). Brakujacy glif nie wywala programu (drawString po
+      // prostu go pomija, patrz PlText.h), ale cichy brak "µ" wygladalby na literowke,
+      // nie na swiadoma decyzje. ASCII dziala wszedzie i nie wymaga dorabiania
+      // bitmapowych glifow do trzech czcionek dla jednej etykiety jednostki.
+      plStr(spr, PLF14, "ug/m3", x + 15 + vw, cy0 + 44, col::TEXT_MUTE);
+    } else {
+      plStr(spr, PLF14, "brak danych", x + 10, cy0 + 44, col::TEXT_MUTE);
+    }
+  }
+
+  // --- porownanie z nasza prognoza (opcjonalne, patrz zadanie) — tylko gdy stacja
+  // daje TA/RH/PA, czyli TYLKO na GA17 (patrz AirData.h::hasWeather: GA24 tych
+  // zmiennych w ogole nie odpytujemy). ---
+  if (am.hasWeather) {
+    char cmp[64];
+    snprintf(cmp, sizeof(cmp), "stacja: %.0f°C  %.0f%%  %.0f hPa", am.tempC, am.rh,
+             am.pressureHpa);
+    gl(spr, cmp, ox + 10, 178, col::TEXT_DIM);
+    if (w.current.valid) {
+      char ours[24];
+      snprintf(ours, sizeof(ours), "u nas: %.0f°C", w.current.tempC);
+      glRight(spr, ours, ox + W - 10, 178, col::TEXT_MUTE);
+    }
+  }
+}
+
 // ------------------------------------------------------- WIDOK: PAMIĘĆ (v111) --
 // Ekran eksploracyjny: właściciel wprost poprosił o WSZYSTKIE rodzaje pamięci na
 // jednym ekranie, żeby ocenić wizualnie, co z tego zostawić na stałe. Stąd dziewięć
@@ -4048,7 +4195,8 @@ void WeatherUi::prevView() {
     v = (v - 1 + cfg::VIEW_COUNT) % cfg::VIEW_COUNT;
     const bool skipped = (v == cfg::VIEW_RADAR && !radarmap::hasRain()) ||
                          (v == cfg::VIEW_HOME && ble::count() == 0) ||
-                         (v == cfg::VIEW_BOILER && !settings().hasViessmann());
+                         (v == cfg::VIEW_BOILER && !settings().hasViessmann()) ||
+                         (v == cfg::VIEW_AIR && (!air_ || !air_->ready));
     if (!skipped) break;
   }
   if (v == view_) {

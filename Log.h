@@ -15,12 +15,14 @@ struct Diag {
   uint32_t pvOkAt = 0;
   uint32_t radarOkAt = 0;
   uint32_t flightOkAt = 0;
+  uint32_t airOkAt = 0;    // jakosc powietrza (patrz AirClient.h) — ostatni udany fetch
   uint32_t mqttOkAt = 0;   // ostatnia udana publikacja
 
   char weatherErr[48] = {};
   char pvErr[48] = {};
   char radarErr[48] = {};
   char flightErr[48] = {};
+  char airErr[48] = {};
   char otaMsg[48] = {};
   char mqttErr[48] = {};
 
@@ -38,6 +40,21 @@ struct Diag {
   uint8_t radarLevel = 0;
   uint32_t radarAgeSec = 0;
   int flightsTotal = 0;
+
+  // --- jakosc powietrza (ARMAAG/sensorbox Gdynia — GA17 z automatycznym zapasem
+  // GA24, patrz AirClient.h) ---
+  // W odroznieniu od pogody/PV/lotow wyzej (ktore w /api/diag pokazuja tylko
+  // ok_ago_s/err) tu wystawiamy TAKZE same wartosci: to dwa floaty i kilka bajtow —
+  // tanio, a bez nich nie da sie zdalnie sprawdzic, czy fallback na GA24 zadzialal
+  // i co realnie pokazuje ekran wlasciciela (patrz uzasadnienie fallbacku w AirData.h).
+  bool airFallback = false;    // true = diagnostyka/ekran pokazuja GA24 (Halicka)
+  char airStation[16] = {};    // "SANDOMIERSKA" / "HALICKA" / "" (jeszcze nic nie przyszlo)
+  bool airHasPm10 = false;
+  float airPm10 = 0.f;
+  bool airHasPm25 = false;
+  float airPm25 = 0.f;
+  int airIndex = 0;             // 1..6 wg tabeli ARMAAG, 0 = brak (patrz AirClient.cpp)
+  uint32_t airSampleEpoch = 0;  // epoch UTC najswiezszej wykorzystanej probki PM, 0 = brak
   int otaRemote = 0;
   uint32_t otaOkAt = 0;
   uint32_t wifiConnects = 0;

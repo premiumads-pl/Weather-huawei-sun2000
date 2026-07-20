@@ -72,4 +72,17 @@ constexpr uint16_t GRID = C565(26, 44, 68);
 constexpr uint16_t GRID_HI = C565(40, 66, 98);
 constexpr uint16_t CHART_SPARK_BG = C565(12, 20, 34);
 
+// --- jakosc powietrza (6 klas ARMAAG, patrz AirClient.cpp po pelna tabele progow) ---
+// Skala ROSNIE od zielonego do bordowego wraz z indeksem 1..6. Cztery z szesciu
+// kolorow juz istnialy (stany OK/WARN/ERR i zolc SUN pasuja tu 1:1 znaczeniowo) —
+// dokladamy TYLKO dwa brakujace odcienie (jasnozielony miedzy "dobrze" a "zolto",
+// bordowy ciemniejszy od zwyklej czerwieni ERR), zeby nie mnozyc niemal-identycznych
+// stalych. Kolejnosc indeksu 1..6 = AIR_IDX[0..5].
+constexpr uint16_t AIR_GOOD = OK;                    // 1: BARDZO DOBRE
+constexpr uint16_t AIR_FAIR = C565(150, 210, 40);     // 2: DOBRE (nowy — jasnozielony)
+constexpr uint16_t AIR_MODERATE = SUN;               // 3: ZADOWALAJACE
+constexpr uint16_t AIR_POOR = WARN;                  // 4: DOSTATECZNE
+constexpr uint16_t AIR_BAD = ERR;                    // 5: ZLE
+constexpr uint16_t AIR_SEVERE = C565(115, 20, 30);    // 6: BARDZO ZLE (nowy — bordowy)
+
 }  // namespace col

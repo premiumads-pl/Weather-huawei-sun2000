@@ -138,6 +138,10 @@ constexpr uint32_t PV_REFRESH_NIGHT_MS = 5UL * 60UL * 1000UL;
 constexpr uint32_t PV_STORE_MS = 5UL * 60UL * 1000UL;  // zapis profilu do NVS
 constexpr uint32_t WIFI_RETRY_MS = 8000;
 constexpr uint32_t RADAR_REFRESH_MS = 5UL * 60UL * 1000UL;  // klatki radaru co ~10 min
+// Jakosc powietrza to srednie GODZINOWE — nowa probka raz na godzine, wiec 15 minut
+// to i tak trzy-cztery odpyty na kazda swieza probke. To CUDZY serwer (ARMAAG/
+// sensorbox), wiec nie ma po co pytac czesciej — patrz AirClient.cpp.
+constexpr uint32_t AIR_REFRESH_MS = 15UL * 60UL * 1000UL;
 constexpr uint32_t FLIGHT_REFRESH_MS = 15000;
 constexpr uint32_t FLIGHT_PREFETCH_MS = 6000;
 constexpr uint32_t VIEW_HOLD_MS = 9000;
@@ -152,7 +156,7 @@ constexpr uint32_t FRAME_IDLE_MS = 50;   // 20 fps na statycznym ekranie (pasek 
 // Serial. Przydatne po zmianie na dwa pasy — domyślnie wyłączone, bo to tylko log.
 constexpr bool PROFILE_FRAME = false;
 
-constexpr int VIEW_COUNT = 12;  // RETRO / TERAZ / GODZINY / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / PAMIEC / RUCH / STATYSTYKI
+constexpr int VIEW_COUNT = 13;  // RETRO / TERAZ / GODZINY / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / POWIETRZE / PAMIEC / RUCH / STATYSTYKI
 // v114: RETRO wszedl PIERWSZY w rotacji (wyrazne zyczenie wlasciciela — ma je
 // widziec zaraz po starcie, przed TERAZ). To przesuwa WSZYSTKIE pozostale numery
 // widokow o +1 wzgledem v113 (VIEW_NOW byl 0, teraz jest 1, itd.). Zrodlem prawdy
@@ -169,14 +173,20 @@ constexpr int VIEW_HOME = 5;    // czujniki BLE — pomijany, gdy zadnego nie ma
 constexpr int VIEW_BOILER = 6;  // piec — pomijany, gdy nieautoryzowany
 constexpr int VIEW_PV = 7;
 constexpr int VIEW_FLIGHTS = 8;
+// v117: POWIETRZE wszedl ZARAZ PO SAMOLOTY (9) — a to przesunelo PAMIEC/RUCH/
+// STATYSTYKI o +1 wzgledem v116 (byly 9/10/11, teraz 10/11/12). Ten sam kontrakt,
+// co przy v111 nizej: static_assert w WeatherUi.cpp::drawView() wymaga
+// VIEW_STATS == VIEW_COUNT - 1, wiec nowy ekran NIE moze wejsc na koncu — musi
+// wejsc PRZED serwisowa trojka, zeby STATS zostal ostatni.
+constexpr int VIEW_AIR = 9;     // POWIETRZE: PM10/PM2.5 + indeks ARMAAG (GA17, zapas GA24) — pomijany, gdy brak danych z obu stacji
 // v111: dwa nowe ekrany serwisowe (eksploracyjne — PAMIEC/RUCH) WESZLY PRZED
 // STATS, nie po nim. Powod: static_assert w WeatherUi.cpp::drawView() wymaga
 // VIEW_STATS == VIEW_COUNT - 1 (inaczej rotacja widokow trafia w "default" i przez
 // caly czas trzymania tego widoku ekran zostaje czarny — patrz komentarz przy
 // tym switchu). Wygodniej przesunac STATS na koniec niz rozluzniac ten kontrakt.
-constexpr int VIEW_MEM = 9;     // PAMIEC: wszystkie rodzaje (SRAM/PSRAM/flash/partycje/RTC/ROM/stos)
-constexpr int VIEW_MOTION = 10; // RUCH: PIR (rytm doby) + LDR (jasnosc) + wydajnosc rysowania (fps)
-constexpr int VIEW_STATS = 11;  // ekran serwisowy — MUSI zostac VIEW_COUNT-1 (patrz wyzej)
+constexpr int VIEW_MEM = 10;    // PAMIEC: wszystkie rodzaje (SRAM/PSRAM/flash/partycje/RTC/ROM/stos)
+constexpr int VIEW_MOTION = 11; // RUCH: PIR (rytm doby) + LDR (jasnosc) + wydajnosc rysowania (fps)
+constexpr int VIEW_STATS = 12;  // ekran serwisowy — MUSI zostac VIEW_COUNT-1 (patrz wyzej)
 
 // --- progi zdrowia urządzenia (wskaźniki na ekranie statystyk) ---
 // Temperatura: czujnik w ESP32-S3 mierzy strukturę (die), nie otoczenie.

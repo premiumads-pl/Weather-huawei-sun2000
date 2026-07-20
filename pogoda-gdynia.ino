@@ -22,6 +22,8 @@
 
 #include <cstring>
 
+#include "AirClient.h"
+#include "AirData.h"
 #include "Colors.h"
 #include "Config.h"
 #include "FlightClient.h"
@@ -57,6 +59,7 @@ WeatherClient weatherClient;
 PvClient pvClient;
 FlightClient flightClient;
 RadarClient radarClient;
+AirClient airClient;
 Ota ota;
 
 SemaphoreHandle_t gLock = nullptr;
@@ -71,6 +74,7 @@ BurnerHistory uiBurner{};
 GasHistory gGas{};
 RoomHistory uiRooms{};
 FlightModel gFlights{};
+AirModel gAir{};   // jakosc powietrza (v117, GA17 z zapasem GA24) — patrz netTask()
 volatile bool gWifiOk = false;
 volatile bool gBooting = true;
 volatile bool gFlightsNeeded = false;
@@ -460,6 +464,7 @@ WeatherModel uiWeather{};
 PvModel uiPv{};
 PvHistory uiHist{};
 FlightModel uiFlights{};
+AirModel uiAir{};   // kopia dla rdzenia rysujacego — patrz ui.setAir() w setup()
 
 AlertKind lastAlertKind = AlertKind::NONE;
 // Rozmiar z wartownika enuma, nie z literalu. Zaszyta osemka byla DOKLADNIE rowna
@@ -544,6 +549,8 @@ static void netTask(void*) {
   uint32_t nextRoamAt = 120000;   // pierwszy przeglad po 2 min od startu
   uint32_t nextRadarMapAt = 25000;
   uint32_t nextViAt = 35000;
+  uint32_t nextAirAt = 5000;   // jakosc powietrza (v117) — pierwsza proba wczesnie,
+                               // ale i tak odpuszcza, dopoki NTP nie da czasu (patrz nizej)
   bool firstWeather = false;
 
   for (;;) {
@@ -682,6 +689,49 @@ static void netTask(void*) {
         strncpy(diag().weatherErr, tmp.errorMsg, sizeof(diag().weatherErr) - 1);
         LOG("Pogoda BLAD: %s (heap %lu)\n", tmp.errorMsg, (unsigned long)ESP.getFreeHeap());
         nextWeatherAt = millis() + 30000;
+      }
+    }
+
+    // ---- jakosc powietrza (ARMAAG/sensorbox, GA17 z zapasem GA24 — patrz AirClient.h) ----
+    // Co ~15 min: dane to srednie GODZINOWE (nowa probka raz na godzine), wiec czesciej
+    // pytalibysmy cudzy serwer bez ANI JEDNEJ nowej wartosci do pokazania.
+    if (static_cast<int32_t>(now - nextAirAt) >= 0) {
+      const time_t ntpNow = time(nullptr);
+      if (ntpNow <= 1700000000) {
+        // Bez czasu z NTP zapytanie nie ma sensu (patrz AirClient::fetch — sam tez
+        // to sprawdza i odmowi). To NIE jest porazka sieci, wiec nie liczymy tego
+        // jako blad ani nie czekamy pelne 15 minut — probujemy ponownie za chwile,
+        // gdy tylko zegar bedzie gotowy (zwykle sekundy po polaczeniu WiFi).
+        nextAirAt = millis() + 5000;
+      } else {
+        AirModel tmp{};
+        if (airClient.fetch(tmp)) {
+          xSemaphoreTake(gLock, portMAX_DELAY);
+          gAir = tmp;
+          xSemaphoreGive(gLock);
+          nextAirAt = millis() + cfg::AIR_REFRESH_MS;
+          diag().airOkAt = millis();
+          diag().airErr[0] = '\0';
+          diag().airFallback = tmp.usingFallback;
+          strncpy(diag().airStation, tmp.stationName, sizeof(diag().airStation) - 1);
+          diag().airHasPm10 = tmp.hasPm10;
+          diag().airPm10 = tmp.pm10;
+          diag().airHasPm25 = tmp.hasPm25;
+          diag().airPm25 = tmp.pm25;
+          diag().airIndex = tmp.index;
+          diag().airSampleEpoch = tmp.sampleEpoch;
+          LOG("Powietrze OK: %s%s PM10=%.1f PM2.5=%.1f idx=%d (%s)\n", tmp.stationName,
+              tmp.usingFallback ? " [ZAPAS]" : "", tmp.pm10, tmp.pm25, tmp.index,
+              airIndexName(tmp.index));
+        } else {
+          // Blad sieci ALBO obie stacje bez swiezych danych — w obu przypadkach NIE
+          // dotykamy gAir: ostatnia (nadal prawdziwa) probka ma zostac na ekranie,
+          // dokladnie jak przy pogodzie/PV wyzej. "Wiek danych" na ekranie sam
+          // powie, jak bardzo sie zestarzala — to uczciwsze niz czarny ekran.
+          strncpy(diag().airErr, tmp.errorMsg, sizeof(diag().airErr) - 1);
+          LOG("Powietrze BLAD: %s\n", tmp.errorMsg);
+          nextAirAt = millis() + 30000;
+        }
       }
     }
 
@@ -1268,6 +1318,10 @@ void setup() {
   uiBurner = gBurner;           // zeby wykres mial dane JUZ w pierwszej klatce, przed pierwszym odpytem pieca
   ui.setBoiler(&uiVi);
   ui.setBurnerHistory(&uiBurner);
+  // Bez wczytywania z NVS: jakosc powietrza NIE ma tu historii do odtworzenia
+  // (w odroznieniu od gHist/gRooms/gGas/gBurner wyzej) — to biezacy odczyt, jak
+  // pogoda/PV, wiec pierwsza probka po prostu poczeka na pierwszy udany fetch.
+  ui.setAir(&uiAir);
 
   if (!settings().hasWifi()) {
     portal::beginAp();
@@ -1560,6 +1614,7 @@ void loop() {
   uiVi = gVi;
   uiBurner = gBurner;
   uiFlights = gFlights;
+  uiAir = gAir;
   xSemaphoreGive(gLock);
 
   gFlightsNeeded = ui.needsFlights(now);

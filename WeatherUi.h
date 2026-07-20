@@ -3,6 +3,7 @@
 #include <TFT_eSPI.h>
 #include <WiFiClient.h>
 
+#include "AirData.h"
 #include "FlightData.h"
 #include "PvData.h"
 #include "WeatherData.h"
@@ -89,6 +90,11 @@ class WeatherUi {
   void setRoomHistory(const struct RoomHistory* rh) { rooms_ = rh; }
   void setBoiler(const vi::Model* b) { boiler_ = b; }
   void setBurnerHistory(const struct BurnerHistory* h) { burner_ = h; }
+  // Jakosc powietrza (v117) — ten sam wzorzec co rooms_/boiler_/burner_ powyzej:
+  // wskaznik do kopii aktualizowanej przez loop() pod gLock, a NIE parametr w
+  // render()/drawView() — ekran POWIETRZE nie potrzebuje watku danych az tak
+  // centralnego jak pogoda/PV/loty (brak prefetchu, brak wplywu na inne widoki).
+  void setAir(const struct AirModel* a) { air_ = a; }
   void viewState(int& cur, int& pin) const {
     cur = view_;
     pin = pinned_;
@@ -161,6 +167,7 @@ class WeatherUi {
   const struct RoomHistory* rooms_ = nullptr;
   const vi::Model* boiler_ = nullptr;
   const struct BurnerHistory* burner_ = nullptr;
+  const struct AirModel* air_ = nullptr;
   int8_t pinned_ = -1;  // >=0: ekran zablokowany z panelu WWW
   uint8_t prevView_ = 0;
   uint32_t viewStart_ = 0;
@@ -221,6 +228,16 @@ class WeatherUi {
   void drawViewMem(TFT_eSPI& spr, int ox, float t, uint32_t heapNow);
   void drawViewMotion(TFT_eSPI& spr, int ox, float t, uint32_t nowMs);
   void drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs, uint32_t heapNow);
+  // v117: jakosc powietrza. `w` — TYLKO do opcjonalnego wiersza porownania z nasza
+  // prognoza (w.current.tempC); juz i tak jest w drawView(), wiec to przekazanie
+  // niczego nie kosztuje. Bez nowMs — jedyna wartosc "zywa" na tym ekranie (wiek
+  // ostatniej probki) liczy sie z epoch (time(nullptr)), nie z millis(), a to jest
+  // ten sam rodzaj odczytu "zegara sciennego", co godzina podswietlanego slupka w
+  // drawViewMotion — tam tez wolane swiezo, z tym samym uzasadnieniem (patrz tamten
+  // komentarz): kosmetyczna niescislosc rzedu sekundy miedzy paskami zrzutu nikomu
+  // nie szkodzi, a wciaganie TEGO parametru przez caly lancuch render/paintFrame/
+  // drawView tylko po to nie byloby tego warte.
+  void drawViewAir(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
   void drawAlert(TFT_eSPI& spr, float t);
   // Podtytuł (sub) niesie powód ciszy falownika — noc, nie awaria.
   void drawNoData(TFT_eSPI& spr, int ox, const char* msg, const char* sub = nullptr);

@@ -28,6 +28,7 @@
 #include "esp_heap_caps.h"
 #include <esp_ota_ops.h>
 
+#include "AirClient.h"
 #include "Config.h"
 #include "Log.h"
 #include "MqttClient.h"
@@ -273,7 +274,7 @@ Symulacja pokazuje sztuczny front — do obejrzenia, jak wygląda wizualizacja.<
 </div>
 </div><script>
 const $=i=>document.getElementById(i);
-const NAMES=['Auto','Retro','Teraz','Godziny','Radar','5 dni','W domu','Piec','Fotowoltaika','Samoloty','Pamięć','Ruch','Statystyki'];
+const NAMES=['Auto','Retro','Teraz','Godziny','Radar','5 dni','W domu','Piec','Fotowoltaika','Samoloty','Powietrze','Pamięć','Ruch','Statystyki'];
 let live=true,pin=-1;
 
 function tabs(){
@@ -1075,6 +1076,44 @@ void apiDiag() {
   f["ok_ago_s"] = ago(d.flightOkAt);
   f["total"] = d.flightsTotal;
   f["err"] = d.flightErr;
+
+  // --- jakosc powietrza (ARMAAG/sensorbox Gdynia — GA17 z automatycznym zapasem
+  // GA24, patrz AirClient.h) ---
+  // W odroznieniu od pogody/PV/lotow wyzej (ktore pokazuja tylko ok_ago_s/err) tu
+  // wystawiamy TAKZE same wartosci — to jedyny sposob, zeby zdalnie sprawdzic, czy
+  // fallback GA17->GA24 zadzialal i co REALNIE widzi wlasciciel na ekranie (patrz
+  // uzasadnienie fallbacku w AirData.h). "err" tu NIE oznacza, ze air.station/pm10/
+  // pm25 sa nieaktualne — tak samo jak przy pogodzie/PV, blad fetcha NIE kasuje
+  // ostatnich dobrych danych (patrz komentarz w netTask, pogoda-gdynia.ino), wiec
+  // przy chwilowej awarii sieci ok_ago_s po prostu rosnie, a wartosci zostaja te
+  // ostatnie prawdziwe.
+  JsonObject air = j["air"].to<JsonObject>();
+  air["ok_ago_s"] = ago(d.airOkAt);
+  air["err"] = d.airErr;
+  air["fallback"] = d.airFallback;      // true = na ekranie GA24 (Halicka)
+  air["station"] = d.airStation;        // "SANDOMIERSKA" / "HALICKA" / ""
+  air["has_pm10"] = d.airHasPm10;
+  // Brak danych ma wygladac jak brak danych — ta sama lekcja co viHas*/pir_min_ms
+  // wyzej w tej funkcji: nieruchome "0" czytaloby sie jak realny, dobry pomiar.
+  if (d.airHasPm10) air["pm10"] = d.airPm10; else air["pm10"] = nullptr;
+  air["has_pm25"] = d.airHasPm25;
+  if (d.airHasPm25) air["pm25"] = d.airPm25; else air["pm25"] = nullptr;
+  air["index"] = d.airIndex;             // 1..6, 0 = brak (patrz tabela w AirClient.cpp)
+  air["index_name"] = airIndexName(d.airIndex);
+  if (d.airSampleEpoch > 0) {
+    air["sample_epoch"] = d.airSampleEpoch;   // unix epoch (UTC) pomiaru na stacji
+    const time_t nowT = time(nullptr);
+    // Wiek POMIARU (od stacji), NIE wiek naszego fetch'a (to jest ok_ago_s wyzej) —
+    // ta sama para pojec, co na ekranie (patrz WeatherUi::drawViewAir).
+    if (nowT > 1700000000) {
+      air["sample_age_s"] = static_cast<long>(nowT - static_cast<time_t>(d.airSampleEpoch));
+    } else {
+      air["sample_age_s"] = nullptr;
+    }
+  } else {
+    air["sample_epoch"] = nullptr;
+    air["sample_age_s"] = nullptr;
+  }
 
   JsonObject mem = j["mem"].to<JsonObject>();
   mem["sram_free"] = ESP.getFreeHeap();
