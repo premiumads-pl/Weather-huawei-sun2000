@@ -100,6 +100,14 @@ class WeatherUi {
     pin = pinned_;
   }
 
+  // Czy ekran `i` jest pomijany w rotacji (radar bez opadu, "w domu" bez czujnikow,
+  // piec bez autoryzacji, powietrze bez danych z obu stacji) — JEDYNE miejsce z tymi
+  // czterema warunkami, zeby definicja "pomijany" nie rozjechala sie miedzy paskiem
+  // postepu V1 (drawProgress) a paskiem segmentow V2 (themev2::hudSegments, patrz
+  // ThemeV2.h). Statyczna i publiczna celowo: hudSegments rysuje sie z osobnego
+  // pliku (ThemeV2.cpp), bez wlasnej instancji WeatherUi.
+  static bool viewSkipped(int i, const struct AirModel* air);
+
   void raiseAlert(const Alert& a, uint32_t nowMs);
   void setBacklightTarget(uint8_t v) {
     // Wymuszenie z panelu (testBacklight) ma pierwszenstwo nad automatem z LDR —
@@ -262,6 +270,32 @@ class WeatherUi {
   // nie szkodzi, a wciaganie TEGO parametru przez caly lancuch render/paintFrame/
   // drawView tylko po to nie byloby tego warte.
   void drawViewAir(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
+
+  // --- V2 ("SCENA", v119) — jeden wariant na kazdy widok V1 powyzej, OPROCZ
+  // VIEW_RETRO (ten zostaje wspolny dla obu wygladow, patrz WeatherUi::drawView
+  // i komentarz przy Settings::theme w Settings.h). Te same modele danych co
+  // V1 (patrz sygnatury — identyczne parametry), inny styl rysowania: prymitywy
+  // z ThemeV2.h (HUD/segmenty/tytul/karta/tlo), font wylacznie RetroFont.
+  // Definicje siedza w OSOBNEJ sekcji na koncu WeatherUi.cpp — nie mieszane z
+  // V1, zeby "nie ruszac V1" bylo prawdziwe takze wizualnie w diffie.
+  void drawViewNowV2(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
+  void drawViewHoursV2(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
+  void drawViewDaysV2(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
+  void drawViewPvV2(TFT_eSPI& spr, int ox, float t, const PvModel& pv, const PvHistory& hist);
+  void drawViewFlightsV2(TFT_eSPI& spr, int ox, float t, const FlightModel& fl);
+  void drawViewRadarV2(TFT_eSPI& spr, int ox, float t, const WeatherModel& w, uint32_t nowMs);
+  void drawViewHomeV2(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
+  void drawViewBoilerV2(TFT_eSPI& spr, int ox, float t);
+  void drawViewAirV2(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
+  void drawViewMemV2(TFT_eSPI& spr, int ox, float t, uint32_t heapNow);
+  void drawViewMotionV2(TFT_eSPI& spr, int ox, float t, uint32_t nowMs);
+  void drawViewStatsV2(TFT_eSPI& spr, int ox, float t, uint32_t nowMs, uint32_t heapNow);
+  // Karta "BRAK DANYCH" — jeden wyglad dla wszystkich miejsc w V2, ktore V1
+  // pokrywa przez drawNoData()/drawNoData(..., sub). `msg`/`sub` ida przez
+  // themev2::foldAscii w srodku (patrz definicja) — wolno im wiec nosic
+  // polskie znaki, tak jak istniejacym stringom bledow (np. radarmap::lastError()).
+  void drawNoDataV2(TFT_eSPI& spr, int ox, const char* msg, const char* sub = nullptr);
+
   void drawAlert(TFT_eSPI& spr, float t);
   // Podtytuł (sub) niesie powód ciszy falownika — noc, nie awaria.
   void drawNoData(TFT_eSPI& spr, int ox, const char* msg, const char* sub = nullptr);

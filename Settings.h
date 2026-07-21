@@ -21,6 +21,19 @@ struct Settings {
 
   bool otaEnabled = true;
 
+  // --- wyglad interfejsu (V1 "klasyczny" / V2 "SCENA", przelaczane z panelu) ---
+  // Tylko 1 albo 2 — kazda inna wartosc w NVS (urzadzenie czyste, blob z przyszlej
+  // wersji) wraca do domyslnej w load(). Domyslnie 2: wlasciciel zamowil V2 jako
+  // docelowy wyglad; V1 zostaje dostepny z panelu jako odwrot awaryjny, gdyby w
+  // nowym stylu czegos zabraklo. Ekran VIEW_RETRO (indeks 0) NIE jest tym objety —
+  // zostaje identyczny w obu wygladach (patrz WeatherUi::drawViewRetro).
+  uint8_t theme = 2;
+  // Zapisuje OD RAZU do NVS (jak viSave()/meterSave()/bleGwSave()) i tylko wtedy,
+  // gdy t to 1 albo 2 — przelacznik w panelu ma dzialac natychmiast, samodzielnie,
+  // bez klikania gdziekolwiek indziej "Zapisz". false = t byla spoza {1,2}, RAM i
+  // NVS zostaja nietkniete.
+  bool setTheme(uint8_t t);
+
   // --- MQTT / Home Assistant (domyslnie WYLACZONE) ---
   // Prefix jest krotki celowo: wchodzi do kazdego retained pakietu discovery,
   // a bufor klienta MQTT ma tylko 512 B (patrz MqttClient.cpp).

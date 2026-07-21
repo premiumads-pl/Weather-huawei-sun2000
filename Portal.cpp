@@ -140,6 +140,15 @@ li:hover{border-color:#00dcf0;background:#0d1c30}
 </div>
 
 <div class=c>
+<h2>Wygląd interfejsu</h2>
+<div class=tabs>
+<button id=thv1 onclick=setTheme(1)>Wygląd V1</button>
+<button id=thv2 onclick=setTheme(2)>Wygląd V2</button>
+</div>
+<div class=hint id=thmsg>Zmiana działa od razu, bez restartu urządzenia.</div>
+</div>
+
+<div class=c>
 <h2>Sieć Wi-Fi</h2>
 <button class=s onclick=scan()>Wyszukaj sieci bezprzewodowe</button>
 <ul id=nets></ul>
@@ -278,11 +287,25 @@ Symulacja pokazuje sztuczny front — do obejrzenia, jak wygląda wizualizacja.<
 </div><script>
 const $=i=>document.getElementById(i);
 const NAMES=['Auto','Retro','Teraz','Godziny','Radar','5 dni','W domu','Piec','Fotowoltaika','Samoloty','Powietrze','Pamięć','Ruch','Statystyki'];
-let live=true,pin=-1;
+let live=true,pin=-1,theme=2;
 
 function tabs(){
  $('tabs').innerHTML=NAMES.map((n,i)=>
   `<button class="${i-1===pin?'on':''}" onclick="pickView(${i-1})">${n}</button>`).join('');
+}
+function themeUI(){
+ $('thv1').className=theme===1?'on':'';
+ $('thv2').className=theme===2?'on':'';
+}
+async function setTheme(v){
+ $('thmsg').textContent='Zmieniam…';
+ try{
+  const r=await(await fetch('/api/theme?v='+v,{method:'POST'})).json();
+  theme=r.theme;
+  $('thmsg').className='hint '+(r.ok?'ok':'err');
+  $('thmsg').textContent=r.ok?'Zapisano — ekran przełączy się od razu.':'Nie udało się zapisać.';
+ }catch(e){$('thmsg').className='hint err';$('thmsg').textContent='Błąd połączenia';}
+ themeUI();
 }
 async function pickView(i){
  pin=i;tabs();
@@ -424,6 +447,7 @@ async function load(){
  $('st').textContent=r.ap?'tryb konfiguracji':('połączono z '+r.ssid+' · '+r.ip);
  $('cur').textContent=r.city+' ('+r.lat.toFixed(4)+', '+r.lon.toFixed(4)+')';
  $('ssid').value=r.ssid||'';$('mb').value=r.mb||'';$('peak').value=(r.peak/1000).toFixed(1);
+ theme=r.theme||2;themeUI();
  $('mqen').checked=!!r.mq_en;$('mqhost').value=r.mq_host||'';$('mqport').value=r.mq_port||1883;
  $('mqpre').value=r.mq_pre||'';$('mquser').value=r.mq_user||'';$('mqpass').value='';
  // Pola generuje JS z tablicy, zeby ich liczba szla za firmware'em, a nie za HTML-em.
@@ -514,6 +538,7 @@ void apiState() {
   d["lon"] = settings().lon;
   d["mb"] = settings().modbusHost;
   d["peak"] = settings().pvPeakW;
+  d["theme"] = settings().theme;   // 1 albo 2 — panel czyta to przy kazdym ladowaniu
 
   // UWAGA: hasla brokera nie zwracamy NIGDY — tylko flage "cos jest ustawione".
   d["mq_en"] = settings().mqttEnabled;
@@ -1578,6 +1603,21 @@ void apiBacklight() {
   server.send(200, "application/json", buf);
 }
 
+// Przelacznik wygladu V1/V2. Dziala NATYCHMIAST bez restartu: settings().setTheme()
+// pisze do NVS od razu (patrz Settings.cpp), a nastepna klatka juz czyta nowa
+// wartosc — tyle ze na razie NIC jej jeszcze nie czyta (ten etap buduje tylko
+// przelacznik i prymitywy V2, patrz ThemeV2.h; podlaczenie do rysowania widokow to
+// kolejny krok). v spoza {1,2} zostaje bez zmian — endpoint zwraca wtedy aktualny,
+// niezmieniony stan, a nie zamrozony/domyslny, zeby panel zawsze pokazal PRAWDE.
+void apiTheme() {
+  const int v = server.hasArg("v") ? server.arg("v").toInt() : 0;
+  const bool ok = (v == 1 || v == 2) && settings().setTheme(static_cast<uint8_t>(v));
+  char buf[64];
+  snprintf(buf, sizeof(buf), "{\"ok\":%s,\"theme\":%d}", ok ? "true" : "false",
+           settings().theme);
+  server.send(200, "application/json", buf);
+}
+
 void apiView() {
   if (gViewSet != nullptr && server.hasArg("i")) {
     gViewSet(server.arg("i").toInt());
@@ -1966,6 +2006,7 @@ void routes() {
   server.on("/api/coredump/raw", HTTP_GET, apiCoredumpRaw);
   server.on("/api/screen", apiScreen);
   server.on("/api/view", apiView);
+  server.on("/api/theme", HTTP_POST, apiTheme);
   server.on("/api/bl", apiBacklight);
   server.on("/api/ble", HTTP_GET, apiBleList);
   server.on("/api/ble", HTTP_POST, apiBleSet);

@@ -69,6 +69,22 @@ constexpr int CONTENT_H = 172;
 // stala, nie zobaczylby ZADNEGO efektu. Jedyne zrodlo prawdy o stopce to
 // WeatherUi::VIEW_H (= CONTENT_Y + CONTENT_H) i wysokosc liczona w drawFooterTo().
 
+// ---------- Siatka layoutu V2 ("SCENA", v119) ----------
+// Ten sam bufor rysowania (do y=205, czyli CONTENT_Y+CONTENT_H — patrz
+// WeatherUi::VIEW_H i notatka wyzej) w drugim ukladzie: HUD gorny, pasek segmentow
+// rotacji, wiersz tytulu, potem wlasna tresc ekranu (karty albo scena). Wspolne dla
+// wszystkich 12 planowanych ekranow V2 i zrodlo prawdy dla themev2::* (ThemeV2.h/
+// .cpp) — tak jak stale wyzej sa zrodlem prawdy dla ukladu V1. VIEW_RETRO (ekran 0)
+// nie korzysta z ZADNEJ z tych dwoch siatek — ma wlasny HUD w obu wygladach
+// (patrz komentarz przy drawViewRetro w WeatherUi.h).
+constexpr int V2_HUD_H = 28;       // y=0..27 — themev2::hudTop
+constexpr int V2_SEG_Y = 29;       // themev2::hudSegments — ta sama pozycja co PROG_Y
+constexpr int V2_SEG_H = 3;        // = PROG_H: ten sam pasek co V1, inny styl rysowania
+constexpr int V2_TITLE_Y = 36;     // themev2::titleRow
+constexpr int V2_TITLE_H = 16;     // y=36..51
+constexpr int V2_CONTENT_Y = 54;   // od tad ekran rysuje wlasna tresc (karty/scena)
+constexpr int V2_CONTENT_BOTTOM = CONTENT_Y + CONTENT_H;  // = 206, ten sam bufor co V1
+
 // ---------- Podświetlenie — steruje nim OPTOREZYSTOR, nie zegar ----------
 constexpr uint32_t BL_PWM_FREQ = 5000;
 constexpr uint8_t BL_PWM_BITS = 8;

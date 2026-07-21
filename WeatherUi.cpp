@@ -28,6 +28,7 @@
 #include "WeatherIcons.h"
 #include "RetroFont.h"
 #include "RetroSprites.h"
+#include "ThemeV2.h"
 
 // v111: widok PAMIEC czyta te trzy wprost z ESP-IDF (heap_caps_*/partycje/OTA) —
 // juz i tak zlinkowane (ESP.getFreeHeap(), Ota.cpp, OtaGuard.cpp korzystaja z tego
@@ -506,6 +507,18 @@ void WeatherUi::drawHeader(TFT_eSPI& spr, const WeatherModel& w, bool wifiOk, ui
   }
 }
 
+// Definicja zyje tu (obok drawProgress, jej jedynego dotychczasowego uzytkownika),
+// ale jest publiczna i statyczna (patrz deklaracja w WeatherUi.h) — themev2::
+// hudSegments w ThemeV2.cpp wola ja bez wlasnej instancji WeatherUi. Warunki SA
+// dokladnie tym, co do v118 stalo wprost w drawProgress(); wydzielenie nie zmienia
+// zadnego z nich, tylko daje im jedno miejsce zamiast dwoch.
+bool WeatherUi::viewSkipped(int i, const AirModel* air) {
+  return (i == cfg::VIEW_RADAR && !radarmap::hasRain()) ||
+         (i == cfg::VIEW_HOME && ble::count() == 0) ||
+         (i == cfg::VIEW_BOILER && !settings().hasViessmann()) ||
+         (i == cfg::VIEW_AIR && (!air || !air->ready));
+}
+
 void WeatherUi::drawProgress(TFT_eSPI& spr, uint32_t nowMs) {
   if (!spr.checkViewport(0, cfg::PROG_Y, W, cfg::PROG_H + 2)) {
     return;
@@ -528,10 +541,9 @@ void WeatherUi::drawProgress(TFT_eSPI& spr, uint32_t nowMs) {
 
     // Ekran pominiety w rotacji (radar bez opadu, "w domu" bez czujnikow) dostaje
     // wlasny, przygaszony kolor — widac, ze istnieje, ale nie ma czego pokazac.
-    const bool skipped = (i == cfg::VIEW_RADAR && !radarmap::hasRain()) ||
-                         (i == cfg::VIEW_HOME && ble::count() == 0) ||
-                         (i == cfg::VIEW_BOILER && !settings().hasViessmann()) ||
-                         (i == cfg::VIEW_AIR && (!air_ || !air_->ready));
+    // Warunki sa w viewSkipped() (patrz komentarz przy deklaracji w WeatherUi.h) —
+    // to samo pyta drugi pasek, w stylu V2 (themev2::hudSegments).
+    const bool skipped = viewSkipped(i, air_);
     if (skipped) {
       spr.fillRect(x, cfg::PROG_Y, wSeg, cfg::PROG_H, lerp565(col::BG, col::RAIN, 0.30f));
       continue;
@@ -1948,52 +1960,56 @@ void WeatherUi::drawView(TFT_eSPI& spr, uint8_t view, int ox, float t, const Wea
   // nic nie rysuje, a pasek postepu pokazuje segment jakby wszystko gralo.
   static_assert(cfg::VIEW_STATS == cfg::VIEW_COUNT - 1,
                 "ostatni widok musi byc VIEW_COUNT-1 — inaczej rotacja trafia w default");
+  // VIEW_RETRO (case ponizej) NIE sprawdza `v2` ani razu — jest identyczny w
+  // obu wygladach z definicji (patrz komentarz przy Settings::theme w
+  // Settings.h i przy WeatherUi::drawViewRetro w WeatherUi.h).
+  const bool v2 = settings().theme == 2;
   switch (view) {
     case cfg::VIEW_RETRO:
       if (w.ready) drawViewRetro(spr, ox, t, w, nowMs);
       else drawNoData(spr, ox, "Pobieram prognozę...");
       break;
     case cfg::VIEW_NOW:
-      if (w.ready) drawViewNow(spr, ox, t, w);
-      else drawNoData(spr, ox, "Pobieram prognozę...");
+      if (!w.ready) { drawNoData(spr, ox, "Pobieram prognozę..."); break; }
+      if (v2) drawViewNowV2(spr, ox, t, w); else drawViewNow(spr, ox, t, w);
       break;
     case cfg::VIEW_HOURS:
-      if (w.ready) drawViewHours(spr, ox, t, w);
-      else drawNoData(spr, ox, "Pobieram prognozę...");
+      if (!w.ready) { drawNoData(spr, ox, "Pobieram prognozę..."); break; }
+      if (v2) drawViewHoursV2(spr, ox, t, w); else drawViewHours(spr, ox, t, w);
       break;
     case cfg::VIEW_DAYS:
-      if (w.ready) drawViewDays(spr, ox, t, w);
-      else drawNoData(spr, ox, "Pobieram prognozę...");
+      if (!w.ready) { drawNoData(spr, ox, "Pobieram prognozę..."); break; }
+      if (v2) drawViewDaysV2(spr, ox, t, w); else drawViewDays(spr, ox, t, w);
       break;
     case cfg::VIEW_RADAR:
-      drawViewRadar(spr, ox, t, w, nowMs);
+      if (v2) drawViewRadarV2(spr, ox, t, w, nowMs); else drawViewRadar(spr, ox, t, w, nowMs);
       break;
     case cfg::VIEW_HOME:
-      drawViewHome(spr, ox, t, w);
+      if (v2) drawViewHomeV2(spr, ox, t, w); else drawViewHome(spr, ox, t, w);
       break;
     case cfg::VIEW_BOILER:
-      drawViewBoiler(spr, ox, t);
+      if (v2) drawViewBoilerV2(spr, ox, t); else drawViewBoiler(spr, ox, t);
       break;
     case cfg::VIEW_PV:
-      drawViewPv(spr, ox, t, pv, hist);
+      if (v2) drawViewPvV2(spr, ox, t, pv, hist); else drawViewPv(spr, ox, t, pv, hist);
       break;
     case cfg::VIEW_FLIGHTS:
-      drawViewFlights(spr, ox, t, fl);
+      if (v2) drawViewFlightsV2(spr, ox, t, fl); else drawViewFlights(spr, ox, t, fl);
       break;
     case cfg::VIEW_AIR:
       // Bez "if (w.ready)" jak przy NOW/HOURS/DAYS: ten widok zalezy od WLASNEGO
       // modelu (air_), nie od WeatherModel — gotowosc sprawdza on sam w srodku
       // (tak samo jak PV/BOILER/HOME czytaja swoje wlasne modele).
-      drawViewAir(spr, ox, t, w);
+      if (v2) drawViewAirV2(spr, ox, t, w); else drawViewAir(spr, ox, t, w);
       break;
     case cfg::VIEW_MEM:
-      drawViewMem(spr, ox, t, heapNow);
+      if (v2) drawViewMemV2(spr, ox, t, heapNow); else drawViewMem(spr, ox, t, heapNow);
       break;
     case cfg::VIEW_MOTION:
-      drawViewMotion(spr, ox, t, nowMs);
+      if (v2) drawViewMotionV2(spr, ox, t, nowMs); else drawViewMotion(spr, ox, t, nowMs);
       break;
     case cfg::VIEW_STATS:
-      drawViewStats(spr, ox, t, nowMs, heapNow);
+      if (v2) drawViewStatsV2(spr, ox, t, nowMs, heapNow); else drawViewStats(spr, ox, t, nowMs, heapNow);
       break;
     default:
       break;
@@ -2031,8 +2047,24 @@ void WeatherUi::paintFrame(TFT_eSPI& spr, const WeatherModel& w, const PvModel& 
   const bool hideChrome =
       view_ == cfg::VIEW_RETRO || (transitioning_ && prevView_ == cfg::VIEW_RETRO);
   if (!hideChrome) {
-    drawHeader(spr, w, wifiOk, nowMs);
-    drawProgress(spr, nowMs);
+    // V2 dostaje WLASNY HUD (miasto/data/godzina) i pasek segmentow zamiast
+    // belki+paska V1 — patrz ThemeV2.h. `&& !alertActive_`: drawAlert() rysuje
+    // na wspolrzednych V1 (CY=34), nie na V2_TITLE_Y=36..51 — przepisanie
+    // popupu alertu na uklad V2 nie bylo w zakresie tego zadania (alerty sa
+    // rzadkie i krotkie, 6,5 s), wiec na czas alertu CALA belka (w obu
+    // wygladach) wraca do V1, zamiast ryzykowac nachodzenie dwoch ukladow.
+    // Chrome (jak dzis) NIGDY nie slizga sie z `ox` — tylko tytul/tresc
+    // widoku (drawView*V2 dostaje wlasne `ox`) jedzie podczas przejscia.
+    if (settings().theme == 2 && !alertActive_) {
+      themev2::hudTop(spr, 0, settings().city);
+      const float frac = transitioning_
+                             ? 0.f
+                             : clampf(static_cast<float>(nowMs - viewStart_) / holdFor(view_), 0.f, 1.f);
+      themev2::hudSegments(spr, 0, view_, cfg::VIEW_COUNT, frac, air_);
+    } else {
+      drawHeader(spr, w, wifiOk, nowMs);
+      drawProgress(spr, nowMs);
+    }
   }
 }
 

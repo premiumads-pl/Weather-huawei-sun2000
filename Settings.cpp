@@ -74,6 +74,11 @@ void Settings::load() {
   modbusPort = prefs.getUShort("mbport", 502);
   pvPeakW = prefs.getUShort("peak", 6000);
   otaEnabled = prefs.getBool("ota", true);
+  // Domyslnie 2 (V2) — patrz uzasadnienie przy polu w Settings.h. Kazda wartosc
+  // spoza {1,2} (np. 0 z NVS, ktorego ta wersja nigdy by nie zapisala) wraca do
+  // domyslnej, zamiast wciskac sie w rysowanie jako nieznany wyglad.
+  const uint8_t th = prefs.getUChar("theme", 2);
+  theme = (th == 1 || th == 2) ? th : 2;
 
   String mh = prefs.getString("mqhost", "");
   String mu = prefs.getString("mquser", "");
@@ -162,6 +167,22 @@ void Settings::save() {
   prefs.putBool("mqen", mqttEnabled);
   bleGwWrite(prefs, *this);
   prefs.end();
+}
+
+// Osobno od save(): przelacznik wygladu klika sie z panelu niezaleznie od reszty
+// formularzy (WiFi/MQTT/lokalizacja...), wiec nie ma powodu przy KAZDYM kliknieciu
+// V1/V2 przepisywac do NVS cala reszte ustawien. Ten sam wzorzec co viSave()/
+// meterSave()/bleGwSave() nizej.
+bool Settings::setTheme(uint8_t t) {
+  if (t != 1 && t != 2) return false;
+  theme = t;
+  Preferences prefs;
+  if (!prefs.begin(NS_CFG, false)) {
+    return false;
+  }
+  prefs.putUChar("theme", theme);
+  prefs.end();
+  return true;
 }
 
 const char* Settings::bleGwAt(int i) const {
