@@ -391,6 +391,14 @@ Sensor get(int i) {
   return s;
 }
 
+// Bez mutexu CELOWO - patrz uzasadnienie przy deklaracji w BleSensors.h (adres
+// slotu jest zapisywany raz i nigdy nie zmienia wartosci, wiec nie ma wyscigu,
+// przed ktorym mialby bronic). Zwracamy wskaznik do tablicy, nie do kopii.
+const char* macOf(int i) {
+  if (i < 0 || i >= MAX_SENSORS) return "";
+  return gSensors[i].mac;
+}
+
 bool ready() {
   return gReady;
 }

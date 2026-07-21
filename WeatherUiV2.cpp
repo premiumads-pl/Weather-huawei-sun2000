@@ -269,7 +269,11 @@ void WeatherUi::drawViewRadarV2(TFT_eSPI& spr, int ox, float t, const WeatherMod
   // co V1 (to ten sam pomiar i ta sama geometria), zmienia sie tylko wiersz
   // tytulu i brak belki V1. Powielanie rysowania opadu byloby kopiowaniem
   // kilkuset linii bez zadnej roznicy wizualnej.
-  themev2::titleRow(spr, ox, "RADAR", radarmap::hasRain() ? "OPAD" : "BEZ OPADU", nullptr);
+  // "Czy w ogole pada" to pytanie o DANE, nie o piksele — odpowiedz przychodzi
+  // gotowa w modelu (RadarData.h), tak samo jak wybrana klatka i wektor wiatru.
+  static const RadarViewModel kEmptyRadar{};
+  const RadarViewModel& rm = radarModel_ ? *radarModel_ : kEmptyRadar;
+  themev2::titleRow(spr, ox, "RADAR", rm.hasRain ? "OPAD" : "BEZ OPADU", nullptr);
   drawViewRadar(spr, ox, t, w, nowMs);
 }
 
@@ -280,7 +284,19 @@ void WeatherUi::drawViewHomeV2(TFT_eSPI& spr, int ox, float t, const WeatherMode
   themev2::sceneBackground(spr, ox, CY2, CB2, CB2 - 24, kHouse,
                            sizeof(kHouse) / sizeof(kHouse[0]));
 
-  const int n = ble::count();
+  // Gotowe wiersze z warstwy danych (RoomModel, patrz RoomData.h) — ten sam model,
+  // ktory czyta wariant V1. Do v125 kazdy z dwoch wygladow czytal nasluch BLE sam,
+  // i kazdy inaczej: V1 pomijal czujnik bez wpisu w ustawieniach, V2 rysowal go
+  // z MAC-iem.
+  // Rozjazd wyszedl dopiero przy porownaniu obu ekranow obok siebie.
+  static const RoomModel kNoRooms{};
+  const RoomModel& rmod = roomModel_ ? *roomModel_ : kNoRooms;
+
+  // Naglowek i podzial siatki licza sie z liczby CZUJNIKOW, a karty z liczby
+  // WIERSZY (czyli czujnikow, ktore cokolwiek nadaly). To NIE jest ta sama liczba
+  // i tak bylo takze przed refaktorem (liczba slotow nasluchu kontra petla pomijajaca
+  // !s.valid) — zostaje bez zmian, bo to odtworzenie zachowania, nie poprawka.
+  const int n = rmod.sensorCount;
   char info[24];
   snprintf(info, sizeof(info), "* %d CZUJNIKOW", n);
   themev2::titleRow(spr, ox, "W DOMU", info, "BLE");
@@ -297,27 +313,26 @@ void WeatherUi::drawViewHomeV2(TFT_eSPI& spr, int ox, float t, const WeatherMode
   const int shown = n > 6 ? 6 : n;
   const int cols = (shown <= 2) ? shown : ((shown == 4) ? 2 : 3);
   const Grid g(shown, cols);
-  // Nazwa pokoju NIE jest w czujniku — siedzi w ustawieniach, znajdowana po MAC
-  // (ten sam wzorzec co drawViewHome w V1: bleFind + slot). Czujnik bez wpisu
-  // w ustawieniach pomijamy, bo nie wiadomo, jak go podpisac.
+  // Nazwa pokoju NIE jest w czujniku — siedzi w ustawieniach, znajdowana po MAC.
+  // Od v126 robi to warstwa danych (RoomRow::name jest juz rozwiazane: wpis z
+  // ustawien albo MAC czujnika, ktorego nikt nie podpisal), wiec tutaj zostaje
+  // samo rysowanie.
   int drawn = 0;
-  for (int i = 0; i < ble::count() && drawn < 6; ++i) {
-    const ble::Sensor s = ble::get(i);
-    if (!s.valid) continue;
-    const Settings::BleCfg* cfg = settings().bleFind(s.mac);
+  for (int i = 0; i < rmod.count && drawn < 6; ++i) {
+    const RoomRow& r = rmod.rows[i];
     char lbl[14];
-    themev2::foldAscii(lbl, sizeof(lbl), (cfg && cfg->name[0]) ? cfg->name : s.mac);
+    themev2::foldAscii(lbl, sizeof(lbl), r.name);
     char val[10] = "--";
-    if (s.hasTemp) snprintf(val, sizeof(val), "%.1f", s.tempC);
+    if (r.hasTemp) snprintf(val, sizeof(val), "%.1f", r.tempC);
     char sub[12];
     // Bateria ponizej 20% jest wazniejsza niz wilgotnosc — to ona mowi, ze czujnik
     // zaraz zamilknie. Stad podmiana wartosci dodatkowej i ostrzezenie.
-    const bool lowBat = s.batteryPct > 0 && s.batteryPct < 20;
+    const bool lowBat = r.batteryPct > 0 && r.batteryPct < 20;
     if (lowBat) snprintf(sub, sizeof(sub), "BAT!");
-    else if (s.hasHum) snprintf(sub, sizeof(sub), "%.0f%%", s.humidity);
+    else if (r.hasHum) snprintf(sub, sizeof(sub), "%.0f%%", r.humidity);
     else snprintf(sub, sizeof(sub), "---");
     cardIn(spr, g, drawn, e, lbl, val, sub, lowBat,
-           s.hasTemp ? tempColorV2(s.tempC) : themev2::col2::DIM);
+           r.hasTemp ? tempColorV2(r.tempC) : themev2::col2::DIM);
     ++drawn;
   }
 }

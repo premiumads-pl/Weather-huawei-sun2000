@@ -2775,117 +2775,37 @@ void WeatherUi::drawOtaDirect(int progress, const char* msg) {
 
 void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel& w,
                                uint32_t nowMs) {
+  // `w` i `nowMs` sa tu od v126 NIEUZYWANE — i to jest cala miara tej zmiany.
+  // Wybor klatki animacji (z nowMs), jej wiek i wektor przesuniecia chmur (z wiatru
+  // w `w.current`) licza sie teraz w warstwie danych: buildRadarModel() w
+  // pogoda-gdynia.ino. Tam tez wedrowal ZAPIS do diagnostyki radaru — funkcja
+  // rysujaca nie ma prawa mutowac globalnego stanu, tym bardziej ze ten sam kod
+  // rysuje takze zrzut BMP z webTask, czyli z DRUGIEGO rdzenia.
+  //
+  // Parametry zostaja w sygnaturze, bo drawView() woła wszystkie widoki jednakowo
+  // (i tak samo woła wariant V2, ktory doklada tylko wiersz tytulu) — wycinanie ich
+  // z JEDNEGO widoku rozjechaloby ten uklad, a niczego nie kupuje.
+  (void)w;
+  (void)nowMs;
+
   const float e = easeOutCubic(t);
 
-  const int n = radarmap::count();
+  static const RadarViewModel kEmpty{};
+  const RadarViewModel& rm = radarModel_ ? *radarModel_ : kEmpty;
+
+  const int n = rm.frames;
   if (n == 0) {
     viewHeader(spr, ox, "pobieram...");
-    drawNoData(spr, ox, "Pobieram mapę opadów", radarmap::lastError());
+    drawNoData(spr, ox, "Pobieram mapę opadów", rm.error);
     return;
   }
 
-  // Klatka animacji: cyklicznie, z krotka pauza na ostatniej (najnowszej) —
-  // inaczej oko nie zdazy zauwazyc, gdzie pada TERAZ.
-  const int steps = n + 2;   // 2 dodatkowe "przystanki" na koncu
-  const int step = static_cast<int>((nowMs / cfg::RADAR_FRAME_MS) % steps);
-  const int fi = step >= n ? n - 1 : step;
-
-  const radarmap::Frame& fr = radarmap::frame(fi);
-  diag().radarFrame = fi;
-  diag().radarFrameMin = fr.offsetMin;
-
-  // --- wektor przesuniecia chmur MIEDZY klatkami (z wiatru) ---
-  // Zamiast trzymac klatke `fi` nieruchomo przez cale RADAR_FRAME_MS, przesuwamy
-  // jej PROBKOWANIE stopniowo w kierunku wiatru: przy frameT=0 stoi w miejscu,
-  // przy frameT->1 dojezdza o caly wektor (dx,dy) — czyli mniej wiecej tam, gdzie
-  // za chwile stanie fi+1. Skok na granicy klatek wychodzi wiec maly, zamiast
-  // calego kroku ~24 px naraz (to byla POLOWA problemu "latania"; druga polowa to
-  // 7->13 klatek w RadarMap). `frameT` to INNA faza animacji niz parametr `t` tej
-  // funkcji: `t` to wejscie na EKRAN radaru (przejscie miedzy widokami), `frameT`
-  // to pozycja WEWNATRZ pojedynczej klatki radaru — nie mylic.
-  //
-  // Liczone RAZ na wywolanie (nie w petli pikseli nizej!): sin/cos i dzielenie to
-  // jedyny "ciezki" rachunek tutaj, a budzet calej klatki to 21 ms (gfx.draw_us
-  // w /api/diag) przy 19 fps — tego nie wolno ruszyc.
-  int sx = 0, sy = 0;
-  if (fi + 1 < n) {
-    // Najnowsza klatka (fi == n-1, "teraz") nie ma nastepnej, do ktorej "dojezdzac"
-    // — zostaje nieruchoma przez cala pauze na koncu animacji (patrz `steps` wyzej,
-    // fi==n-1 trzyma sie tam przez trzy odslony: ostatni normalny krok + 2 przystanki).
-    //
-    // Swiezosc pogody: bez tego martwy WiFi (stary odczyt wiatru sprzed godzin, z
-    // zupelnie innej sytuacji synoptycznej) animowalby chmury w przypadkowym
-    // kierunku. `ageMs` liczone jako signed — ten sam idiom co ago() w Portal.cpp
-    // (apiDiag()): (nowMs - okAt) na uint32 przekreca sie po ~49 dniach dzialania,
-    // a diag().weatherOkAt pisze netTask, inny watek niz ten, ktory tu rysuje —
-    // `okAt` bywa wiec "z przyszlosci" wzgledem `nowMs` zlapanego u wolajacego
-    // (paintFrame lapie nowMs RAZ, ale to nie chroni przed zapisem z INNEGO rdzenia
-    // w miedzyczasie). Ujemny wiek traktujemy wtedy jako "swiezy", tak samo jak ago().
-    const uint32_t okAt = diag().weatherOkAt;
-    const int32_t ageMs = static_cast<int32_t>(nowMs - okAt);
-    const bool wxFresh = okAt != 0 && ageMs < static_cast<int32_t>(2 * cfg::WEATHER_REFRESH_MS);
-
-    // windKmh == 0 (cisza) albo dane nieswieze -> dx=dy=0, czyli sx=sy=0 ponizej:
-    // zachowanie jak dzis, zwykly skok bez interpolacji. Bezpieczny fallback —
-    // nie zgadujemy kierunku, gdy nie mamy z czego.
-    if (wxFresh && w.current.windKmh > 0.05f) {
-      // v110: skala PRZY MAPIE (gmapr::M_PER_PX w MapDataRadar.h), nie zaszyta tutaj
-      // jako literal — to byla usterka, ktora ta zmiana naprawia, nie zdobi. Do v109
-      // stalo tu "constexpr float kMPerPx = 349.f", czyli skala gmapw (111 km/320 px).
-      // Ta mapa (gmapr) pokrywa ~300 km na tej samej liczbie pikseli, wiec kazdy
-      // piksel to WIECEJ metrow (~937 m/px, 2,7x wiecej — patrz wyprowadzenie przy
-      // gmapr::M_PER_PX). Zostawienie 349 kazaloby ponizszemu stepPx wyjsc 2,7x za
-      // MALY w pikselach wzgledem prawdziwej predkosci wiatru w metrach — czyli
-      // chmury na ekranie plynelyby 2,7x za SZYBKO wzgledem tego, co pokazuje
-      // kolejna klatka (dokladnie objaw z opisu zadania). Stala siedzi PRZY mapie
-      // (MapDataRadar.h), nie tutaj, zeby przy kolejnej zmianie granic gmapr nie
-      // trzeba bylo pamietac o rownoleglej zmianie w dwoch miejscach.
-      // Klatka co RADAR_MAP_REFRESH_MS (10 min) — liczone z tej stalej, a nie z
-      // wpisanej na sztywno "10", zeby wzor sam nadazyl, gdyby cykl kiedys sie zmienil.
-      constexpr float kFrameMin = static_cast<float>(cfg::RADAR_MAP_REFRESH_MS) / 60000.f;
-
-      // Predkosc na wysokosci, na ktorej faktycznie plynie echo (patrz komentarz
-      // przy RADAR_FLOW_GAIN w Config.h — to jawne przyblizenie, nie pomiar).
-      const float speedKmh = w.current.windKmh * cfg::RADAR_FLOW_GAIN;
-      // V[km/h] * czas[h] * 1000[m/km] / (m/px) = przesuniecie w px na jedna klatke.
-      // Np. 50 km/h, gain=1: 50 * (10/60) * 1000 / 937,5 = 8,9 px na 10 min (przy
-      // gmapw/349 wychodzilo 23,9 px — ten sam wiatr daje mniej pikseli na SZERSZEJ
-      // mapie, bo kazdy piksel to teraz wiecej metrow; to jest oczekiwane, nie blad).
-      const float stepPx = speedKmh * (kFrameMin / 60.f) * 1000.f / gmapr::M_PER_PX;
-
-      // KIERUNEK — wyprowadzenie (najlatwiejsze miejsce na blad znaku w tej zmianie):
-      // windDir to kierunek, SKAD wieje wiatr (konwencja meteo/Open-Meteo), NIE dokad.
-      // Dla azymutu theta liczonego od polnocy zgodnie z ruchem wskazowek zegara
-      // (0=N, 90=E, 180=S, 270=W) wektor jednostkowy w ukladzie (East,North) to
-      // (sin(theta), cos(theta)) — sprawdzenie: theta=90 (E) daje (1,0), czysty
-      // wschod. Chmury plyna w kierunku PRZECIWNYM do windDir, czyli azymutem
-      // (windDir+180), a sin/cos(x+180) = -sin/cos(x), wiec ruch chmur w (East,North):
-      //   East  = -sin(windDir)
-      //   North = -cos(windDir)
-      // (to dokladnie standardowy meteorologiczny wzor na skladowe wiatru:
-      // u = -V*sin(kierunek), v = -V*cos(kierunek)).
-      // Na ekranie +x = East (LON rosnie w prawo — bez zmiany znaku), ale +y jest
-      // W DOL, a North to "w gore" ekranu, wiec trzeba jeszcze zanegowac North:
-      //   dx =  East  =  -sin(windDir)
-      //   dy = -North = -(-cos(windDir)) = cos(windDir)
-      // Ten sam uklad (East=+x bez zmiany znaku, North=-y) uzywa juz nizej w tym
-      // pliku strzalka kierunku lotu (~linia 1695: tx=x+sin(a)*R, ty=y-cos(a)*R dla
-      // `track`, czyli kierunku DOKAD leci samolot) — windDir to `track+180`, stad
-      // dodatkowe zanegowanie obu skladowych wzgledem tamtego wzoru.
-      // Kontrola na dwoch kierunkach z tresci zadania:
-      //   wiatr z zachodu (windDir=270): dx = -sin(270) = +1 -> na wschod (+x). OK.
-      //   wiatr z poludnia (windDir=180): dy =  cos(180) = -1 -> w gore (-y). OK —
-      //   wiatr Z poludnia niesie NA polnoc, czyli w gore ekranu.
-      const float rad = static_cast<float>(w.current.windDir) * static_cast<float>(M_PI) / 180.f;
-      const float dx = -sinf(rad) * stepPx;
-      const float dy = cosf(rad) * stepPx;
-
-      const float frameT = static_cast<float>(nowMs % cfg::RADAR_FRAME_MS) /
-                            static_cast<float>(cfg::RADAR_FRAME_MS);
-      sx = static_cast<int>(lroundf(dx * frameT));
-      sy = static_cast<int>(lroundf(dy * frameT));
-    }
-  }
+  // Klatka, ktora idzie na ekran, i przesuniecie PROBKOWANIA jej rastra. Oba sa
+  // STALE w calej tej klatce — tak samo jak wtedy, gdy liczyly sie tutaj — wiec
+  // petla opadu nizej dalej moze isc CIAGAMI jednakowego poziomu zamiast pikselami.
+  const int fi = rm.frameIdx;
+  const int sx = rm.shiftX;
+  const int sy = rm.shiftY;
 
   // --- mapa na PELNA szerokosc (v110: gmapr, 300 km, nie gmapw/111 km — gmapw
   // zostaje wylacznie dla ekranu samolotow, patrz MapDataWide.h i drawViewFlights) ---
@@ -2910,10 +2830,14 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel
   // drawPixel zjadloby budzet klatki (21 ms) w calosci. (Tu bylo kiedys "224x172 =
   // 38 tys." — 224 to szerokosc mapy SPRZED przejscia na szeroka gmapw; od v110
   // radar rysuje na gmapr, ktora ma te sama wielkosc rastra co gmapw, 320x172.)
-  // Przesuniecie (sx,sy) jest STALE w calej klatce (liczone raz, wyzej), wiec
-  // levelAt(fi, x-sx, y-sy) dalej daje ciagi jednakowego poziomu — to przesuniecie
-  // PROBKOWANIA zrodla, a nie zmiana kosztu per piksel. levelAt() zwraca 0 poza
-  // swoim rastrem (0<=x<W, 0<=y<H), wiec ujemne x-sx/y-sy sa bezpieczne z definicji.
+  // Przesuniecie (sx,sy) jest STALE w calej klatce (przychodzi gotowe z modelu),
+  // wiec rm.levelAt(x-sx, y-sy) dalej daje ciagi jednakowego poziomu — to
+  // przesuniecie PROBKOWANIA zrodla, a nie zmiana kosztu per piksel. Odczyt zwraca
+  // 0 poza rastrem, wiec ujemne x-sx/y-sy sa bezpieczne z definicji.
+  //
+  // v126: to jest teraz indeksowanie tablicy WEWNATRZ modelu (RadarData.h), a nie
+  // wywolanie radarmap::levelAt() do innej jednostki kompilacji przy KAZDYM z ~110
+  // tys. odczytow na klatke. Rachunek jest identyczny, kosztu przybyc nie moglo.
   static const uint16_t kPal[6] = {
       0,                       // 0 — brak opadu
       lerp565(col::MAP_SEA, col::RAIN, 0.55f),   // mzawka: ledwo widoczna
@@ -2927,13 +2851,13 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel
   for (int y = 0; y < rows; ++y) {
     int x = 0;
     while (x < gmapr::MAP_W) {
-      const uint8_t lv = radarmap::levelAt(fi, x - sx, y - sy);
+      const uint8_t lv = rm.levelAt(x - sx, y - sy);
       if (lv == 0) {
         ++x;
         continue;
       }
       int x2 = x + 1;
-      while (x2 < gmapr::MAP_W && radarmap::levelAt(fi, x2 - sx, y - sy) == lv) ++x2;
+      while (x2 < gmapr::MAP_W && rm.levelAt(x2 - sx, y - sy) == lv) ++x2;
       spr.drawFastHLine(mx + x, my + y, x2 - x, kPal[lv > 5 ? 5 : lv]);
       x = x2;
     }
@@ -2977,10 +2901,10 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel
   spr.fillRect(ox, CY, W, 18, col::BG);
 
   char hdr[24];
-  if (fr.offsetMin >= -1) {
+  if (rm.frameMin >= -1) {
     snprintf(hdr, sizeof(hdr), "teraz");
   } else {
-    snprintf(hdr, sizeof(hdr), "%ld min temu", static_cast<long>(-fr.offsetMin));
+    snprintf(hdr, sizeof(hdr), "%ld min temu", static_cast<long>(-rm.frameMin));
   }
   viewHeader(spr, ox, hdr);
 
@@ -3011,8 +2935,8 @@ void WeatherUi::drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel
   spr.drawLine(arrX, ty + 12, arrX - 4, ty + 15, col::ACCENT);
 
   // godzina biezacej klatki
-  if (fr.epoch > 0) {
-    const time_t tt = static_cast<time_t>(fr.epoch);
+  if (rm.frameEpoch > 0) {
+    const time_t tt = static_cast<time_t>(rm.frameEpoch);
     struct tm tmv{};
     localtime_r(&tt, &tmv);
     char hm[8];
@@ -3211,57 +3135,28 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
                                                 col::PV_EXPORT,  col::PV_IMPORT,
                                                 col::STORM,      col::HUMID};
 
-  struct Room {
-    const char* name;
-    float tempC;
-    float hum;
-    bool hasTemp;
-    bool hasHum;
-    int slot;         // indeks w Settings — po nim idzie historia i kolor
-    uint32_t ageS;
-    int rssiBest;     // sygnal LEPSZEGO ze zrodel, 0 = nikt go nie slyszy
-    bool viaGw;       // true = to bramka slyszy go lepiej (litera S), false = ESP (E)
-  } rooms[RoomHistory::ROOMS];
+  // Wiersze przychodza GOTOWE z warstwy danych (RoomModel, patrz RoomData.h):
+  // nazwa jest juz rozwiazana (wpis z ustawien po MAC), RSSI jest juz WYBRANY
+  // lepszy z dwoch zrodel, a wiek probki policzony raz, z tego samego nowMs, co
+  // cala klatka. Do v125 stala tutaj kopia tego wszystkiego — razem z progiem
+  // swiezosci 90 s i dwoma wolaniami millis() w petli zbierajacej kafelki.
+  //
+  // Bierzemy WSKAZNIKI do wierszy, nie ich kopie: model zyje dluzej niz ta funkcja
+  // (odswieza go loop()), wiec kopiowanie 6 x 24 B na kazda klatke nie kupiloby nic.
+  static const RoomModel kNoRooms{};
+  const RoomModel& rmod = roomModel_ ? *roomModel_ : kNoRooms;
+
+  // V1 pokazuje TYLKO czujniki, ktore maja slot w Settings — a wiec kolor kafelka
+  // i wiersz w historii. Czujnik bez wpisu, albo wpisany w slot 6-7 (poza
+  // RoomHistory::ROOMS), jest tu pomijany dokladnie tak, jak dotad; wariant V2
+  // rysuje go z MAC-iem zamiast nazwy. Ten filtr ZOSTAJE w rysowaniu, bo to jest
+  // decyzja o ukladzie (nie ma dla niego ani koloru, ani miejsca na wykresie),
+  // a nie o danych.
+  const RoomRow* rooms[RoomHistory::ROOMS];
   int n = 0;
-
-  for (int i = 0; i < ble::count() && n < RoomHistory::ROOMS; ++i) {
-    const ble::Sensor s = ble::get(i);
-    if (!s.valid) continue;
-    const Settings::BleCfg* cfg = settings().bleFind(s.mac);
-    if (cfg == nullptr) continue;
-
-    // Sloty 6-7 z Settings nie maja ani koloru, ani miejsca w historii — pomijamy
-    // je swiadomie zamiast wyjechac poza tablice.
-    int slot = -1;
-    for (int k = 0; k < RoomHistory::ROOMS; ++k) {
-      if (&settings().ble[k] == cfg) slot = k;
-    }
-    if (slot < 0) continue;
-
-    // Wybieramy LEPSZE ze zrodel, a nie ostatni zapis. Pole `s.rssi` niesie to,
-    // co przyszlo ostatnie — dlatego Schody potrafily pokazywac -90 z wlasnego
-    // radia, choc bramka slyszy je z -56. Odczyt (temperatura) jest identyczny
-    // z obu zrodel, wiec wybor dotyczy wylacznie tego, ktora liczbe pokazac.
-    // Zrodlo starsze niz 90 s nie liczy sie w ogole: lepszy slaby sygnal teraz
-    // niz swietny sprzed pol godziny.
-    const bool ownFresh = s.rssiOwn != 0 && s.ownAt != 0 && (millis() - s.ownAt) < 90000;
-    const bool gwFresh = s.rssiGw != 0 && s.gwAt != 0 && (millis() - s.gwAt) < 90000;
-    int best = 0;
-    bool bestGw = false;
-    if (ownFresh && gwFresh) {
-      bestGw = s.rssiGw > s.rssiOwn;
-      best = bestGw ? s.rssiGw : s.rssiOwn;
-    } else if (ownFresh) {
-      best = s.rssiOwn;
-    } else if (gwFresh) {
-      best = s.rssiGw;
-      bestGw = true;
-    }
-
-    rooms[n] = {cfg->name[0] ? cfg->name : s.mac, s.tempC, s.humidity, s.hasTemp,
-                s.hasHum, slot, s.seenAt ? (millis() - s.seenAt) / 1000 : 9999,
-                best, bestGw};
-    ++n;
+  for (int i = 0; i < rmod.count && n < RoomHistory::ROOMS; ++i) {
+    if (rmod.rows[i].slot < 0) continue;
+    rooms[n++] = &rmod.rows[i];
   }
 
   if (n == 0) {
@@ -3293,7 +3188,7 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
   const bool tight = cols == 3;
 
   for (int i = 0; i < n; ++i) {
-    const Room& r = rooms[i];
+    const RoomRow& r = *rooms[i];
     const int cxi = i % cols, cyi = i / cols;
     const int x = ox + 10 + cxi * (cw + gap);
     const int y = cy + cyi * (ch + 6);
@@ -3324,7 +3219,7 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     // ma 52 px i startowalby na x+84, wjezdzajac w kazda nazwe dluzsza niz 74 px.
     // W PlFont10 ma 29 px, startuje na x+107 i zostawia 10 px zapasu nawet dla
     // "Pokoj dziecka" (87 px). Minus zostaje w kazdym ukladzie - nie ma po co go scinac.
-    const int rs = r.rssiBest;
+    const int rs = r.rssi;
     char sg[12];
     if (rs == 0) {
       snprintf(sg, sizeof(sg), "--");
@@ -3358,10 +3253,11 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
     //   "Lazienka Gora" = 93 px) wjedzie na wilgotnosc; nazw nikt nigdzie nie
     //   przycina.
     char hs[10];
-    snprintf(hs, sizeof(hs), r.hasHum ? "%.0f%%" : "--", r.hum);
-    const uint16_t hc = !r.hasHum                        ? col::TEXT_MUTE
-                        : (r.hum > 65.f || r.hum < 30.f) ? col::WARN
-                                                         : col::PV_HOUSE;
+    snprintf(hs, sizeof(hs), r.hasHum ? "%.0f%%" : "--", r.humidity);
+    const uint16_t hc = !r.hasHum ? col::TEXT_MUTE
+                        : (r.humidity > 65.f || r.humidity < 30.f)
+                            ? col::WARN
+                            : col::PV_HOUSE;
     plRight(spr, tight ? pltxt::font10() : PLF14, hs, x + cw - 10, y + (grid ? 32 : 23),
             hc);
 
@@ -3411,7 +3307,7 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
   bool any = false;
   for (int i = 0; i < n; ++i) {
     for (int k = 0; k < RoomHistory::SLOTS; ++k) {
-      const int16_t v = rh.t10[rooms[i].slot][rh.idx(k)];
+      const int16_t v = rh.t10[rooms[i]->slot][rh.idx(k)];
       if (v == RoomHistory::NO_T) continue;
       const float f = v / 10.f;
       if (f < tMin) tMin = f;
@@ -3452,7 +3348,7 @@ void WeatherUi::drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel&
 
   // --- linie ---
   for (int i = 0; i < n; ++i) {
-    const int r = rooms[i].slot;
+    const int r = rooms[i]->slot;
     const uint16_t rc = roomCol[r];
 
     int px = -1, pyT = 0;

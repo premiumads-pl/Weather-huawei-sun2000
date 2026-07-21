@@ -52,6 +52,15 @@ bool fetch();               // pobiera komplet klatek (wolane z netTask)
 int count();                             // ile klatek jest gotowych
 const Frame& frame(int i);
 uint8_t levelAt(int i, int x, int y);    // 0 = brak opadu, 1..5 rosnaco
+
+// Caly raster klatki `i` na raz: W*H bajtow poziomu, nullptr gdy klatki nie ma.
+// Po co obok levelAt(): petla rysujaca opad robi do ~110 tys. odczytow na klatke
+// przy budzecie 21 ms, a levelAt() to wywolanie do innej jednostki kompilacji,
+// ktore przy KAZDYM pikselu od nowa sprawdza indeks klatki i wskaznik bufora.
+// Model ekranu (RadarData.h) bierze ten wskaznik RAZ i indeksuje tablice sam.
+// Wskaznik jest trwaly: bufory alokuje raz begin() (ps_calloc), a zwalnia je
+// wylacznie releaseAll() na sciezce NIEUDANEGO startu.
+const uint8_t* raster(int i);
 uint32_t updatedAt();                    // millis() ostatniego udanego pobrania
 const char* lastError();
 

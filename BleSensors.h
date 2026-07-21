@@ -56,6 +56,18 @@ void scan(int seconds);
 int count();
 Sensor get(int i);
 
+// TRWALY wskaznik na adres czujnika `i` ("" poza zakresem). Po co osobno, skoro
+// get() zwraca cala strukture z polem mac: bo get() oddaje KOPIE, ktora ginie
+// razem z lokalna zmienna. Model ekranu W DOMU (RoomData.h) trzyma nazwe pokoju
+// jako wskaznik i dla czujnika bez wpisu w ustawieniach musi pokazac MAC - a taki
+// wskaznik musi przezyc klatke rysowania.
+//
+// Bezpieczne bez mutexu i to nie jest niedopatrzenie: slot dostaje adres RAZ, w
+// chwili zalozenia (slotFor), a kazdy pozniejszy zapis wpisuje ten SAM ciag (slot
+// jest dopasowywany po strcmp z tego adresu). Zawartosc jest wiec stala, a tablica
+// gSensors[] jest statyczna - nie realokuje sie i nie znika.
+const char* macOf(int i);
+
 bool ready();
 bool scanning();  // trwa nasluch — inni maja nie brac duzych blokow
 

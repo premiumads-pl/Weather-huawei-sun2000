@@ -466,6 +466,221 @@ PvHistory uiHist{};
 FlightModel uiFlights{};
 AirModel uiAir{};   // kopia dla rdzenia rysujacego — patrz ui.setAir() w setup()
 
+// --- MODELE POSREDNIE dla warstwy rysowania (v126) ---------------------------
+// Wszystko powyzej to MIGAWKI modeli, ktore wypelnia warstwa sieciowa. Dwa ekrany
+// takiego modelu nie mialy i placily za to tym, ze ich funkcje rysujace podejmowaly
+// decyzje o DANYCH:
+//
+//   W DOMU  — czytal singleton ble:: na zywo, sam szukal nazwy pokoju przez
+//             settings().bleFind(), wolal millis() (trzy razy na kafelek, mimo ze
+//             nowMs stal w sygnaturze paintFrame) i sam arbitrazowal RSSI miedzy
+//             wlasnym radiem a bramka, z progiem swiezosci zaszytym w petli.
+//   RADAR   — czytal singleton radarmap::, wybieral klatke animacji, liczyl wektor
+//             przesuniecia chmur z wiatru i — najgorsze — PISAL do globalnej
+//             diagnostyki diag().radarFrame, z dwoch watkow naraz (ekran na jednym
+//             rdzeniu, zrzut BMP na drugim).
+//
+// Ponizsze dwie struktury domykaja luke: rysowanie dostaje gotowe wiersze i gotowe
+// liczby, a wymiana calego interfejsu nie wymaga ruszania tego pliku. Koszt: 196 B
+// + 32 B statycznego RAM-u przy barierze 76 000 B — dlatego wiersze niosa WSKAZNIKI
+// (nazwa pokoju, raster klatki), a nie kopie.
+RoomModel uiRoomModel{};
+RadarViewModel uiRadarModel{};
+
+// Zbiera gotowe wiersze ekranu W DOMU. Kolejnosc i filtrowanie sa DOKLADNIE takie,
+// jak w petli, ktora stala do v125 w drawViewHome — inaczej kafelki zmienilyby
+// kolejnosc na ekranie.
+static void buildRoomModel(RoomModel& m, uint32_t nowMs) {
+  // Zrodlo starsze niz to nie liczy sie w ogole: lepszy slaby sygnal TERAZ niz
+  // swietny sprzed pol godziny. Do v125 byl to goly literal 90000 w srodku petli
+  // rysujacej; tutaj ma nazwe, bo to jest regula o danych, nie o pikselach.
+  constexpr uint32_t kRssiFreshMs = 90000;
+
+  const int n = ble::count();
+  m.sensorCount = static_cast<uint8_t>(n > RoomModel::ROWS ? RoomModel::ROWS : n);
+  m.count = 0;
+
+  for (int i = 0; i < n && m.count < RoomModel::ROWS; ++i) {
+    const ble::Sensor s = ble::get(i);
+    if (!s.valid) continue;
+
+    RoomRow& r = m.rows[m.count];
+
+    // Nazwa: wpis z ustawien, a gdy go nie ma albo jest bez nazwy — MAC czujnika.
+    // Slot rzadzi kolorem kafelka i wierszem historii; sloty 6-7 z Settings nie
+    // maja ani jednego, ani drugiego, wiec dostaja -1 (wyglad V1 je pomija, V2
+    // rysuje je z MAC-iem — obie reguly zostaja w rysowaniu, bo to uklad).
+    const Settings::BleCfg* cfg = settings().bleFind(s.mac);
+    int slot = -1;
+    if (cfg != nullptr) {
+      for (int k = 0; k < RoomHistory::ROOMS; ++k) {
+        if (&settings().ble[k] == cfg) slot = k;
+      }
+    }
+    r.slot = static_cast<int8_t>(slot);
+    // ble::macOf(i), a nie s.mac: `s` to KOPIA, ktora ginie na koncu obrotu petli,
+    // a wiersz trzyma sam wskaznik (patrz RoomData.h).
+    r.name = (cfg != nullptr && cfg->name[0]) ? cfg->name : ble::macOf(i);
+
+    // Wybieramy LEPSZE ze zrodel, a nie ostatni zapis. Pole `s.rssi` niesie to,
+    // co przyszlo ostatnie — dlatego Schody potrafily pokazywac -90 z wlasnego
+    // radia, choc bramka slyszy je z -56. Odczyt (temperatura) jest identyczny
+    // z obu zrodel, wiec wybor dotyczy wylacznie tego, ktora liczbe pokazac.
+    //
+    // nowMs, nie millis(): stara wersja pytala zegara osobno dla wlasnego radia,
+    // osobno dla bramki i osobno dla wieku probki — trzy rozne "teraz" w jednym
+    // kafelku. Roznica jest mikroskopijna, ale to jest dokladnie ten rodzaj
+    // niescislosci, przez ktory nie da sie potem odtworzyc, co widzial ekran.
+    const bool ownFresh =
+        s.rssiOwn != 0 && s.ownAt != 0 && (nowMs - s.ownAt) < kRssiFreshMs;
+    const bool gwFresh =
+        s.rssiGw != 0 && s.gwAt != 0 && (nowMs - s.gwAt) < kRssiFreshMs;
+    int best = 0;
+    bool bestGw = false;
+    if (ownFresh && gwFresh) {
+      bestGw = s.rssiGw > s.rssiOwn;
+      best = bestGw ? s.rssiGw : s.rssiOwn;
+    } else if (ownFresh) {
+      best = s.rssiOwn;
+    } else if (gwFresh) {
+      best = s.rssiGw;
+      bestGw = true;
+    }
+    r.rssi = static_cast<int16_t>(best);
+    r.viaGw = bestGw;
+
+    r.ageS = s.seenAt ? (nowMs - s.seenAt) / 1000 : 9999;
+    r.tempC = s.tempC;
+    r.humidity = s.humidity;
+    r.hasTemp = s.hasTemp;
+    r.hasHum = s.hasHum;
+    // Przyciecie do 0..100: procent baterii to zwykly bajt ramki, wiec uszkodzona
+    // ramka potrafi wstawic 200 — a to w int8_t zrobiloby liczbe UJEMNA. Ujemna
+    // bateria na ekranie wyglada na blad kodu, nie na blad transmisji.
+    const int bp = s.batteryPct < 0 ? 0 : (s.batteryPct > 100 ? 100 : s.batteryPct);
+    r.batteryPct = static_cast<int8_t>(bp);
+    r.valid = true;
+    ++m.count;
+  }
+}
+
+// Wybiera klatke radaru, jej wiek i wektor przesuniecia chmur. Kod przeniesiony
+// z drawViewRadar bez zmian rachunkowych — razem z komentarzami, bo to one niosa
+// wyprowadzenie znaku wektora.
+static void buildRadarModel(RadarViewModel& m, const WeatherModel& w, uint32_t nowMs) {
+  m = RadarViewModel{};
+  m.frames = radarmap::count();
+  m.hasRain = radarmap::hasRain();
+  m.error = radarmap::lastError();
+  // Brak klatek: nie ma czego wybierac i — tak jak przed refaktorem, gdzie
+  // drawViewRadar wychodzil przed zapisem — diag().radarFrame zostaje nietkniety.
+  if (m.frames == 0) return;
+
+  // Klatka animacji: cyklicznie, z krotka pauza na ostatniej (najnowszej) —
+  // inaczej oko nie zdazy zauwazyc, gdzie pada TERAZ.
+  const int steps = m.frames + 2;   // 2 dodatkowe "przystanki" na koncu
+  const int step = static_cast<int>((nowMs / cfg::RADAR_FRAME_MS) % steps);
+  const int fi = step >= m.frames ? m.frames - 1 : step;
+
+  const radarmap::Frame& fr = radarmap::frame(fi);
+  m.frameIdx = fi;
+  m.frameMin = fr.offsetMin;
+  m.frameEpoch = fr.epoch;
+  m.raster = radarmap::raster(fi);
+  m.rw = radarmap::W;
+  m.rh = radarmap::H;
+
+  // Diagnostyka animacji dla /api/diag. JEDYNE miejsce, w ktorym te dwa pola sie
+  // zapisuja — do v125 robila to funkcja rysujaca, czyli kod wolany z dwoch watkow.
+  diag().radarFrame = fi;
+  diag().radarFrameMin = fr.offsetMin;
+
+  // --- wektor przesuniecia chmur MIEDZY klatkami (z wiatru) ---
+  // Zamiast trzymac klatke `fi` nieruchomo przez cale RADAR_FRAME_MS, przesuwamy
+  // jej PROBKOWANIE stopniowo w kierunku wiatru: przy frameT=0 stoi w miejscu,
+  // przy frameT->1 dojezdza o caly wektor (dx,dy) — czyli mniej wiecej tam, gdzie
+  // za chwile stanie fi+1. Skok na granicy klatek wychodzi wiec maly, zamiast
+  // calego kroku ~24 px naraz (to byla POLOWA problemu "latania"; druga polowa to
+  // 7->13 klatek w RadarMap).
+  //
+  // Liczone RAZ na cykl (nie w petli pikseli!): sin/cos i dzielenie to jedyny
+  // "ciezki" rachunek tego ekranu, a budzet calej klatki to 21 ms (gfx.draw_us
+  // w /api/diag) przy 19 fps — tego nie wolno ruszyc.
+  if (fi + 1 < m.frames) {
+    // Najnowsza klatka (fi == frames-1, "teraz") nie ma nastepnej, do ktorej
+    // "dojezdzac" — zostaje nieruchoma przez cala pauze na koncu animacji (patrz
+    // `steps` wyzej, fi==frames-1 trzyma sie tam przez trzy odslony: ostatni
+    // normalny krok + 2 przystanki).
+    //
+    // Swiezosc pogody: bez tego martwy WiFi (stary odczyt wiatru sprzed godzin, z
+    // zupelnie innej sytuacji synoptycznej) animowalby chmury w przypadkowym
+    // kierunku. `ageMs` liczone jako signed — ten sam idiom co ago() w Portal.cpp
+    // (apiDiag()): (nowMs - okAt) na uint32 przekreca sie po ~49 dniach dzialania,
+    // a diag().weatherOkAt pisze netTask, inny watek niz ten. Ujemny wiek
+    // traktujemy jako "swiezy", tak samo jak ago().
+    const uint32_t okAt = diag().weatherOkAt;
+    const int32_t ageMs = static_cast<int32_t>(nowMs - okAt);
+    const bool wxFresh =
+        okAt != 0 && ageMs < static_cast<int32_t>(2 * cfg::WEATHER_REFRESH_MS);
+
+    // windKmh == 0 (cisza) albo dane nieswieze -> dx=dy=0, czyli shiftX/Y zostaja
+    // zerem: zachowanie jak dzis, zwykly skok bez interpolacji. Bezpieczny
+    // fallback — nie zgadujemy kierunku, gdy nie mamy z czego.
+    if (wxFresh && w.current.windKmh > 0.05f) {
+      // v110: skala PRZY MAPIE (gmapr::M_PER_PX w MapDataRadar.h), nie zaszyta tu
+      // jako literal. Ta mapa pokrywa ~300 km na 320 px, wiec kazdy piksel to
+      // ~937 m (2,7x wiecej niz gmapw/349) — literal kazalby stepPx wyjsc 2,7x za
+      // maly, czyli chmury plynelyby 2,7x za szybko wzgledem kolejnej klatki.
+      // Klatka co RADAR_MAP_REFRESH_MS (10 min) — liczone ze stalej, a nie z
+      // wpisanej na sztywno "10", zeby wzor sam nadazyl, gdyby cykl sie zmienil.
+      constexpr float kFrameMin = static_cast<float>(cfg::RADAR_MAP_REFRESH_MS) / 60000.f;
+
+      // Predkosc na wysokosci, na ktorej faktycznie plynie echo (patrz komentarz
+      // przy RADAR_FLOW_GAIN w Config.h — to jawne przyblizenie, nie pomiar).
+      const float speedKmh = w.current.windKmh * cfg::RADAR_FLOW_GAIN;
+      // V[km/h] * czas[h] * 1000[m/km] / (m/px) = przesuniecie w px na klatke.
+      // Np. 50 km/h, gain=1: 50 * (10/60) * 1000 / 937,5 = 8,9 px na 10 min.
+      const float stepPx = speedKmh * (kFrameMin / 60.f) * 1000.f / gmapr::M_PER_PX;
+
+      // KIERUNEK — wyprowadzenie (najlatwiejsze miejsce na blad znaku):
+      // windDir to kierunek, SKAD wieje wiatr (konwencja meteo/Open-Meteo), NIE
+      // dokad. Dla azymutu theta od polnocy zgodnie z ruchem wskazowek (0=N, 90=E,
+      // 180=S, 270=W) wektor jednostkowy w ukladzie (East,North) to
+      // (sin(theta), cos(theta)) — sprawdzenie: theta=90 (E) daje (1,0), czysty
+      // wschod. Chmury plyna w kierunku PRZECIWNYM do windDir, czyli azymutem
+      // (windDir+180), a sin/cos(x+180) = -sin/cos(x), wiec ruch chmur:
+      //   East  = -sin(windDir)
+      //   North = -cos(windDir)
+      // (to dokladnie standardowy wzor meteo na skladowe wiatru:
+      // u = -V*sin(kierunek), v = -V*cos(kierunek)).
+      // Na ekranie +x = East (LON rosnie w prawo), ale +y jest W DOL, a North to
+      // "w gore" ekranu, wiec North trzeba jeszcze zanegowac:
+      //   dx =  East  =  -sin(windDir)
+      //   dy = -North = -(-cos(windDir)) = cos(windDir)
+      // Ten sam uklad (East=+x, North=-y) uzywa strzalka kierunku lotu w
+      // WeatherUi.cpp (tx=x+sin(a)*R, ty=y-cos(a)*R dla `track`, czyli kierunku
+      // DOKAD leci samolot) — windDir to `track+180`, stad negacja obu skladowych.
+      // Kontrola na dwoch kierunkach:
+      //   wiatr z zachodu (windDir=270): dx = -sin(270) = +1 -> na wschod (+x). OK.
+      //   wiatr z poludnia (windDir=180): dy =  cos(180) = -1 -> w gore (-y). OK —
+      //   wiatr Z poludnia niesie NA polnoc, czyli w gore ekranu.
+      const float rad =
+          static_cast<float>(w.current.windDir) * static_cast<float>(M_PI) / 180.f;
+      const float dx = -sinf(rad) * stepPx;
+      const float dy = cosf(rad) * stepPx;
+
+      // `frameT` to INNA faza animacji niz `t` w funkcjach rysujacych: `t` to
+      // wejscie na EKRAN radaru (przejscie miedzy widokami), `frameT` to pozycja
+      // WEWNATRZ pojedynczej klatki radaru — nie mylic.
+      const float frameT = static_cast<float>(nowMs % cfg::RADAR_FRAME_MS) /
+                           static_cast<float>(cfg::RADAR_FRAME_MS);
+      // int16_t wystarcza z ogromnym zapasem: przy 200 km/h stepPx to ~38 px.
+      m.shiftX = static_cast<int16_t>(lroundf(dx * frameT));
+      m.shiftY = static_cast<int16_t>(lroundf(dy * frameT));
+    }
+  }
+}
+
 AlertKind lastAlertKind = AlertKind::NONE;
 // Rozmiar z wartownika enuma, nie z literalu. Zaszyta osemka byla DOKLADNIE rowna
 // liczbie pozycji AlertKind — czyli tablica wygladala na zapasowa, a byla pelna.
@@ -1322,6 +1537,11 @@ void setup() {
   // (w odroznieniu od gHist/gRooms/gGas/gBurner wyzej) — to biezacy odczyt, jak
   // pogoda/PV, wiec pierwsza probka po prostu poczeka na pierwszy udany fetch.
   ui.setAir(&uiAir);
+  // Modele posrednie (v126): wskaznik podpinamy raz, zawartosc odswieza loop().
+  // Bez tego rysowanie zobaczy pusta strukture — czyli "brak czujnikow" i
+  // "pobieram mape opadow" — a nie czarny ekran ani wskaznik w nicosc.
+  ui.setRoomModel(&uiRoomModel);
+  ui.setRadarModel(&uiRadarModel);
 
   if (!settings().hasWifi()) {
     portal::beginAp();
@@ -1624,6 +1844,24 @@ void loop() {
   uiFlights = gFlights;
   uiAir = gAir;
   xSemaphoreGive(gLock);
+
+  // --- modele posrednie dla dwoch ekranow, ktore ich nie mialy (v126) ---
+  // POZA gLock swiadomie: zrodlem nie jest zadne g*, tylko ble:: i radarmap::,
+  // a kazdy z nich ma wlasny mutex. Trzymanie tu globalnej blokady wydluzaloby
+  // tylko okno, w ktorym netTask nie moze zapisac swoich danych.
+  //
+  // Czytane bez blokady takze przez zrzut ekranu z webTask — dokladnie ta sama
+  // swiadoma decyzja, co przy uiWeather/uiPv (patrz komentarz przy
+  // ui.streamScreenshot w webTask): najgorszy przypadek to jedna klatka zlozona
+  // z dwoch sasiednich odczytow, a nie uszkodzona pamiec.
+  //
+  // Co klatke, a nie co sekunde: obie funkcje to petla po najwyzej osmiu
+  // czujnikach i garsc dzialan zmiennoprzecinkowych. Rzadsze odswiezanie
+  // oszczedzaloby mikrosekundy, a kosztowaloby to, ze `nowMs` w modelu przestaje
+  // byc tym samym "teraz", co reszta klatki — czyli dokladnie wade, ktora ta
+  // zmiana usuwa.
+  buildRoomModel(uiRoomModel, now);
+  buildRadarModel(uiRadarModel, uiWeather, now);
 
   gFlightsNeeded = ui.needsFlights(now);
 

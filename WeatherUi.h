@@ -6,6 +6,8 @@
 #include "AirData.h"
 #include "FlightData.h"
 #include "PvData.h"
+#include "RadarData.h"
+#include "RoomData.h"
 #include "WeatherData.h"
 #include "Viessmann.h"
 
@@ -95,6 +97,16 @@ class WeatherUi {
   // render()/drawView() — ekran POWIETRZE nie potrzebuje watku danych az tak
   // centralnego jak pogoda/PV/loty (brak prefetchu, brak wplywu na inne widoki).
   void setAir(const struct AirModel* a) { air_ = a; }
+
+  // v126: modele POSREDNIE — gotowe wiersze/liczby dla dwoch ekranow, ktore do
+  // v125 same siegaly po singletony w trakcie rysowania (patrz RoomData.h i
+  // RadarData.h). Ten sam wzorzec przekazania co rooms_/boiler_/air_ powyzej:
+  // wskaznik do struktury odswiezanej w loop(), a NIE kolejny parametr w
+  // render()/paintFrame()/drawView(). Powod ten sam, co przy RoomHistory:
+  // dwa modele dla dwoch widokow zasmiecilyby cztery sygnatury, przez ktore
+  // musialyby przejechac.
+  void setRoomModel(const struct RoomModel* r) { roomModel_ = r; }
+  void setRadarModel(const struct RadarViewModel* r) { radarModel_ = r; }
   void viewState(int& cur, int& pin) const {
     cur = view_;
     pin = pinned_;
@@ -212,6 +224,11 @@ class WeatherUi {
   const vi::Model* boiler_ = nullptr;
   const struct BurnerHistory* burner_ = nullptr;
   const struct AirModel* air_ = nullptr;
+  // Gotowe modele dla W DOMU i RADAR (v126). nullptr = warstwa danych jeszcze ich
+  // nie podpiela; rysowanie uzywa wtedy pustej struktury, czyli zachowuje sie tak,
+  // jakby nie bylo czujnikow / klatek.
+  const struct RoomModel* roomModel_ = nullptr;
+  const struct RadarViewModel* radarModel_ = nullptr;
   int8_t pinned_ = -1;  // >=0: ekran zablokowany z panelu WWW
   uint8_t prevView_ = 0;
   uint32_t viewStart_ = 0;

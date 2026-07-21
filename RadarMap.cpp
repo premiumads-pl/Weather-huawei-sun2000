@@ -510,6 +510,11 @@ uint8_t levelAt(int i, int x, int y) {
   return gFrames[i][y * W + x];
 }
 
+const uint8_t* raster(int i) {
+  if (i < 0 || i >= FRAMES) return nullptr;
+  return gFrames[i];
+}
+
 uint32_t updatedAt() {
   return gUpdatedAt;
 }
