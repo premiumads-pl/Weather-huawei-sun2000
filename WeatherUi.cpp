@@ -258,7 +258,7 @@ bool WeatherUi::begin() {
   // sukces. Podpiecie po init() sprawia, ze ostatnie slowo ma PWM.
   pinMode(cfg::PIN_TFT_BL, OUTPUT);
   ledcAttach(cfg::PIN_TFT_BL, cfg::BL_PWM_FREQ, cfg::BL_PWM_BITS);
-  ledcWrite(cfg::PIN_TFT_BL, 0);
+  ledcWrite(cfg::PIN_TFT_BL, 0);   // ciemno tylko na czas czyszczenia ekranu ponizej
 
   tft_.setRotation(cfg::TFT_ROTATION);
   tft_.invertDisplay(cfg::TFT_INVERT_DISPLAY);
@@ -274,8 +274,17 @@ bool WeatherUi::begin() {
   spr_.pushSprite(0, BAND_H);
   tft_.fillRect(0, VIEW_H, cfg::SCREEN_W, cfg::SCREEN_H - VIEW_H, col::BG);
 
-  blCurrent_ = 0;
+  // Podswietlenie zapalamy OD RAZU na pelna moc, bez rampy od zera.
+  // Powod: rampa (krok 6) rusza wylacznie z tickBacklight(), a to jest wolane tylko
+  // ze sciezek RYSOWANIA. Podczas setup() — WiFi ~3.6 s, Modbus ~3.2 s, BLE, radar —
+  // rysowania praktycznie nie ma, wiec ekran wisialby ciemny przez kilkanascie sekund
+  // i wygladaloby to jak zawieszony start. Wczesniej tego nie bylo widac, bo TFT_eSPI
+  // trzymal pin na sztywno HIGH (patrz User_Setup.h) i fade-in nie mial jak zadzialac.
+  // Po naprawie sterowania fade-in nagle stal sie widoczny — stad ta zmiana.
+  // Automat z LDR sciagnie jasnosc w dol po pierwszym odczycie swiatla.
+  blCurrent_ = cfg::BL_DAY;
   blTarget_ = cfg::BL_DAY;
+  ledcWrite(cfg::PIN_TFT_BL, blCurrent_);
   ready_ = true;
   return true;
 }
