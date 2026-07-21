@@ -131,24 +131,35 @@ void hudTop(TFT_eSPI& spr, int ox, const char* city) {
   // 9*scale (8 px glifu + 1 px odstepu), NIE 8*scale — przy skali 3 to 27 px/znak,
   // a nie 24 (uproszczenie z opisu zadania pomijalo ten 1 px odstepu). Liczymy
   // wiec naprawde, zamiast zakladac z gory, ze "GDYNIA" = 144 px.
-  const int cityW = textWidth(cityBuf, 3);
-  int scale = 3;
-  int dateW = textWidth(dateBuf, scale);
-  int timeW = textWidth(timeBuf, scale);
-  int dateX = ox + cfg::SCREEN_W / 2 - dateW / 2;
-  int timeX = ox + cfg::SCREEN_W - 8 - timeW;
-  if (ox + 8 + cityW + 6 > dateX || dateX + dateW + 6 > timeX) {
-    // Nie miesci sie przy skali 3 — schodzimy TYLKO z daty/godziny (miasto
-    // zostaje czytelne, jest najwazniejszym elementem HUD-u).
-    scale = 2;
+  // UKLAD SEKWENCYJNY, NIE CENTROWANY. Pierwsza wersja centrowala date w calym
+  // ekranie i sprawdzala kolizje TYLKO PRZED zejsciem na mniejsza skale — a po
+  // zejsciu juz nie. Efekt na urzadzeniu: "GDYNIA" (skala 3 = 162 px, konczy sie
+  // na x=170) nachodzilo na date wysrodkowana od x=106. Zweryfikowane zrzutem.
+  //
+  // Teraz: godzina zawsze przy prawej krawedzi, miasto przy lewej, a data dostaje
+  // to, co REALNIE zostalo miedzy nimi — i dopiero gdy tam nie wchodzi, calosc
+  // (razem z miastem) schodzi o stopien nizej. Miasto jest najwazniejsze, ale
+  // czytelne miasto nachodzace na date nie jest czytelne wcale.
+  int cityScale = 3, scale = 3;
+  int cityW = 0, dateW = 0, timeW = 0, gapL = 0;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    cityW = textWidth(cityBuf, cityScale);
     dateW = textWidth(dateBuf, scale);
     timeW = textWidth(timeBuf, scale);
-    dateX = ox + cfg::SCREEN_W / 2 - dateW / 2;
-    timeX = ox + cfg::SCREEN_W - 8 - timeW;
+    gapL = ox + 8 + cityW;                                   // koniec miasta
+    const int timeX = ox + cfg::SCREEN_W - 8 - timeW;        // poczatek godziny
+    if (gapL + 8 + dateW + 8 <= timeX) break;                // miesci sie
+    if (attempt == 0) scale = 2;                             // najpierw data/godzina
+    else cityScale = 2;                                      // potem takze miasto
   }
+  const int timeX = ox + cfg::SCREEN_W - 8 - timeW;
+  // Data wysrodkowana w REALNIE dostepnej przerwie, nie w calym ekranie.
+  int dateX = gapL + 8 + ((timeX - 8) - (gapL + 8) - dateW) / 2;
+  if (dateX < gapL + 8) dateX = gapL + 8;
+  const int cityY = (cityScale == 3) ? 2 : 6;
   const int dateY = (scale == 3) ? 2 : 6;
 
-  textShadowed(spr, ox + 8, 2, 3, col2::TEXT, cityBuf);
+  textShadowed(spr, ox + 8, cityY, cityScale, col2::TEXT, cityBuf);
   textShadowed(spr, dateX, dateY, scale, col2::LABEL, dateBuf);
   textShadowed(spr, timeX, dateY, scale, col2::VALUE2, timeBuf);
 }

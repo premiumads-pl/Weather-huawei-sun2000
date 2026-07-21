@@ -287,8 +287,12 @@ void WeatherUi::drawViewHomeV2(TFT_eSPI& spr, int ox, float t, const WeatherMode
   }
   // Siatka 3x2 jak w mockupie; przy mniejszej liczbie czujnikow kolumny sie
   // dopasowuja, zeby karty nie zostawaly nienaturalnie waskie.
-  const int cols = n >= 5 ? 3 : (n >= 3 ? 3 : n);
-  const Grid g(n > 6 ? 6 : n, cols);
+  // Kolumny dobrane tak, zeby OSTATNI rzad nie zostawal prawie pusty. Przy
+  // czterech czujnikach uklad 3+1 zostawial na urzadzeniu wielka dziure obok
+  // jednej karty (zweryfikowane zrzutem) — 2x2 wypelnia obszar rowno.
+  const int shown = n > 6 ? 6 : n;
+  const int cols = (shown <= 2) ? shown : ((shown == 4) ? 2 : 3);
+  const Grid g(shown, cols);
   // Nazwa pokoju NIE jest w czujniku — siedzi w ustawieniach, znajdowana po MAC
   // (ten sam wzorzec co drawViewHome w V1: bleFind + slot). Czujnik bez wpisu
   // w ustawieniach pomijamy, bo nie wiadomo, jak go podpisac.
