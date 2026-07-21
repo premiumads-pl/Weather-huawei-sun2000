@@ -1,0 +1,40 @@
+# Wlasny uklad partycji: TO SAMO co min_spiffs, ale BEZ nieuzywanego obszaru SPIFFS.
+# Odzyskane 128 kB idzie po polowie do obu partycji aplikacji.
+#
+# PO CO: min_spiffs rezerwuje 128 kB na system plikow, ktorego ten projekt NIE UZYWA
+# (zweryfikowane: zaden plik zrodlowy nie siega po SPIFFS/LittleFS/FFat; partycja
+# istnieje wylacznie jako pozycja w tablicy i jest pokazywana na ekranie PAMIEC
+# z dopiskiem "nieuz."). Przy dwoch wygladach interfejsu (V1 + V2) flash jest
+# najciasniejszym zasobem, wiec te 128 kB warto odzyskac.
+#
+# CO SIE ZMIENIA: app0 i app1 rosna z 0x1E0000 (1920 kB) do 0x1F0000 (1984 kB),
+# czyli +64 kB KAZDA. OTA dziala bez zmian — nadal sa DWIE partycje aplikacji,
+# wiec aktualizacja po sieci ma dokad wgrac nowy obraz i jest z czego wrocic.
+#
+# CZEGO NIE RUSZAMY: coredump (64 kB) zostaje. To jedyne zrodlo wiedzy o tym,
+# dlaczego urzadzenie padlo — swiadoma decyzja wlasciciela, zeby nie oddawac
+# diagnostyki za 16 kB flasha.
+#
+# !!! WYMAGA WGRANIA PRZEZ USB !!!
+# Aktualizacja po sieci (OTA) wgrywa TYLKO obraz aplikacji do drugiej polowki —
+# NIE potrafi zmienic tablicy partycji, ktora lezy pod adresem 0x8000. Zmiana
+# ukladu wymaga wiec jednorazowego podlaczenia kablem. Po niej OTA dziala dalej
+# normalnie.
+#
+# JAK WGRAC (z katalogu projektu, urzadzenie podlaczone przez USB):
+#   arduino-cli compile --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=custom,PSRAM=enabled" .
+#   arduino-cli upload  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=custom,PSRAM=enabled" -p <PORT> .
+# Plik musi nazywac sie partitions.csv w katalogu szkicu, zeby rdzen go zobaczyl
+# przy PartitionScheme=custom — patrz instrukcja przy wdrozeniu.
+#
+# UWAGA: pierwsze uruchomienie po zmianie ukladu kasuje zawartosc NVS tylko wtedy,
+# gdy przesunelby sie POCZATEK partycji nvs. Tutaj nvs i otadata zostaja na swoich
+# adresach (0x9000 i 0xe000), wiec ustawienia (WiFi, MQTT, klucze BLE, token pieca,
+# wybrany wyglad) PRZEZYWAJA zmiane.
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x1F0000,
+app1,       app,  ota_1,    0x200000, 0x1F0000,
+coredump,   data, coredump, 0x3F0000, 0x10000,

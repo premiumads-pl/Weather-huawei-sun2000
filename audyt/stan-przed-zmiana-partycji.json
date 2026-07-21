@@ -1,0 +1,358 @@
+{
+  "fw": 123,
+  "uptime_s": 442,
+  "heap_free": 90252,
+  "heap_min": 19460,
+  "heap_min_ever": 19460,
+  "heap_largest_block": 40948,
+  "psram": 2097152,
+  "cpu_temp": 56.6,
+  "wifi": {
+    "ssid": "Macio-IoT",
+    "ip": "192.168.40.100",
+    "rssi": -52,
+    "connects": 1,
+    "bssid": "46:6A:D2:F1:12:18",
+    "channel": 1,
+    "roams": 0
+  },
+  "weather": {
+    "ok_ago_s": 434,
+    "err": ""
+  },
+  "pv": {
+    "ok_ago_s": 21,
+    "err": "",
+    "asleep": false,
+    "cycles": 14,
+    "fails": 0,
+    "extra_fails": 0,
+    "fail_hist": [
+      14,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "extra_hist": [
+      14,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "fail_meas": {
+      "connect_fail_day": 0,
+      "connect_fail_night": 0,
+      "silent_fail_day": 0,
+      "silent_fail_night": 0,
+      "missing_reg_day": 0,
+      "missing_reg_night": 0,
+      "collected_s": 441,
+      "boots": 1,
+      "started_epoch": 1784654976,
+      "wall_s": 441,
+      "gap_s": 0
+    }
+  },
+  "vi": {
+    "ok_ago_s": 38,
+    "err": "",
+    "dhw": 55.8,
+    "sup": 62.8,
+    "has_hours": true,
+    "has_starts": true,
+    "burner_hours": 5054,
+    "burner_starts": 89586,
+    "modulation": 0,
+    "burner_active": false,
+    "has_gas": true,
+    "gas_day": 0.2
+  },
+  "reset": {
+    "reason": "włączenie zasilania",
+    "reason_code": 1,
+    "prev_reason": "włączenie zasilania",
+    "was_crash": false,
+    "crashes_total": 7
+  },
+  "coredump": {
+    "present": true,
+    "size": 31844,
+    "addr": 4128768,
+    "crc_ok": true,
+    "task": "net",
+    "pc": "0x400559dd",
+    "vaddr": "0x3fccadb0",
+    "cause": 2181479233,
+    "version": 590082,
+    "app_elf_sha": "d291ccbe4",
+    "app_elf_sha_running": "d291ccbe4",
+    "elf_match": true,
+    "bt": [
+      "0x400559dd",
+      "0x40384c9f",
+      "0x4038242f",
+      "0x4206af4e",
+      "0x4206b23e",
+      "0x42057a4c",
+      "0x42057a5d",
+      "0x42057a79",
+      "0x4205843a",
+      "0x4205850a",
+      "0x420564dd",
+      "0x42106ac2",
+      "0x420b62b1",
+      "0x420b02cd",
+      "0x420b0e98",
+      "0x420b12f6"
+    ],
+    "bt_corrupted": false,
+    "panic_reason": "Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:\n - IDLE0 (CPU 0)"
+  },
+  "radar": {
+    "ok_ago_s": 124,
+    "level": 0,
+    "frame_age_s": 292,
+    "skips_low_ram": 0,
+    "err": ""
+  },
+  "flights": {
+    "ok_ago_s": 116,
+    "total": 4,
+    "err": ""
+  },
+  "air": {
+    "ok_ago_s": 434,
+    "err": "",
+    "fallback": false,
+    "station": "SANDOMIERSKA",
+    "has_pm10": true,
+    "pm10": 4.60774,
+    "has_pm25": true,
+    "pm25": 4.36586,
+    "index": 1,
+    "index_name": "BARDZO DOBRE",
+    "sample_epoch": 1784653200,
+    "sample_age_s": 2217
+  },
+  "mem": {
+    "sram_free": 88008,
+    "sram_min": 19460,
+    "sram_block": 40948,
+    "psram_size": 2097152,
+    "psram_free": 1167780,
+    "stack_net_spare": 7292,
+    "stack_web_spare": 13124
+  },
+  "gfx": {
+    "draw_us": 25425,
+    "push_us": 19878,
+    "frame_ms": 45.303,
+    "max_fps": 22.07359336,
+    "period_ms": 49.967,
+    "fps_real": 20.01320872,
+    "radar_frame": 0,
+    "radar_min": -130,
+    "spi_hz": 80000000
+  },
+  "memfull": {
+    "sram": {
+      "free": 86916,
+      "largest_block": 40948,
+      "min_ever": 19460
+    },
+    "psram": {
+      "total": 2097152,
+      "free": 1167780,
+      "largest_block": 1146868,
+      "min_ever": 1068736
+    },
+    "flash": {
+      "chip_size": 4194304,
+      "sketch_size": 1680000,
+      "free_sketch_space": 1966080
+    },
+    "app": {
+      "running": "app1",
+      "used": 1680000,
+      "size": 1966080
+    },
+    "partitions": [
+      {
+        "name": "nvs",
+        "present": true,
+        "size": 20480,
+        "address": 36864
+      },
+      {
+        "name": "otadata",
+        "present": true,
+        "size": 8192,
+        "address": 57344
+      },
+      {
+        "name": "app0",
+        "present": true,
+        "size": 1966080,
+        "address": 65536
+      },
+      {
+        "name": "app1",
+        "present": true,
+        "size": 1966080,
+        "address": 2031616
+      },
+      {
+        "name": "spiffs",
+        "present": true,
+        "size": 131072,
+        "address": 3997696
+      },
+      {
+        "name": "coredump",
+        "present": true,
+        "size": 65536,
+        "address": 4128768
+      }
+    ],
+    "coredump_present": true,
+    "rtc": {
+      "slow_physical": 8192,
+      "slow_usable": 7680,
+      "slow_used": 408,
+      "fast_physical": 8192
+    },
+    "rom_size": 393216,
+    "stack": {
+      "net_spare": 7292,
+      "web_spare": 13016,
+      "configured_size": 16384
+    }
+  },
+  "ota": {
+    "remote": 123,
+    "msg": "",
+    "trial": "stabilna",
+    "trial_active": false,
+    "confirmed_ago_s": -1,
+    "rejected_version": 38
+  },
+  "mqtt": {
+    "enabled": true,
+    "host": "192.168.0.9",
+    "port": 1883,
+    "prefix": "pogoda-gdynia",
+    "ok_ago_s": 5,
+    "connects": 1,
+    "published": 41,
+    "err": ""
+  },
+  "sensors": {
+    "ldr_raw": 1259,
+    "ldr_mv": 1081,
+    "bl_current": 130,
+    "bl_target": 130,
+    "pir": false,
+    "pir_last_s": 60,
+    "pir_meas": {
+      "collected_s": 441,
+      "boots": 1,
+      "started_epoch": 1784654976,
+      "wall_s": 441,
+      "gap_s": 0
+    },
+    "pir_pulses": 20,
+    "pir_rises": 20,
+    "pir_edges": 41,
+    "pir_last_ms": 2730,
+    "pir_min_ms": 2042,
+    "pir_max_ms": 12760,
+    "pir_total_s": 76,
+    "pir_width_ms": [
+      0,
+      0,
+      14,
+      5,
+      1,
+      0
+    ],
+    "pir_width_bins": "<100|100-1k|1k-3k|3k-10k|10k-60k|>=60k ms",
+    "pir_gap_ms": [
+      2,
+      3,
+      8,
+      6,
+      0,
+      0,
+      0
+    ],
+    "pir_gap_bins": "<2k|2k-5k|5k-15k|15k-60k|60k-300k|300k-1800k|>=1800k ms",
+    "pir_by_hour": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      20,
+      0,
+      0,
+      0,
+      0
+    ],
+    "pir_by_hour_note": "indeks = godzina lokalna 0-23; normuj przez collected_s, nie uptime",
+    "ldr_meas": {
+      "collected_s": 441,
+      "boots": 1,
+      "started_epoch": 1784654976,
+      "wall_s": 441,
+      "gap_s": 0
+    },
+    "ldr_hist": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      69,
+      56,
+      1520,
+      8,
+      0,
+      0,
+      0
+    ],
+    "ldr_hist_bins": "<8|8-16|16-32|32-64|64-128|128-256|256-384|384-512|512-640|640-768|768-1024|1024-1536|1536-2048|2048-2560|2560-3072|>=3072 mV",
+    "ldr_hist_note": "4 probki/s => kosz/4 = sekundy; kosze zageszczone w strefie spornej 256-768 mV. Pytanie: czy sam prysznic (zmierzone 603-617) daje CZYSTY PIK w koszu 512-640 (=> prog 450 bezpieczny), czy rozmazuje sie na kosze 7-9 (=> zaden staly prog nie zadziala). Prog LDR_DIM_UP_MV=650 przecina kosz 640-768.",
+    "ldr_level_s": [
+      0,
+      426,
+      0
+    ],
+    "ldr_level_s_sum": 426,
+    "ldr_level_s_note": "0=ciemno(45) 1=polmrok(130) 2=swiatlo(255). Suma < collected_s o czas w portalu/OTA/boocie i to nie jest blad. Pytanie: czy poziom 1 w ogole istnieje dluzej niz pstrykniecie — jesli ~0 s, to BL_DIM jest martwym kodem do usuniecia.",
+    "ldr_events": [],
+    "ldr_events_total": 0,
+    "ldr_events_note": "zdarzenie = ldr_mv >= 400 nieprzerwanie ORAZ zero ruchu PIR przez > 20 min. Prog 400 mV jest SUROWY i celowo niezalezny od progow podswietlenia (LDR_*), bo to wlasnie one sa przedmiotem sporu — detektor nie moze zalezec od wielkosci, ktora pomiar ma rozstrzygnac. dur_s liczy sie w collected_s, wiec restart pauzuje zdarzenie, zamiast doliczac czas, ktorego nie widzielismy."
+  }
+}
