@@ -249,11 +249,17 @@ void WeatherUi::pushBands(F&& paint) {
 // ---------------------------------------------------------------------- init --
 
 bool WeatherUi::begin() {
+  tft_.init();
+
+  // LEDC PODPINAMY DOPIERO TU — PO tft_.init(). Kolejnosc jest istotna, a nie
+  // kosmetyczna: init() potrafi wolac digitalWrite() na pinie podswietlenia, co w
+  // rdzeniu esp32 3.x odpina od niego kanal LEDC i zostawia pin na sztywno HIGH.
+  // Wtedy sterowanie jasnoscia przestaje dzialac CICHO — ledcWrite() dalej zwraca
+  // sukces. Podpiecie po init() sprawia, ze ostatnie slowo ma PWM.
   pinMode(cfg::PIN_TFT_BL, OUTPUT);
   ledcAttach(cfg::PIN_TFT_BL, cfg::BL_PWM_FREQ, cfg::BL_PWM_BITS);
   ledcWrite(cfg::PIN_TFT_BL, 0);
 
-  tft_.init();
   tft_.setRotation(cfg::TFT_ROTATION);
   tft_.invertDisplay(cfg::TFT_INVERT_DISPLAY);
   tft_.fillScreen(col::BG);
@@ -274,7 +280,61 @@ bool WeatherUi::begin() {
   return true;
 }
 
+void WeatherUi::startBacklightSweep(uint32_t ms) {
+  const uint32_t now = millis();
+  blSweepStart_ = now;
+  blSweepUntil_ = now + ms;
+  // Wymuszenie z LDR ma byc wylaczone na czas testu — inaczej petla loop() co klatke
+  // nadpisywalaby jasnosc wyliczona z rampy i nic by nie pulsowalo.
+  blForceUntil_ = blSweepUntil_;
+}
+
+// Ekran testu: DUZA liczba PWM + pasek + rampa. Sens jest jeden — pozwolic porownac
+// to, co firmware TWIERDZI, ze wystawia, z tym, co oko WIDZI. Rysowany prosto na
+// buforze, bez HUD-u i stopki: to nie jest widok z rotacji, tylko narzedzie.
+void WeatherUi::drawBacklightSweep(TFT_eSPI& spr, uint32_t nowMs) {
+  spr.fillRect(0, 0, W, VIEW_H, col::BG);
+  plCenter(spr, PLF18, "TEST PODSWIETLENIA", W / 2, 30, col::ACCENT);
+  gl(spr, "PIN 14 — jasnosc ma pulsowac", 14, 44, col::TEXT_DIM);
+
+  // Wielka liczba: to, co realnie idzie na PWM.
+  char v[8];
+  snprintf(v, sizeof(v), "%u", static_cast<unsigned>(blCurrent_));
+  const int vw = bigStr(spr, &FreeSansBold24pt7b, v, 0, 0, col::BG);  // pomiar szerokosci
+  bigStr(spr, &FreeSansBold24pt7b, v, (W - vw) / 2, 112, col::TEXT);
+  glCenter(spr, "z 255", W / 2, 120, col::TEXT_MUTE);
+
+  // Pasek proporcjonalny do wartosci — druga, niezalezna reprezentacja tej samej
+  // liczby (latwiej zlapac wzrokiem ruch niz zmiane cyfr).
+  const int bx = 30, bw = W - 60, by = 140, bh = 18;
+  spr.drawRect(bx - 2, by - 2, bw + 4, bh + 4, col::DIVIDER);
+  const int fill = (bw * blCurrent_) / 255;
+  if (fill > 0) spr.fillRect(bx, by, fill, bh, col::ACCENT);
+
+  // Ile testu zostalo — zeby bylo widac, ze sam sie skonczy.
+  const int32_t left = static_cast<int32_t>(blSweepUntil_ - nowMs);
+  char rest[28];
+  snprintf(rest, sizeof(rest), "koniec za %ld s", static_cast<long>(left > 0 ? left / 1000 : 0));
+  glCenter(spr, rest, W / 2, 176, col::TEXT_MUTE);
+  glCenter(spr, "jesli jasnosc STOI — pin nie jest sterowany", W / 2, 190, col::WARN);
+}
+
 void WeatherUi::tickBacklight() {
+  // Rampa testowa: trojkat 255 -> 20 -> 255 w cyklu 12 s. Trojkat, nie sinus —
+  // liniowa zmiana latwiej pozwala ocenic okiem, czy jasnosc idzie ROWNO, czy
+  // skacze. Ustawiamy blCurrent_ WPROST (z pominieciem zwyklej rampy krokiem 6),
+  // bo tutaj to wlasnie faza ma byc plynna, nie dojscie do celu.
+  const uint32_t nowMsBl = millis();
+  if (blSweepUntil_ != 0 && static_cast<int32_t>(nowMsBl - blSweepUntil_) < 0) {
+    const uint32_t phase = (nowMsBl - blSweepStart_) % 12000;
+    const uint32_t half = phase < 6000 ? phase : (12000 - phase);   // 0..6000..0
+    const int val = 20 + static_cast<int>((235UL * half) / 6000);   // 20..255
+    blCurrent_ = static_cast<uint8_t>(val);
+    blTarget_ = blCurrent_;
+    ledcWrite(cfg::PIN_TFT_BL, blCurrent_);
+    return;
+  }
+
   // Koniec wymuszenia z panelu — oddajemy sterowanie automatowi z LDR. Sprawdzane
   // TU, bo tickBacklight() jest wolane z kazdej sciezki rysowania, wiec test wygasnie
   // nawet gdyby petla glowna akurat stala na ekranie startowym albo w portalu.
@@ -2169,7 +2229,14 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
     const int top = b * BAND_H;
     const uint32_t t0 = micros();
     setBand(spr_, top, VIEW_H);
-    paintFrame(spr_, w, pv, hist, fl, wifiOk, nowMs, heapNow);
+    // Test podswietlenia przejmuje CALY ekran — to narzedzie diagnostyczne, a nie
+    // widok w rotacji: pokazuje wylacznie liczbe PWM, pasek i odliczanie do konca.
+    // Sam wygasa (blSweepUntil_), wiec nie ma jak zostac na stale.
+    if (backlightSweepActive(nowMs)) {
+      drawBacklightSweep(spr_, nowMs);
+    } else {
+      paintFrame(spr_, w, pv, hist, fl, wifiOk, nowMs, heapNow);
+    }
     const uint32_t t1 = micros();
     spr_.pushSprite(0, top);
     tPaint += t1 - t0;
@@ -4316,9 +4383,15 @@ void WeatherUi::streamScreenshot(WiFiClient& client, const WeatherModel& w, cons
   static uint8_t line[WD * 3];
   for (int top = HT - SHOT_H; top >= 0; top -= SHOT_H) {   // BMP idzie od dołu
     setBand(shot, top, HT);          // układ globalny 0..239 (ze stopką)
+    // Gdy trwa test podswietlenia, zrzut MUSI pokazywac to samo co ekran — inaczej
+    // zdalna weryfikacja testu jest zludzeniem (zrzut szedlby inna sciezka rysowania).
     // paintFrame czyści 0..205, drawFooterTo maluje 206..239 — razem cały ekran,
     // więc świeżo wyzerowany sprite nie prześwituje nigdzie na czarno.
-    paintFrame(shot, w, pv, hist, fl, wifiOk, nowMs, heapNow);
+    if (backlightSweepActive(nowMs)) {
+      drawBacklightSweep(shot, nowMs);
+    } else {
+      paintFrame(shot, w, pv, hist, fl, wifiOk, nowMs, heapNow);
+    }
     // Ten sam widok co live-render: RETRO ma wlasny dolny HUD zamiast stopki PV
     // (patrz analogiczna galaz w render()) — inaczej podglad w przegladarce
     // pokazywalby pod zrzutem RETRO stopke z mocą fotowoltaiki, ktorej tu nie ma.

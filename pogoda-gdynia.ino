@@ -1364,6 +1364,7 @@ void setup() {
         cur = ui.backlightCurrent();
         tgt = ui.backlightTarget();
       });
+  portal::setBacklightSweepHandler([](uint32_t ms) { ui.startBacklightSweep(ms); });
 
   // BLE dopiero TERAZ — bufor ekranu (66 kB) jest już zaalokowany, więc stos
   // Bluetooth bierze z tego, co zostało, a nie odwrotnie. Gdyby zabrakło sterty,

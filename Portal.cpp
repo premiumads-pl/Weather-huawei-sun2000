@@ -85,6 +85,7 @@ void (*gViewSet)(int) = nullptr;
 void (*gViewGet)(int&, int&) = nullptr;
 // Podswietlenie — patrz setBacklightHandler() w Portal.h.
 void (*gBlTest)(uint8_t, uint32_t) = nullptr;
+void (*gBlSweep)(uint32_t) = nullptr;   // wizualny test rampy (v124)
 void (*gBlGet)(uint8_t&, uint8_t&) = nullptr;
 char apIpStr[20] = "192.168.4.1";
 
@@ -1618,6 +1619,23 @@ void apiTheme() {
   server.send(200, "application/json", buf);
 }
 
+// Wizualny test podswietlenia: /api/blsweep?ms=60000 — ekran przejmuje tryb testowy
+// (duza liczba PWM + rampa w gore i w dol), zeby dalo sie GOLYM OKIEM sprawdzic, czy
+// sterowanie jasnoscia w ogole dziala. Sam wygasa.
+void apiBacklightSweep() {
+  if (gBlSweep == nullptr) {
+    server.send(200, "application/json", "{\"ok\":false,\"msg\":\"brak obslugi\"}");
+    return;
+  }
+  long ms = server.hasArg("ms") ? server.arg("ms").toInt() : 60000;
+  if (ms < 5000) ms = 5000;
+  if (ms > 300000) ms = 300000;   // 5 min sufitu — test ma sam sie skonczyc
+  gBlSweep(static_cast<uint32_t>(ms));
+  char buf[80];
+  snprintf(buf, sizeof(buf), "{\"ok\":true,\"ms\":%ld}", ms);
+  server.send(200, "application/json", buf);
+}
+
 void apiView() {
   if (gViewSet != nullptr && server.hasArg("i")) {
     gViewSet(server.arg("i").toInt());
@@ -2008,6 +2026,7 @@ void routes() {
   server.on("/api/view", apiView);
   server.on("/api/theme", HTTP_POST, apiTheme);
   server.on("/api/bl", apiBacklight);
+  server.on("/api/blsweep", apiBacklightSweep);
   server.on("/api/ble", HTTP_GET, apiBleList);
   server.on("/api/ble", HTTP_POST, apiBleSet);
   server.on("/api/blegw", HTTP_POST, apiBleGw);
@@ -2057,6 +2076,8 @@ void setBacklightHandler(void (*testFn)(uint8_t, uint32_t), void (*getFn)(uint8_
   gBlTest = testFn;
   gBlGet = getFn;
 }
+
+void setBacklightSweepHandler(void (*fn)(uint32_t)) { gBlSweep = fn; }
 
 void setViewHandler(void (*setFn)(int), void (*getFn)(int&, int&)) {
   gViewSet = setFn;

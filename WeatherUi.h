@@ -132,6 +132,20 @@ class WeatherUi {
     blForceUntil_ = millis() + ms;
     blTarget_ = v;
   }
+
+  // --- WIZUALNY test podswietlenia (v124) -----------------------------------
+  // Sam podglad liczby w /api/diag nie rozstrzygal sporu "czy to w ogole dziala":
+  // firmware pokazywal 45, a wlasciciel widzial jasny ekran. Trzeba bylo wyjsc
+  // z API na SAM EKRAN — duza liczba PWM plus rampa w gore i w dol, zeby dalo sie
+  // porownac to, co kod TWIERDZI, z tym, co oko WIDZI. Jesli liczba spada, a jasnosc
+  // stoi — pin nie jest sterowany i zaden software tego nie naprawi.
+  //
+  // Ograniczony czasowo (jak testBacklight wyzej): urzadzenie nie ma klawiatury,
+  // wiec tryb testowy MUSI sam sie skonczyc.
+  void startBacklightSweep(uint32_t ms);
+  bool backlightSweepActive(uint32_t nowMs) const {
+    return blSweepUntil_ != 0 && static_cast<int32_t>(nowMs - blSweepUntil_) < 0;
+  }
   void tickBacklight();
 
  private:
@@ -220,6 +234,9 @@ class WeatherUi {
   uint8_t blTarget_ = 255;
   // 0 = automat z LDR rzadzi. Niezerowe = trwa test z panelu, do tego millis().
   uint32_t blForceUntil_ = 0;
+  // Wizualny test rampy (startBacklightSweep): do kiedy trwa i od kiedy liczymy faze.
+  uint32_t blSweepUntil_ = 0;
+  uint32_t blSweepStart_ = 0;
 
   // temperatura rdzenia ESP32-S3 (odczyt co 2 s)
   float cpuTempC_ = 0.f;
@@ -296,6 +313,7 @@ class WeatherUi {
   // polskie znaki, tak jak istniejacym stringom bledow (np. radarmap::lastError()).
   void drawNoDataV2(TFT_eSPI& spr, int ox, const char* msg, const char* sub = nullptr);
 
+  void drawBacklightSweep(TFT_eSPI& spr, uint32_t nowMs);
   void drawAlert(TFT_eSPI& spr, float t);
   // Podtytuł (sub) niesie powód ciszy falownika — noc, nie awaria.
   void drawNoData(TFT_eSPI& spr, int ox, const char* msg, const char* sub = nullptr);

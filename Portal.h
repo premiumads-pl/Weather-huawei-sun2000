@@ -50,5 +50,7 @@ void setViewHandler(void (*setFn)(int), void (*getFn)(int&, int&));
 // wystawia na PWM. Sluzy do rozstrzygniecia, czy pin podswietlenia jest w ogole
 // sterowany z GPIO — patrz komentarz przy WeatherUi::backlightCurrent().
 void setBacklightHandler(void (*testFn)(uint8_t, uint32_t), void (*getFn)(uint8_t&, uint8_t&));
+// Wizualny test rampy jasnosci — ekran pokazuje wtedy sama liczbe PWM (v124).
+void setBacklightSweepHandler(void (*fn)(uint32_t));
 
 }  // namespace portal
