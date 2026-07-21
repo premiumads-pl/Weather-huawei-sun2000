@@ -582,6 +582,13 @@ void WeatherUi::drawHeader(TFT_eSPI& spr, const WeatherModel& w, bool wifiOk, ui
 // dokladnie tym, co do v118 stalo wprost w drawProgress(); wydzielenie nie zmienia
 // zadnego z nich, tylko daje im jedno miejsce zamiast dwoch.
 bool WeatherUi::viewSkipped(int i, const AirModel* air) {
+  // V3 "Pasmowy" nie ma ekranu RETRO (Mario) ani osobnego GODZINY — prognoza
+  // godzinowa jest wchlonieta w pasek opadu ekranu glownego (patrz makieta 01).
+  // Pomijamy je w rotacji, zeby kolejnosc byla: GLOWNY→RADAR→5 DNI→PRAD→POKOJE→
+  // OGRZEWANIE→POWIETRZE→SAMOLOTY, zgodnie ze specyfikacja projektu.
+  if (settings().theme == 3 && (i == cfg::VIEW_RETRO || i == cfg::VIEW_HOURS)) {
+    return true;
+  }
   return (i == cfg::VIEW_RADAR && !radarmap::hasRain()) ||
          (i == cfg::VIEW_HOME && ble::count() == 0) ||
          (i == cfg::VIEW_BOILER && !settings().hasViessmann()) ||
@@ -2032,6 +2039,14 @@ void WeatherUi::drawView(TFT_eSPI& spr, uint8_t view, int ox, float t, const Wea
   // VIEW_RETRO (case ponizej) NIE sprawdza `v2` ani razu — jest identyczny w
   // obu wygladach z definicji (patrz komentarz przy Settings::theme w
   // Settings.h i przy WeatherUi::drawViewRetro w WeatherUi.h).
+  // Motyw V3 "Pasmowy" przejmuje CALE rysowanie ekranu wlasnym ukladem (dwie
+  // kolumny, jasne tlo, glify prymitywami) — nie miesza sie z galezia v1/v2 ani
+  // jednym case. VIEW_RETRO celowo TU nie wpada: retro (Mario) zostaje wspolne dla
+  // V1/V2 i w V3 nie istnieje — w rotacji V3 slot 0 pokazuje ekran glowny.
+  if (settings().theme == 3) {
+    drawV3(spr, view, ox, t, w, pv, hist, fl, nowMs, heapNow);
+    return;
+  }
   const bool v2 = settings().theme == 2;
   switch (view) {
     case cfg::VIEW_RETRO:
@@ -2095,7 +2110,14 @@ void WeatherUi::paintFrame(TFT_eSPI& spr, const WeatherModel& w, const PvModel& 
                               0.f, 1.f);
   drawContentBg(spr);
 
-  if (alertActive_) {
+  // V3 "Pasmowy": kazdy ekran ma WLASNE, rozne tlo (jasne dwukolumnowe / pelne jasne
+  // / ciemny radar), wiec dzielony slajd przejscia (rysowanie dwoch widokow na jednym
+  // tle) nie ma sensu — drugi zamalowalby pierwszy. V3 robi ciecie: rysuje wprost
+  // aktywny widok. Plansze zdarzen (burza/mroz/awaria) w stylu V3 dochodza w fazie 3;
+  // do tego czasu pod alertem widac zwykly ekran, nigdy czarny.
+  if (settings().theme == 3) {
+    drawV3(spr, view_, 0, enterT, w, pv, hist, fl, nowMs, heapNow);
+  } else if (alertActive_) {
     drawAlert(spr, clampf(static_cast<float>(nowMs - alertStart_) / 260.f, 0.f, 1.f));
   } else if (transitioning_) {
     const float p =
@@ -2113,7 +2135,11 @@ void WeatherUi::paintFrame(TFT_eSPI& spr, const WeatherModel& w, const PvModel& 
   // wygladalyby na nim jak inny motyw nabity na sile z gory. Chowamy je, gdy RETRO
   // jest ktorakolwiek ze stron aktywnego przejscia (nie tylko view_), zeby podczas
   // 340 ms slidu obie strony byly spojne — nie "chrome miga na pol ekranu".
+  // V3 "Pasmowy" rysuje wlasny kontekst (ciemna kolumna z zegarem/data/temperatura)
+  // i nie ma wspolnej belki ani segmentowego paska postepu — chowamy chrome tak samo
+  // jak dla RETRO, na obu stronach ewentualnego przejscia.
   const bool hideChrome =
+      settings().theme == 3 ||
       view_ == cfg::VIEW_RETRO || (transitioning_ && prevView_ == cfg::VIEW_RETRO);
   if (!hideChrome) {
     // V2 dostaje WLASNY HUD (miasto/data/godzina) i pasek segmentow zamiast
@@ -2260,7 +2286,13 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
   // RETRO zajmuje caly dolny pasek (y=206..239) wlasnym HUD-em (WILGOC/WIATR/HPA) —
   // patrz komentarz przy drawViewRetroFooter. Poza tym widokiem dokladnie stara
   // sciezka: drawFooter(), bez zadnej zmiany.
-  if (view_ == cfg::VIEW_RETRO) {
+  if (settings().theme == 3) {
+    // V3 rysuje dolny pas (206..239) sam, wprost na TFT — uklad V3 siega pelnej
+    // wysokosci (POWIETRZE na glownym, osie wykresow), a tego nie da sie zmiescic w
+    // sprite 206 px. To ten sam mechanizm co footer RETRO.
+    drawV3Bottom(tft_, view_, w, pv, fl, nowMs, heapNow);
+    footerInit_ = false;   // stopka PV moze byc nieaktualna po powrocie na V1/V2 — patrz nizej
+  } else if (view_ == cfg::VIEW_RETRO) {
     drawViewRetroFooter(tft_, w);
     // Cache w drawFooter() (lastAc_/lastGrid_/...) nic nie wie o tym, ze fizyczne
     // piksele pod nim wlasnie pokazywaly zupelnie inny widok. Bez tego resetu, gdy

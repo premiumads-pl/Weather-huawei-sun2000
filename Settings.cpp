@@ -77,8 +77,8 @@ void Settings::load() {
   // Domyslnie 2 (V2) — patrz uzasadnienie przy polu w Settings.h. Kazda wartosc
   // spoza {1,2} (np. 0 z NVS, ktorego ta wersja nigdy by nie zapisala) wraca do
   // domyslnej, zamiast wciskac sie w rysowanie jako nieznany wyglad.
-  const uint8_t th = prefs.getUChar("theme", 2);
-  theme = (th == 1 || th == 2) ? th : 2;
+  const uint8_t th = prefs.getUChar("theme", 3);
+  theme = (th >= 1 && th <= 3) ? th : 3;   // 1=V1 ciemny, 2=V2 retro, 3=V3 "Pasmowy" (domyslny)
 
   String mh = prefs.getString("mqhost", "");
   String mu = prefs.getString("mquser", "");
@@ -174,7 +174,7 @@ void Settings::save() {
 // V1/V2 przepisywac do NVS cala reszte ustawien. Ten sam wzorzec co viSave()/
 // meterSave()/bleGwSave() nizej.
 bool Settings::setTheme(uint8_t t) {
-  if (t != 1 && t != 2) return false;
+  if (t < 1 || t > 3) return false;   // 1=V1, 2=V2, 3=V3 "Pasmowy"
   theme = t;
   Preferences prefs;
   if (!prefs.begin(NS_CFG, false)) {

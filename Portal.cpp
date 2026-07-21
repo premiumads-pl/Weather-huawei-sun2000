@@ -82,6 +82,7 @@ struct WifiCfgGuard {
 };
 void (*gScreenshot)(WiFiClient&) = nullptr;
 void (*gViewSet)(int) = nullptr;
+void (*gTap)(int) = nullptr;   // symulacja dotyku pinu z panelu (v127)
 void (*gViewGet)(int&, int&) = nullptr;
 // Podswietlenie — patrz setBacklightHandler() w Portal.h.
 void (*gBlTest)(uint8_t, uint32_t) = nullptr;
@@ -138,13 +139,19 @@ li:hover{border-color:#00dcf0;background:#0d1c30}
 <div class=scr><img id=shot alt="wczytuję ekran…"></div>
 <div class=tabs id=tabs></div>
 <div class=hint id=vmsg>Klikaj, żeby przejść na dany ekran — urządzenie też się przełączy.</div>
+<div class=tabs style=margin-top:8px>
+<button class=s style=margin:0 onclick=tap(1)>Dotyk 1× (odśwież ekran)</button>
+<button class=s style=margin:0 onclick=tap(2)>Dotyk 2× (poprzedni)</button>
+</div>
+<div class=hint>Działa jak dotknięcie płytki (pin GPIO7): 1× resetuje odliczanie, 2× cofa ekran.</div>
 </div>
 
 <div class=c>
 <h2>Wygląd interfejsu</h2>
 <div class=tabs>
-<button id=thv1 onclick=setTheme(1)>Wygląd V1</button>
-<button id=thv2 onclick=setTheme(2)>Wygląd V2</button>
+<button id=thv3 onclick=setTheme(3)>V3 Pasmowy</button>
+<button id=thv1 onclick=setTheme(1)>V1 klasyczny</button>
+<button id=thv2 onclick=setTheme(2)>V2 retro</button>
 </div>
 <div class=hint id=thmsg>Zmiana działa od razu, bez restartu urządzenia.</div>
 </div>
@@ -264,6 +271,13 @@ Symulacja pokazuje sztuczny front — do obejrzenia, jak wygląda wizualizacja.<
 </div>
 
 <div class=c>
+<h2>Pamięć urządzenia</h2>
+<div class=hint>Wszystkie rodzaje pamięci: pojemność, zajętość, wolne, bufory i podział na partycje OTA.</div>
+<button class=s onclick=mem()>Odczytaj stan pamięci</button>
+<div id=memout style=margin-top:10px></div>
+</div>
+
+<div class=c>
 <h2>Diagnostyka</h2>
 <div class=row>
 <button class=s style=margin:0 onclick=dg()>Stan urządzenia</button>
@@ -288,7 +302,7 @@ Symulacja pokazuje sztuczny front — do obejrzenia, jak wygląda wizualizacja.<
 </div><script>
 const $=i=>document.getElementById(i);
 const NAMES=['Auto','Retro','Teraz','Godziny','Radar','5 dni','W domu','Piec','Fotowoltaika','Samoloty','Powietrze','Pamięć','Ruch','Statystyki'];
-let live=true,pin=-1,theme=2;
+let live=true,pin=-1,theme=3;
 
 function tabs(){
  $('tabs').innerHTML=NAMES.map((n,i)=>
@@ -297,6 +311,7 @@ function tabs(){
 function themeUI(){
  $('thv1').className=theme===1?'on':'';
  $('thv2').className=theme===2?'on':'';
+ $('thv3').className=theme===3?'on':'';
 }
 async function setTheme(v){
  $('thmsg').textContent='Zmieniam…';
@@ -313,6 +328,72 @@ async function pickView(i){
  $('vmsg').textContent=i<0?'Rotacja automatyczna — dokładnie jak na urządzeniu.'
   :('Zatrzymane na ekranie: '+NAMES[i+1]+'. Kliknij „Auto”, żeby wznowić rotację.');
  try{const r=await(await fetch('/api/view?i='+i)).json();pin=r.pin;tabs();}catch(e){}
+}
+async function tap(n){try{await fetch('/api/tap?n='+n,{method:'POST'});}catch(e){}}
+function kb(b){if(b==null)return '—';if(b>=1048576)return (b/1048576).toFixed(2)+' MB';if(b>=1024)return (b/1024).toFixed(1)+' kB';return b+' B';}
+function memBar(used,total){var p=total>0?Math.round(used/total*100):0;
+ return '<div style="height:8px;background:#12314c;border-radius:4px;overflow:hidden;margin:3px 0">'
+ +'<div style="height:8px;width:'+p+'%;background:'+(p>85?'#c0524a':p>65?'#c79a3a':'#4d9a6a')+'"></div></div>';}
+function memRow(name,cap,used,free,buf,desc){
+ var body='';
+ if(cap!=null)body+='<b>'+kb(cap)+'</b> pojemność';
+ if(used!=null)body+=' · zajęte '+kb(used);
+ if(free!=null)body+=' · <b style=color:#7fd6a0>wolne '+kb(free)+'</b>';
+ if(buf!=null)body+=' · '+buf;
+ var bar=(cap!=null&&used!=null)?memBar(used,cap):'';
+ return '<div style="padding:8px 0;border-bottom:1px solid #16324c">'
+  +'<div style="display:flex;justify-content:space-between"><b style=color:#cfe3f5>'+name+'</b></div>'
+  +bar+'<div style="font:12px system-ui;color:#9fb6cf">'+body+'</div>'
+  +'<div style="font:11px system-ui;color:#6d8199;margin-top:2px">'+desc+'</div></div>';}
+async function mem(){
+ var o=$('memout');o.innerHTML='<div class=hint>Odczytuję…</div>';
+ try{
+  var d=await(await fetch('/api/diag?'+Date.now())).json();
+  var m=d.memfull||{},h='';
+  var s=m.sram||{};
+  h+=memRow('SRAM (pamięć robocza)',327680,327680-(s.free||0),s.free,
+    'największy blok '+kb(s.largest_block)+' · dołek od startu '+kb(s.min_ever),
+    'Wewnętrzna pamięć układu. Tu żyje sterta: bufory sieciowe, TLS przy aktualizacji, stosy zadań. Największy blok pokazuje fragmentację — TLS potrzebuje ~40 kB ciągłego.');
+  var ps=m.psram||{};
+  h+=memRow('PSRAM (pamięć zewnętrzna)',ps.total,ps.total-(ps.free||0),ps.free,
+    'największy blok '+kb(ps.largest_block),
+    'Zewnętrzne 2 MB. Trzyma bufor ekranu (~132 kB) i 13 klatek radaru (~715 kB). Duże bufory graficzne idą tutaj, nie do SRAM.');
+  var fl=m.flash||{};
+  h+=memRow('Flash (pamięć programu)',fl.chip_size,fl.sketch_size,(fl.chip_size&&fl.sketch_size)?fl.chip_size-fl.sketch_size:null,
+    null,'Cały układ flash 4 MB. Firmware zajmuje '+kb(fl.sketch_size)+'. Reszta to druga partycja OTA, tablica partycji, NVS i zrzut awaryjny.');
+  var ap=m.app||{};
+  var afree=(ap.size&&ap.used)?ap.size-ap.used:null;
+  h+=memRow('Partycja aplikacji „'+(ap.running||'?')+'” (aktywna)',ap.size,ap.used,afree,
+    null,'Bieżący firmware działa z tej partycji OTA. Wolne '+kb(afree)+' to zapas na rozrost aplikacji (nowe fonty, ekrany).');
+  // partycje
+  if(m.partitions){
+   var descP={nvs:'Ustawienia trwałe: Wi-Fi, MQTT, klucze BLE, token pieca, wybrany wygląd.',
+    otadata:'Wskaźnik, z której partycji OTA startować i czy poprzednia aktualizacja się udała.',
+    app0:'Partycja aplikacji OTA #0.',app1:'Partycja aplikacji OTA #1.',
+    spiffs:'Zarezerwowana — projekt NIE używa systemu plików (odzyskane miejsce oddano partycjom app).',
+    coredump:'Zrzut awaryjny po panice: zadanie, adres upadku, backtrace.'};
+   var ph='<div style="padding:8px 0"><b style=color:#cfe3f5>Podział na partycje (OTA i dane)</b>'
+    +'<table style="width:100%;border-collapse:collapse;font:12px system-ui;color:#9fb6cf;margin-top:4px">'
+    +'<tr style=color:#6d8199><td>nazwa</td><td>adres</td><td style=text-align:right>rozmiar</td></tr>';
+   m.partitions.forEach(function(p){if(!p.present)return;
+    ph+='<tr><td>'+p.name+'</td><td>0x'+(p.address||0).toString(16)+'</td><td style=text-align:right>'+kb(p.size)+'</td></tr>';});
+   ph+='</table><div style="font:11px system-ui;color:#6d8199;margin-top:4px">Dwie równe partycje app0/app1 (po '
+    +kb((m.partitions.find(function(p){return p.name=="app0"})||{}).size)+') to serce OTA: nowa wersja wgrywa się na wolną, a stara zostaje jako powrót awaryjny.</div></div>';
+   h+=ph;
+  }
+  var rt=m.rtc||{};
+  h+=memRow('RTC SLOW (przeżywa restart)',rt.slow_usable,rt.slow_used,(rt.slow_usable&&rt.slow_used)?rt.slow_usable-rt.slow_used:null,
+    'fizycznie '+kb(rt.slow_physical),
+    'Maleńka pamięć, którą NIE kasuje restart ani aktualizacja (ale kasuje zanik zasilania). Trzyma statystyki ruchu (PIR) i światła (LDR) zbierane tygodniami.');
+  var st=m.stack||{};
+  h+=memRow('Stosy zadań (sieć / web)',st.configured_size,null,null,
+    'zapas: sieć '+kb(st.net_spare)+', web '+kb(st.web_spare),
+    'Każde zadanie ma swój stos '+kb(st.configured_size)+'. „Zapas” to ile nigdy nie zostało użyte — margines bezpieczeństwa przed przepełnieniem.');
+  h+=memRow('ROM (bootrom układu)',m.rom_size,m.rom_size,0,null,
+    'Stała pamięć producenta 384 kB, tylko do odczytu — pierwszy kod po włączeniu zasilania. Nie da się jej zająć ani zwolnić.');
+  h+='<div style="font:11px system-ui;color:#6d8199;margin-top:8px">Zrzut awaryjny obecny: '+(m.coredump_present?'tak':'nie')+'.</div>';
+  o.innerHTML=h;
+ }catch(e){o.innerHTML='<div class="hint err">Nie udało się odczytać pamięci.</div>';}
 }
 // kolejna klatka dopiero, gdy poprzednia dojdzie — nie zalewamy urządzenia
 function nextShot(){
@@ -448,7 +529,7 @@ async function load(){
  $('st').textContent=r.ap?'tryb konfiguracji':('połączono z '+r.ssid+' · '+r.ip);
  $('cur').textContent=r.city+' ('+r.lat.toFixed(4)+', '+r.lon.toFixed(4)+')';
  $('ssid').value=r.ssid||'';$('mb').value=r.mb||'';$('peak').value=(r.peak/1000).toFixed(1);
- theme=r.theme||2;themeUI();
+ theme=r.theme||3;themeUI();
  $('mqen').checked=!!r.mq_en;$('mqhost').value=r.mq_host||'';$('mqport').value=r.mq_port||1883;
  $('mqpre').value=r.mq_pre||'';$('mquser').value=r.mq_user||'';$('mqpass').value='';
  // Pola generuje JS z tablicy, zeby ich liczba szla za firmware'em, a nie za HTML-em.
@@ -539,7 +620,7 @@ void apiState() {
   d["lon"] = settings().lon;
   d["mb"] = settings().modbusHost;
   d["peak"] = settings().pvPeakW;
-  d["theme"] = settings().theme;   // 1 albo 2 — panel czyta to przy kazdym ladowaniu
+  d["theme"] = settings().theme;   // 1/2/3 — panel czyta to przy kazdym ladowaniu
 
   // UWAGA: hasla brokera nie zwracamy NIGDY — tylko flage "cos jest ustawione".
   d["mq_en"] = settings().mqttEnabled;
@@ -1612,7 +1693,7 @@ void apiBacklight() {
 // niezmieniony stan, a nie zamrozony/domyslny, zeby panel zawsze pokazal PRAWDE.
 void apiTheme() {
   const int v = server.hasArg("v") ? server.arg("v").toInt() : 0;
-  const bool ok = (v == 1 || v == 2) && settings().setTheme(static_cast<uint8_t>(v));
+  const bool ok = (v >= 1 && v <= 3) && settings().setTheme(static_cast<uint8_t>(v));
   char buf[64];
   snprintf(buf, sizeof(buf), "{\"ok\":%s,\"theme\":%d}", ok ? "true" : "false",
            settings().theme);
@@ -1647,6 +1728,17 @@ void apiView() {
   snprintf(buf, sizeof(buf), "{\"cur\":%d,\"pin\":%d}", cur, pin);
   server.sendHeader("Cache-Control", "no-store");
   server.send(200, "application/json", buf);
+}
+
+// Symulacja dotkniecia pinu GPIO7 z panelu: n=1 dziala jak pojedyncze stukniecie
+// (restart odliczania ekranu), n=2 jak podwojne (poprzedni ekran) — DOKLADNIE to,
+// co robi fizyczny dotyk w petli glownej. Sluzy do sprawdzenia zachowania dotyku
+// bez podchodzenia do urzadzenia.
+void apiTap() {
+  const int n = server.hasArg("n") ? server.arg("n").toInt() : 1;
+  if (gTap != nullptr) gTap(n);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", "{\"ok\":true}");
 }
 
 // Lista wykrytych czujnikow BLE. Klucza NIE zwracamy — tylko flage, ze jest.
@@ -2024,6 +2116,7 @@ void routes() {
   server.on("/api/coredump/raw", HTTP_GET, apiCoredumpRaw);
   server.on("/api/screen", apiScreen);
   server.on("/api/view", apiView);
+  server.on("/api/tap", HTTP_POST, apiTap);
   server.on("/api/theme", HTTP_POST, apiTheme);
   server.on("/api/bl", apiBacklight);
   server.on("/api/blsweep", apiBacklightSweep);
@@ -2078,6 +2171,8 @@ void setBacklightHandler(void (*testFn)(uint8_t, uint32_t), void (*getFn)(uint8_
 }
 
 void setBacklightSweepHandler(void (*fn)(uint32_t)) { gBlSweep = fn; }
+
+void setTapHandler(void (*fn)(int)) { gTap = fn; }
 
 void setViewHandler(void (*setFn)(int), void (*getFn)(int&, int&)) {
   gViewSet = setFn;

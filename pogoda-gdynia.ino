@@ -1577,6 +1577,8 @@ void setup() {
 
   portal::setViewHandler([](int i) { ui.pinView(i); },
                          [](int& cur, int& pin) { ui.viewState(cur, pin); });
+  // Panel: przycisk dotyku dziala jak pin GPIO7 (1x restart odliczania, 2x poprzedni).
+  portal::setTapHandler([](int n) { if (n >= 2) ui.prevView(); else ui.restartHold(); });
   // Podswietlenie: test sprzetu + podglad wysterowania (patrz Portal.h).
   portal::setBacklightHandler(
       [](uint8_t v, uint32_t ms) { ui.testBacklight(v, ms); },

@@ -324,6 +324,17 @@ class WeatherUi {
   void drawViewMemV2(TFT_eSPI& spr, int ox, float t, uint32_t heapNow);
   void drawViewMotionV2(TFT_eSPI& spr, int ox, float t, uint32_t nowMs);
   void drawViewStatsV2(TFT_eSPI& spr, int ox, float t, uint32_t nowMs, uint32_t heapNow);
+
+  // Motyw V3 "Pasmowy" (WeatherUiV3.cpp). JEDEN dispatcher rysuje obszar sprite
+  // (y=0..205), drugi — dolny pas (206..239) wprost na TFT, bo uklad V3 siega pelnej
+  // wysokosci i nie ma stopki PV jak V1/V2 (patrz ThemeV3.h). Reszta ekranow to
+  // file-static helpery w tamtym pliku; dostep do modeli (air_/roomModel_/...) idzie
+  // przez argumenty tych dwoch metod, wiec naglowek nie puchnie o 13 deklaracji.
+  void drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const WeatherModel& w,
+              const PvModel& pv, const PvHistory& hist, const FlightModel& fl,
+              uint32_t nowMs, uint32_t heapNow);
+  void drawV3Bottom(TFT_eSPI& tft, uint8_t view, const WeatherModel& w, const PvModel& pv,
+                    const FlightModel& fl, uint32_t nowMs, uint32_t heapNow);
   // Karta "BRAK DANYCH" — jeden wyglad dla wszystkich miejsc w V2, ktore V1
   // pokrywa przez drawNoData()/drawNoData(..., sub). `msg`/`sub` ida przez
   // themev2::foldAscii w srodku (patrz definicja) — wolno im wiec nosic

@@ -45,6 +45,8 @@ void setScreenshotHandler(void (*fn)(WiFiClient&));
 
 // Sterowanie ekranem z panelu: set(idx) — idx<0 wraca do rotacji; get(cur, pin).
 void setViewHandler(void (*setFn)(int), void (*getFn)(int&, int&));
+// Symulacja dotyku pinu z panelu (n=1 pojedyncze, n=2 podwojne) — patrz apiTap.
+void setTapHandler(void (*fn)(int));
 
 // Podswietlenie: test sprzetu (wymus jasnosc na czas) + podglad, co kod realnie
 // wystawia na PWM. Sluzy do rozstrzygniecia, czy pin podswietlenia jest w ogole
