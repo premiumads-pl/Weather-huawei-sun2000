@@ -112,25 +112,22 @@ void hudTop(TFT_eSPI& spr, int ox, const char* city) {
   char cityBuf[40];
   foldAscii(cityBuf, sizeof(cityBuf), city);
 
-  char dateBuf[8] = "--- --";
+  // Data NUMERYCZNIE ("21.07"), nie slownie ("21 LIP"). Powod jest arytmetyczny:
+  // przy skali 2 nazwa miesiaca daje 6 znakow = 108 px, a komplet miasto+data+
+  // godzina + marginesy wychodzil wtedy 338 px na 320 px ekranu i data wchodzila
+  // na godzine (zweryfikowane zrzutem: "LIF08:50"). Piec znakow to 90 px i calosc
+  // miesci sie z zapasem. Dzien miesiaca i tak czyta sie z cyfr szybciej niz ze
+  // skrotu, a miesiac przy codziennym patrzeniu jest informacja drugorzedna.
+  char dateBuf[8] = "--.--";
   char timeBuf[6] = "--:--";
   const time_t now = time(nullptr);
   if (now >= 1700000000) {
     struct tm tmv{};
     localtime_r(&now, &tmv);
-    // Miesiace ASCII-safe (RetroFont nie zna Z) — WLASNA tabela, nie kMon z
-    // WeatherUi.cpp (ta ma "paź" z ogonkowym z, ktorego font nie narysuje).
-    static const char* const kMon[12] = {"STY", "LUT", "MAR", "KWI", "MAJ", "CZE",
-                                         "LIP", "SIE", "WRZ", "PAZ", "LIS", "GRU"};
-    snprintf(dateBuf, sizeof(dateBuf), "%d %s", tmv.tm_mday, kMon[tmv.tm_mon % 12]);
+    snprintf(dateBuf, sizeof(dateBuf), "%02d.%02d", tmv.tm_mday, tmv.tm_mon + 1);
     snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
   }
 
-  // Miasto ZAWSZE na skali 3 (tak jak w opisie zadania) — data/godzina schodza
-  // na skale 2 tylko, gdy komplet NIE miesci sie w 320 px. Realny krok fontu to
-  // 9*scale (8 px glifu + 1 px odstepu), NIE 8*scale — przy skali 3 to 27 px/znak,
-  // a nie 24 (uproszczenie z opisu zadania pomijalo ten 1 px odstepu). Liczymy
-  // wiec naprawde, zamiast zakladac z gory, ze "GDYNIA" = 144 px.
   // UKLAD SEKWENCYJNY, NIE CENTROWANY. Pierwsza wersja centrowala date w calym
   // ekranie i sprawdzala kolizje TYLKO PRZED zejsciem na mniejsza skale — a po
   // zejsciu juz nie. Efekt na urzadzeniu: "GDYNIA" (skala 3 = 162 px, konczy sie
@@ -146,7 +143,7 @@ void hudTop(TFT_eSPI& spr, int ox, const char* city) {
   // zweryfikowane zrzutem). Przy skali 3 znak ma 27 px: samo "GDYNIA" to 162 px,
   // czyli polowa ekranu, i komplet nie ma prawa sie zmiescic. Liczymy wiec raz:
   // jesli calosc przy danej skali przekracza szerokosc ekranu — schodzimy nizej.
-  const int margins = 8 + 8 + 8 + 8;   // lewy, dwie przerwy, prawy
+  const int margins = 8 + 6 + 6 + 8;   // lewy, dwie przerwy, prawy
   int cityScale = 3, scale = 3;
   if (textWidth(cityBuf, 3) + textWidth(dateBuf, 3) + textWidth(timeBuf, 3) + margins >
       cfg::SCREEN_W) {
@@ -162,8 +159,8 @@ void hudTop(TFT_eSPI& spr, int ox, const char* city) {
   const int gapL = ox + 8 + cityW;
   const int timeX = ox + cfg::SCREEN_W - 8 - timeW;
   // Data wysrodkowana w REALNIE dostepnej przerwie, nie w calym ekranie.
-  int dateX = gapL + 8 + ((timeX - 8) - (gapL + 8) - dateW) / 2;
-  if (dateX < gapL + 8) dateX = gapL + 8;
+  int dateX = gapL + 6 + ((timeX - 6) - (gapL + 6) - dateW) / 2;
+  if (dateX < gapL + 6) dateX = gapL + 6;
   const int cityY = (cityScale == 3) ? 2 : 6;
   const int dateY = (scale == 3) ? 2 : 6;
 
