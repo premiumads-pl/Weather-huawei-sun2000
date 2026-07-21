@@ -140,18 +140,26 @@ void hudTop(TFT_eSPI& spr, int ox, const char* city) {
   // to, co REALNIE zostalo miedzy nimi — i dopiero gdy tam nie wchodzi, calosc
   // (razem z miastem) schodzi o stopien nizej. Miasto jest najwazniejsze, ale
   // czytelne miasto nachodzace na date nie jest czytelne wcale.
+  // Skala liczona WPROST z sumy szerokosci, nie iteracyjnie. Poprzednia wersja
+  // schodzila o stopien i sprawdzala ponownie, ale konczyla petle nawet gdy nadal
+  // sie nie miescilo — na urzadzeniu data wchodzila na godzine ("LIF08:45",
+  // zweryfikowane zrzutem). Przy skali 3 znak ma 27 px: samo "GDYNIA" to 162 px,
+  // czyli polowa ekranu, i komplet nie ma prawa sie zmiescic. Liczymy wiec raz:
+  // jesli calosc przy danej skali przekracza szerokosc ekranu — schodzimy nizej.
+  const int margins = 8 + 8 + 8 + 8;   // lewy, dwie przerwy, prawy
   int cityScale = 3, scale = 3;
-  int cityW = 0, dateW = 0, timeW = 0, gapL = 0;
-  for (int attempt = 0; attempt < 3; ++attempt) {
-    cityW = textWidth(cityBuf, cityScale);
-    dateW = textWidth(dateBuf, scale);
-    timeW = textWidth(timeBuf, scale);
-    gapL = ox + 8 + cityW;                                   // koniec miasta
-    const int timeX = ox + cfg::SCREEN_W - 8 - timeW;        // poczatek godziny
-    if (gapL + 8 + dateW + 8 <= timeX) break;                // miesci sie
-    if (attempt == 0) scale = 2;                             // najpierw data/godzina
-    else cityScale = 2;                                      // potem takze miasto
+  if (textWidth(cityBuf, 3) + textWidth(dateBuf, 3) + textWidth(timeBuf, 3) + margins >
+      cfg::SCREEN_W) {
+    scale = 2;
+    if (textWidth(cityBuf, 3) + textWidth(dateBuf, 2) + textWidth(timeBuf, 2) + margins >
+        cfg::SCREEN_W) {
+      cityScale = 2;   // dluzsza nazwa miasta (np. "GDYNIA") — caly HUD na skale 2
+    }
   }
+  const int cityW = textWidth(cityBuf, cityScale);
+  const int dateW = textWidth(dateBuf, scale);
+  const int timeW = textWidth(timeBuf, scale);
+  const int gapL = ox + 8 + cityW;
   const int timeX = ox + cfg::SCREEN_W - 8 - timeW;
   // Data wysrodkowana w REALNIE dostepnej przerwie, nie w calym ekranie.
   int dateX = gapL + 8 + ((timeX - 8) - (gapL + 8) - dateW) / 2;
