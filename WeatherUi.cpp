@@ -4329,10 +4329,13 @@ void WeatherUi::streamScreenshot(WiFiClient& client, const WeatherModel& w, cons
     } else {
       paintFrame(shot, w, pv, hist, fl, wifiOk, nowMs, heapNow);
     }
-    // Ten sam widok co live-render: RETRO ma wlasny dolny HUD zamiast stopki PV
-    // (patrz analogiczna galaz w render()) — inaczej podglad w przegladarce
-    // pokazywalby pod zrzutem RETRO stopke z mocą fotowoltaiki, ktorej tu nie ma.
-    if (view_ == cfg::VIEW_RETRO) {
+    // Ten sam widok co live-render: RETRO ma wlasny dolny HUD zamiast stopki PV,
+    // a V3 "Pasmowy" — wlasny dolny pas (POWIETRZE na glownym, os radaru itd.)
+    // zamiast stopki PV. Bez tego podglad w panelu (i tylko podglad — fizyczny ekran
+    // idzie przez render(), ktory juz to ma) pokazywalby pod ukladem V3 stopke V1.
+    if (settings().theme == 3) {
+      drawV3Bottom(shot, view_, w, pv, fl, nowMs, heapNow);
+    } else if (view_ == cfg::VIEW_RETRO) {
       drawViewRetroFooter(shot, w);
     } else {
       drawFooterTo(shot, pv, wifiOk);  // sama sprawdzi, czy wpada w ten pasek
