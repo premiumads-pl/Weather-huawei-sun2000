@@ -156,7 +156,11 @@ void WeatherUi::drawViewNowV2(TFT_eSPI& spr, int ox, float t, const WeatherModel
   themev2::textShadowed(spr, ox + 12, CY2 + 82, 2, themev2::col2::LABEL, desc);
 
   // Trzy karty po prawej: wiatr, wilgotnosc, cisnienie.
-  const int cx = ox + 186, cw = 126, chh = 30, cgap = 5;
+  // Wysokosc karty MUSI pomiescic etykiete (skala 2 = 16 px) + wartosc (skala 3 =
+  // 24 px) + oddech. Pierwsza wersja miala 30 px i wartosc wychodzila poza karte,
+  // wchodzac na etykiete nastepnej (zweryfikowane zrzutem: "74%" rozjechane).
+  // Obszar tresci to 152 px, wiec trzy karty po 44 px + dwie przerwy po 6 = 144.
+  const int cx = ox + 186, cw = 126, chh = 44, cgap = 6;
   char v[16];
   struct { const char* lbl; char val[16]; } rows[3];
   snprintf(rows[0].val, sizeof(rows[0].val), "%.0f KM/H", c.windKmh);
