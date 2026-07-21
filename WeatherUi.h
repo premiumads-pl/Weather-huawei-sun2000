@@ -335,6 +335,10 @@ class WeatherUi {
               uint32_t nowMs, uint32_t heapNow);
   void drawV3Bottom(TFT_eSPI& tft, uint8_t view, const WeatherModel& w, const PvModel& pv,
                     const FlightModel& fl, uint32_t nowMs, uint32_t heapNow);
+  // Plansza zdarzenia w stylu V3 (makiety 13/18/19): ciemne tlo, glif/trojkat po lewej,
+  // tytul + tekst alertu po prawej, akcent kolorem alert_.color. Rysowana zamiast drawV3()
+  // gdy alertActive_ (patrz paintFrame). `t` = postep wejscia jak V1 drawAlert (260 ms).
+  void drawV3Alert(TFT_eSPI& spr, float t);
   // Karta "BRAK DANYCH" — jeden wyglad dla wszystkich miejsc w V2, ktore V1
   // pokrywa przez drawNoData()/drawNoData(..., sub). `msg`/`sub` ida przez
   // themev2::foldAscii w srodku (patrz definicja) — wolno im wiec nosic

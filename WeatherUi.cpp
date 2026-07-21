@@ -2113,10 +2113,14 @@ void WeatherUi::paintFrame(TFT_eSPI& spr, const WeatherModel& w, const PvModel& 
   // V3 "Pasmowy": kazdy ekran ma WLASNE, rozne tlo (jasne dwukolumnowe / pelne jasne
   // / ciemny radar), wiec dzielony slajd przejscia (rysowanie dwoch widokow na jednym
   // tle) nie ma sensu — drugi zamalowalby pierwszy. V3 robi ciecie: rysuje wprost
-  // aktywny widok. Plansze zdarzen (burza/mroz/awaria) w stylu V3 dochodza w fazie 3;
-  // do tego czasu pod alertem widac zwykly ekran, nigdy czarny.
+  // aktywny widok. Podczas alertu rysujemy plansze zdarzenia w stylu V3 (burza/mroz/
+  // awaria — makiety 13/18/19), nie zwykly ekran; postep liczony jak V1 (260 ms).
   if (settings().theme == 3) {
-    drawV3(spr, view_, 0, enterT, w, pv, hist, fl, nowMs, heapNow);
+    if (alertActive_) {
+      drawV3Alert(spr, clampf(static_cast<float>(nowMs - alertStart_) / 260.f, 0.f, 1.f));
+    } else {
+      drawV3(spr, view_, 0, enterT, w, pv, hist, fl, nowMs, heapNow);
+    }
   } else if (alertActive_) {
     drawAlert(spr, clampf(static_cast<float>(nowMs - alertStart_) / 260.f, 0.f, 1.f));
   } else if (transitioning_) {

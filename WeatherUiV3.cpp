@@ -130,6 +130,43 @@ void agoWords(char* b, size_t n, uint32_t sec) {
   else snprintf(b, n, "sprzed %lu dni", static_cast<unsigned long>(sec / 86400));
 }
 
+// Zawija `src` do dwoch linii (po spacji), tak by kazda zmiescila sie w `w` px przy
+// foncie f. l1/l2 MUSZA miec >= 48 B. l2 zostaje puste, gdy calosc miesci sie w jednej
+// linii albo gdy nie ma sensownej spacji do podzialu. Wzorzec jak przy opisie pogody
+// w v3Main, wydzielony bo drawV3Alert potrzebuje go dla tytulu i tekstu alertu.
+void wrap2(const pltxt::FontSet& f, const char* src, int w, char* l1, char* l2) {
+  l1[0] = 0;
+  l2[0] = 0;
+  if (!src || !src[0]) return;
+  if (plex::width(f, src) <= w) { snprintf(l1, 48, "%s", src); return; }
+  const int n = static_cast<int>(strlen(src));
+  int cut = -1;
+  char tmp[48];
+  for (int i = 1; i < n && i < 47; ++i) {
+    if (src[i] != ' ') continue;
+    strncpy(tmp, src, i);
+    tmp[i] = 0;
+    if (plex::width(f, tmp) <= w) cut = i; else break;
+  }
+  if (cut <= 0) { snprintf(l1, 48, "%s", src); return; }
+  strncpy(l1, src, cut);
+  l1[cut] = 0;
+  snprintf(l2, 48, "%s", src + cut + 1);
+}
+
+// Czy jest noc "do zwiniecia ekranu": ciemno w pokoju (blTarget na BL_NIGHT) ORAZ pora
+// nocna wg zegara (godz. <6 lub >=22). Bez NTP nie zgadujemy pory — zwracamy false, wiec
+// przy braku czasu zostaje zwykly, dwukolumnowy ekran glowny. Czysty odczyt (time()/
+// blTarget przekazane z metody) — bezpieczny takze w watku zrzutu.
+bool isNightNow(uint8_t blTarget) {
+  if (blTarget != cfg::BL_NIGHT) return false;
+  const time_t now = time(nullptr);
+  if (now < 1700000000) return false;
+  struct tm tmv{};
+  localtime_r(&now, &tmv);
+  return tmv.tm_hour < 6 || tmv.tm_hour >= 22;
+}
+
 // Kolor temperatury - plaskie odcienie z palety (spec: zero gradientow).
 uint16_t tempCol(float c) {
   if (c <= 0.f) return col::RAIN;      // mroz - gleboki niebieski
@@ -418,6 +455,83 @@ void v3MainBottom(TFT_eSPI& tft, const AirModel* air) {
     freshDot(tft, grid::DATA_R - 3, 224, Fresh::UNKNOWN);
     plex::strRight(tft, plex::f13(), "brak danych", grid::DATA_R - 12, 228, col::MUTE);
   }
+}
+
+// --- WARIANT NOCNY (makieta 02) ------------------------------------------------
+// Ciemno w pokoju + pora nocna => ekran glowny zwija sie do minimum: wielki zegar na
+// czerni, jedna linia z temperatura na zewnatrz, a gdy spodziewany opad — druga linia
+// "deszcz od ~HH:00" w akcencie. Dolny pas (drawV3Bottom) tez czerni sie w nocy.
+void v3MainNight(TFT_eSPI& s, const WeatherModel& w) {
+  s.fillRect(0, 0, grid::W, 206, 0x0000);   // pelna czern (nie col::BG)
+
+  // Wielki zegar wysrodkowany. Bez NTP: "--:--" (font f52 nie ma myslnika — kreski recznie).
+  const time_t now = time(nullptr);
+  if (now >= 1700000000) {
+    struct tm tmv{};
+    localtime_r(&now, &tmv);
+    char clk[8];
+    snprintf(clk, sizeof(clk), "%d:%02d", tmv.tm_hour, tmv.tm_min);
+    plex::strCenter(s, plex::f52(), clk, grid::W / 2, 116, col::BG);
+  } else {
+    const pltxt::FontSet f = plex::f52();
+    const int dw = plex::width(f, "0");
+    const int total = dw * 5;
+    int cx = grid::W / 2 - total / 2;
+    for (int i = 0; i < 5; ++i) {
+      if (i == 2) cx += plex::str(s, f, ":", cx, 116, col::BG);
+      else { s.fillRect(cx + 2, 116 - 14, dw - 4, 5, col::BG); cx += dw; }
+    }
+  }
+
+  // Temperatura na zewnatrz (makieta: "12° na zewnatrz").
+  if (w.ready && w.current.valid) {
+    char tline[24];
+    snprintf(tline, sizeof(tline), "%.0f° na zewnątrz", w.current.tempC);
+    plex::strCenter(s, plex::f20(), tline, grid::W / 2, 152, col::BG);
+  }
+
+  // Spodziewany opad: najblizsza godzina z realnym prawdopodobienstwem/iloscia opadu.
+  if (w.ready) {
+    int rainHour = -1;
+    for (int i = 0; i < WX_HOURS; ++i) {
+      const HourSlot& h = w.hours[i];
+      if (h.valid && (h.data.precipProb >= 40 || h.data.precipMm >= 0.2f)) {
+        rainHour = h.hourOfDay;
+        break;
+      }
+    }
+    if (rainHour >= 0) {
+      char rl[24];
+      snprintf(rl, sizeof(rl), "deszcz od ~%d:00", rainHour);
+      const int tw = plex::width(plex::f13(), rl);
+      const int total = tw + 16;
+      const int x0 = grid::W / 2 - total / 2;
+      // Parasolka (prymityw): kopulka (gorna polowa kola) + trzonek z haczykiem.
+      const int ux = x0 + 6, uy = 190;
+      s.fillCircle(ux, uy, 6, col::ACCENT);
+      s.fillRect(ux - 7, uy + 1, 15, 8, 0x0000);   // sciecie dolnej polowy -> kopulka
+      s.fillRect(ux - 1, uy, 2, 8, col::ACCENT);    // trzonek
+      s.drawFastHLine(ux - 3, uy + 7, 3, col::ACCENT);   // haczyk
+      plex::str(s, plex::f13(), rl, x0 + 16, uy + 5, col::ACCENT);
+    }
+  }
+}
+
+// --- PASEK STARTOWY (makieta 07) -----------------------------------------------
+// Podczas rozruchu (pogoda jeszcze niegotowa, wczesny uptime) dolny pas pokazuje pasek
+// techniczny sieci zamiast POWIETRZA. Znika sam, gdy pogoda wejdzie albo minie okno
+// startu — patrz drawV3Bottom. Adresy/SSID sa RUNTIME (jak na ekranie diag), nie w kodzie.
+void v3StartBottom(TFT_eSPI& tft) {
+  tft.fillRect(0, 206, grid::W, grid::H - 206, col::PANEL);   // ciemny, techniczny
+  char b[64];
+  if (WiFi.status() == WL_CONNECTED) {
+    snprintf(b, sizeof(b), "sieć: %s · %s · %d dBm", WiFi.SSID().c_str(),
+             WiFi.localIP().toString().c_str(), static_cast<int>(WiFi.RSSI()));
+  } else {
+    snprintf(b, sizeof(b), "sieć: łączę z Wi-Fi...");
+  }
+  plex::str(tft, plex::f13(), b, grid::MARGIN, 220, col::ONDARK_DIM);
+  plex::str(tft, plex::f13(), "zniknie, gdy wszystko wstanie", grid::MARGIN, 235, col::MUTE);
 }
 
 // ============================================================ RADAR ============
@@ -1412,13 +1526,24 @@ void WeatherUi::drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const Weath
     case cfg::VIEW_RETRO:   // w V3 pomijane w rotacji - defensywnie rysuj GLOWNY
     case cfg::VIEW_HOURS:
     default:
-      v3Main(spr, w, pv);
+      // Wariant nocny (makieta 02): ciemno + pora nocna => minimalny zegar zamiast
+      // dwukolumnowego ukladu. To JEDYNA zmiana w tej galezi — dzien rysuje v3Main
+      // jak dotad, pozostale ekrany rotacji bez zmian.
+      if (isNightNow(blTarget_)) v3MainNight(spr, w);
+      else v3Main(spr, w, pv);
       break;
   }
 }
 
 void WeatherUi::drawV3Bottom(TFT_eSPI& tft, uint8_t view, const WeatherModel& w, const PvModel& pv,
                              const FlightModel& fl, uint32_t nowMs, uint32_t heapNow) {
+  // Podczas planszy zdarzenia caly dolny pas jest ciemny (spojnie z drawV3Alert, zeby
+  // stopka nie przeswitywala), z cienkim paskiem akcentu na dole. Niezalezne od widoku.
+  if (alertActive_) {
+    tft.fillRect(0, 206, tv3::grid::W, tv3::grid::H - 206, tv3::col::PANEL);
+    tft.fillRect(tv3::grid::DATA_L, 233, 120, 4, alert_.color);
+    return;
+  }
   switch (view) {
     case cfg::VIEW_RADAR:
       v3RadarBottom(tft, radarModel_);
@@ -1454,7 +1579,93 @@ void WeatherUi::drawV3Bottom(TFT_eSPI& tft, uint8_t view, const WeatherModel& w,
     case cfg::VIEW_RETRO:
     case cfg::VIEW_HOURS:
     default:
-      v3MainBottom(tft, air_);
+      if (isNightNow(blTarget_)) {
+        tft.fillRect(0, 206, tv3::grid::W, tv3::grid::H - 206, 0x0000);   // czern w nocy
+      } else if (!w.ready && nowMs < 90000UL) {
+        v3StartBottom(tft);   // pasek techniczny startu (makieta 07), do ~90 s pracy
+      } else {
+        v3MainBottom(tft, air_);   // POWIETRZE (takze makieta 21: pogoda niepobrana)
+      }
       break;
   }
+}
+
+// ============================================================ PLANSZA ZDARZENIA =
+// Makiety 13 (burza) / 18 (mroz) / 19 (awaria). Rysowana zamiast drawV3() gdy
+// alertActive_ (patrz WeatherUi::paintFrame). Uklad: ciemne tlo na cala wysokosc
+// (dolny pas 206..239 domalowuje drawV3Bottom), po lewej DUZY glif pogody na ciemnym
+// tle (STORM/HEAVY_RAIN/FROST/HEAT wg alert_.iconCode) albo trojkat ostrzegawczy z "!"
+// (PV_FAULT/PV_OFFLINE/WIND — iconCode < 0), po prawej tytul (alert_.title) i tekst
+// (alert_.text) akcentem alert_.color. `t` = postep wejscia (jak V1 drawAlert: 260 ms).
+void WeatherUi::drawV3Alert(TFT_eSPI& spr, float t) {
+  namespace col = tv3::col;
+  namespace grid = tv3::grid;
+  const uint16_t accent = alert_.color;
+
+  spr.fillRect(0, 0, grid::W, 206, col::PANEL);
+
+  // Wejscie jak V1 (postep t): prawa kolumna wsuwa sie o kilkanascie pikseli.
+  float e = t < 0.f ? 0.f : (t > 1.f ? 1.f : t);
+  e = 1.f - (1.f - e) * (1.f - e);   // easeOutQuad
+  const int slide = static_cast<int>((1.f - e) * 16.f);
+
+  // --- glif / trojkat po lewej ---
+  const int gcx = 62, gcy = 98;
+  if (alert_.iconCode >= 0) {
+    tv3::wx::glyph(spr, alert_.iconCode, false, gcx, gcy, 44, false);   // onLight=false: ciemne tlo
+  } else {
+    const int R = 46;
+    spr.fillTriangle(gcx, gcy - R, gcx - R, gcy + (R * 3) / 4, gcx + R, gcy + (R * 3) / 4, accent);
+    spr.fillRect(gcx - 3, gcy - 20, 6, 26, col::PANEL);   // slupek "!" (tlo przeswituje)
+    spr.fillRect(gcx - 3, gcy + 12, 6, 6, col::PANEL);    // kropka "!"
+  }
+
+  // --- prawa kolumna: tytul + tekst ---
+  const int tx = grid::DATA_L + slide;
+  const int availW = grid::W - grid::DATA_L - 8;
+  int by;   // biezaca linia bazowa pod tytulem
+
+  // Tytul alertu. Od v129 font wyroznika f52 ma PELNY alfabet, wiec krotkie tytuly
+  // ("Burza", "Mroz") ida wielkim krojem jak na makietach 13/18. Dluzsze ("Awaria
+  // falownika") nie zmieszcza sie w f52 w kolumnie danych — wtedy zawijamy je do
+  // dwoch linii f20 (makieta 19). Tytul bialy, podtytul akcentem.
+  {
+    if (plex::width(plex::f52(), alert_.title) <= availW) {
+      plex::str(spr, plex::f52(), alert_.title, tx, 96, col::ONDARK);
+      by = 126;
+    } else {
+      char l1[48], l2[48];
+      wrap2(plex::f20(), alert_.title, availW, l1, l2);
+      if (l2[0]) {
+        plex::str(spr, plex::f20(), l1, tx, 70, col::ONDARK);
+        plex::str(spr, plex::f20(), l2, tx, 94, col::ONDARK);
+        by = 124;
+      } else {
+        plex::str(spr, plex::f20(), l1, tx, 78, col::ONDARK);
+        by = 108;
+      }
+    }
+  }
+
+  // Tekst: buildAlert sklada go czesto jako "glowny - dodatkowy" (np. "Status 0x0300 -
+  // sprawdz instalacje"). Czesc glowna akcentem (f13, zawijana), dodatkowa wyciszona
+  // (f13). Bez separatora: calosc idzie w akcent.
+  char head[48] = {}, tail[48] = {};
+  const char* dash = strstr(alert_.text, " - ");
+  if (dash) {
+    const size_t k = static_cast<size_t>(dash - alert_.text);
+    strncpy(head, alert_.text, k < sizeof(head) ? k : sizeof(head) - 1);
+    snprintf(tail, sizeof(tail), "%s", dash + 3);
+  } else {
+    snprintf(head, sizeof(head), "%s", alert_.text);
+  }
+
+  if (head[0]) {
+    char h1[48], h2[48];
+    wrap2(plex::f13(), head, availW, h1, h2);
+    plex::str(spr, plex::f13(), h1, tx, by, accent);
+    by += 18;
+    if (h2[0]) { plex::str(spr, plex::f13(), h2, tx, by, accent); by += 18; }
+  }
+  if (tail[0]) plex::str(spr, plex::f13(), tail, tx, by, col::MUTE);
 }

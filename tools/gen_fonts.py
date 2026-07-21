@@ -64,7 +64,7 @@ FONTS = [
     (13, 500, "Plex13", "FULL"),      # tekst zdaniowy
     (20, 600, "Plex20", "FULL"),      # wartosci (3,2 kW / 21°) — pelny, bo bywaja jednostki literowe
     (24, 700, "Plex24", CLOCK_SET),   # zegar 14:32
-    (52, 700, "Plex52", BIG_SET),     # wielki wyroznik (temperatura na glownym)
+    (52, 700, "Plex52", "FULL"),      # wielki wyroznik: liczby ORAZ slowa ("spi", tytuly zdarzen)
 ]
 
 # --- ZESTAW ZNAKOW ------------------------------------------------------------
