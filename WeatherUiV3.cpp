@@ -79,6 +79,16 @@ void fmt1(char* b, size_t n, float v) {
     if (*p == '.') { *p = ','; break; }
 }
 
+// Moc [kW] z DWOMA miejscami po przecinku dla malych wartosci (<10 kW), jednym dla
+// wiekszych. Wlasciciel: przy 0,2 kW nie widac, ze wartosc realnie sie zmienia (0,20->
+// 0,24 zaokragla sie do "0,2"); w setnych zmiana jest widoczna od razu. Powyzej 10 kW
+// setne sa zbedne i zabralyby szerokosc.
+void fmtKw(char* b, size_t n, float v) {
+  snprintf(b, n, (v < 10.f && v > -10.f) ? "%.2f" : "%.1f", v);
+  for (char* p = b; *p; ++p)
+    if (*p == '.') { *p = ','; break; }
+}
+
 // Grupowanie tysiecy spacja (mockup diagnostyki: "90 100 B").
 void groupNum(char* out, size_t n, uint32_t v) {
   char tmp[16];
@@ -118,9 +128,20 @@ void drawClock(TFT_eSPI& s, int x, int baseline, uint16_t colr) {
   }
   struct tm tmv{};
   localtime_r(&now, &tmv);
-  char b[8];
-  snprintf(b, sizeof(b), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
-  plex::str(s, f, b, x, baseline, colr);
+  // Dwukropek MRUGA co sekunde (wlasciciel): widoczny w parzyste sekundy, schowany w
+  // nieparzyste. HH i MM stoja na stalych pozycjach (dwukropek zajmuje swoja szerokosc
+  // niezaleznie od tego, czy go rysujemy), wiec cyfry nie skacza. Zeby to bylo widac,
+  // render() dorzuca sekunde do sygnatury pomijania klatek TYLKO na ekranie glownym
+  // (patrz WeatherUi.cpp) — reszta ekranow nie przerysowuje sie co sekunde.
+  char hh[4], mm[4];
+  snprintf(hh, sizeof(hh), "%02d", tmv.tm_hour);
+  snprintf(mm, sizeof(mm), "%02d", tmv.tm_min);
+  int cx = x;
+  cx += plex::str(s, f, hh, cx, baseline, colr);
+  const int cwid = plex::width(f, ":");
+  if (tmv.tm_sec % 2 == 0) plex::str(s, f, ":", cx, baseline, colr);
+  cx += cwid;
+  plex::str(s, f, mm, cx, baseline, colr);
 }
 
 // "sprzed X min" / "sprzed X h" - wiek w sekundach na slowa.
@@ -382,9 +403,9 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top
   // sie w kolumnie danych z zapasem.
   const bool exporting = expW > 0;
   char va[10], vb[10], vc[10], sa[16], sb[16], sc[18];
-  fmt1(va, sizeof(va), prod / 1000.f);
-  fmt1(vb, sizeof(vb), selfUse / 1000.f);
-  fmt1(vc, sizeof(vc), (exporting ? expW : impW) / 1000.f);
+  fmtKw(va, sizeof(va), prod / 1000.f);
+  fmtKw(vb, sizeof(vb), selfUse / 1000.f);
+  fmtKw(vc, sizeof(vc), (exporting ? expW : impW) / 1000.f);
   snprintf(sa, sizeof(sa), "prod %s", va);
   snprintf(sb, sizeof(sb), "z PV %s", vb);
   snprintf(sc, sizeof(sc), "%s %s", exporting ? "→sieć" : "z sieci", vc);
@@ -415,21 +436,27 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
   const bool haveWx = w.ready && w.current.valid;
   if (haveWx) {
     const auto& c = w.current;
-    wx::glyph(s, c.weatherCode, !c.isDay, 60, 92, 24, false);
 
+    // KOLEJNOSC RYSOWANIA: najpierw LICZBA, potem GLIF (na wierzchu). Wlasciciel chcial,
+    // by krople/gwiazdki z ikony DELIKATNIE ZACHODZILY na temperature (byly na wierzchu,
+    // przezroczyscie — glif maluje tylko swoje piksele, tla nie zamalowuje), a NIE liczba
+    // na krople. Liczbe i tak latwiej odczytac, wiec jest "pod spodem", a cienkie kreski
+    // widoczne na niej. Temperatura odrobine nizej (156 zamiast 150), zeby chmura miescila
+    // sie nad nia, a na sama gore liczby spadaly tylko krople.
     char big[12];
     snprintf(big, sizeof(big), "%.0f°", c.tempC);
-    plex::str(s, plex::f52(), big, grid::MARGIN_CTX, 150, col::ONDARK);
+    plex::str(s, plex::f52(), big, grid::MARGIN_CTX, 156, col::ONDARK);
 
     char feels[24];
     snprintf(feels, sizeof(feels), "odczuwalna %.0f°", c.feelsC);
-    plex::str(s, plex::f13(), feels, grid::MARGIN_CTX, 172, col::ONDARK_DIM);
+    plex::str(s, plex::f13(), feels, grid::MARGIN_CTX, 178, col::ONDARK_DIM);
 
-    // Opis pogody - zawijany do dwoch linii, gdy nie miesci sie w kolumnie.
+    // Opis pogody - zawijany do dwoch linii, gdy nie miesci sie w kolumnie. Nawet dluzszy
+    // ("Częściowe zachmurzenie") miesci sie: druga linia na y=208 (<240).
     const char* desc = wxico::labelForCode(c.weatherCode, !c.isDay);
     const int maxw = grid::CTX_W - 2 * grid::MARGIN_CTX;
     if (plex::width(plex::f13(), desc) <= maxw) {
-      plex::str(s, plex::f13(), desc, grid::MARGIN_CTX, 190, col::ONDARK);
+      plex::str(s, plex::f13(), desc, grid::MARGIN_CTX, 196, col::ONDARK);
     } else {
       char l1[32] = {}, l2[32] = {};
       const char* sp = strrchr(desc, ' ');
@@ -440,9 +467,14 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
       } else {
         snprintf(l1, sizeof(l1), "%s", desc);
       }
-      plex::str(s, plex::f13(), l1, grid::MARGIN_CTX, 188, col::ONDARK);
-      if (l2[0]) plex::str(s, plex::f13(), l2, grid::MARGIN_CTX, 202, col::ONDARK);
+      plex::str(s, plex::f13(), l1, grid::MARGIN_CTX, 194, col::ONDARK);
+      if (l2[0]) plex::str(s, plex::f13(), l2, grid::MARGIN_CTX, 208, col::ONDARK);
     }
+
+    // GLIF NA WIERZCHU (po liczbie): chmura ~y60..108 (nad temperatura, ktorej gora
+    // ~y107), a krople/gwiazdki spadaja z niej na sama gore liczby — zachodza delikatnie
+    // i przezroczyscie, jak chcial wlasciciel.
+    wx::glyph(s, c.weatherCode, !c.isDay, 62, 84, 24, false);
   } else {
     // Mockup 21: pogoda nie pobrana - placeholder zamiast glifu i temperatury.
     s.drawRect(grid::MARGIN_CTX, 66, 60, 46, col::ONDARK_DIM);
@@ -492,18 +524,19 @@ void v3MainBottom(TFT_eSPI& tft, const AirModel* air) {
   plex::str(tft, plex::f11(), "POWIETRZE", grid::DATA_L, 226, col::SECOND);
   if (air && air->ready) {
     const uint16_t bc = airCol(air->index);
-    char badge[16];
-    snprintf(badge, sizeof(badge), "%s · %d", airIndexName(air->index),
-             air->hasPm10 ? static_cast<int>(air->pm10 + 0.5f) : static_cast<int>(air->pm25 + 0.5f));
-    // Plakietka w f11, nie f13: "BARDZO DOBRE · 11" w f13 bylo tak szerokie, ze
-    // zachodzilo na etykiete POWIETRZE. f11 + wezsza kolumna = obie mieszcza sie obok.
-    const int tw = plex::width(plex::f11(), badge);
+    // Sama KLASA jakosci, bez "· liczba". Wlasciciel pytal, skad ta kropka i po co —
+    // to byl separator przed wartoscia PM, ktora i tak jest na ekranie POWIETRZE.
+    // Bez niej plakietka jest czysta i nie ma sierocego "·".
+    const char* nm = airIndexName(air->index);
+    const int tw = plex::width(plex::f11(), nm);
     const int bx = grid::DATA_R - tw - 14;
-    tft.fillRoundRect(bx, 215, tw + 14, 19, 5, bc);
-    plex::str(tft, plex::f11(), badge, bx + 7, 228, col::BG);
+    // Plakietka wyrownana do linii "POWIETRZE": tekst na baseline 226 (jak etykieta),
+    // pigulka wysrodkowana wzgledem niego — wczesniej tekst byl 2 px nizej.
+    tft.fillRoundRect(bx, 215, tw + 14, 17, 5, bc);
+    plex::str(tft, plex::f11(), nm, bx + 7, 226, col::BG);
   } else {
-    freshDot(tft, grid::DATA_R - 3, 224, Fresh::UNKNOWN);
-    plex::strRight(tft, plex::f13(), "brak danych", grid::DATA_R - 12, 228, col::MUTE);
+    freshDot(tft, grid::DATA_R - 3, 222, Fresh::UNKNOWN);
+    plex::strRight(tft, plex::f13(), "brak danych", grid::DATA_R - 12, 226, col::MUTE);
   }
 }
 
@@ -763,8 +796,12 @@ void v3Days(TFT_eSPI& s, const WeatherModel& w) {
   }
   if (wkMax - wkMin < 2.f) { wkMin -= 1.f; wkMax += 1.f; }
 
+  // Naglowek kolumn po prawej — wlasciciel pytal, co to 19° i 15°: to MAX i MIN
+  // temperatura dnia. Opisujemy je (i kolumne opadu) drobnym naglowkiem.
+  plex::strRight(s, plex::f10(), "max  min · opad", grid::DATA_R, 46, col::MUTE);
+
   const time_t now = time(nullptr);
-  const int rowY0 = 52, pitch = 30;
+  const int rowY0 = 56, pitch = 30;
   int r = 0;
   for (int i = 0; i < WX_DAYS; ++i) {
     if (!w.days[i].valid) continue;

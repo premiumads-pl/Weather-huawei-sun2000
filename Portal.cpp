@@ -228,7 +228,7 @@ li:hover{border-color:var(--accent)}
   <div class=scr><img id=shot alt="wczytuję ekran…"></div>
   <div class=hint>Zrzut ekranu urządzenia · odśwież co 5 s.</div>
   <div class=row style=margin-top:10px>
-   <a class=btnlink href="/api/screen" download="ekran.bmp">Pobierz zrzut PNG</a>
+   <a class=btnlink href="/api/screen" download="ekran.jpg">Pobierz zrzut JPEG</a>
    <button class=s style=margin:0 onclick="$('shot').src='/api/screen?'+Date.now()">Odśwież</button>
   </div>
   <div class=row style=margin-top:8px>
@@ -1969,7 +1969,8 @@ void apiCoredump() {
 // w calosci ani do RAM-u, ani do String-a (String zrobilby dokladnie to samo, tylko na
 // stercie). Czytamy z flasha i wysylamy kawalkami po 512 B: w pamieci jest zawsze jeden
 // bufor na stosie zadania web (zapas 12,7 kB), niezaleznie od tego, czy zrzut ma 8 kB czy
-// 64 kB. Ten sam wzorzec co /api/screen, ktore wysyla BMP 320x240 wiersz po wierszu.
+// 64 kB. Ten sam wzorzec strumieniowania kawalkami co /api/screen (JPEG 320x240, a gdy
+// enkoder/PSRAM zawiedzie — awaryjnie BMP wiersz po wierszu).
 //
 // Zaden mutex nie jest tu brany: to czysty odczyt z flasha, gLock nie chroni partycji
 // coredump, a trzymanie go przez ~128 obrotow petli z I/O zablokowaloby netTask i rysowanie.

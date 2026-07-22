@@ -37,6 +37,31 @@
 #include <esp_partition.h>
 #include <esp_ota_ops.h>
 
+// v128/v130: software'owy enkoder JPEG dla podgladu ekranu w panelu. Wersja fmt2jpg
+// (komponent kamery espressif__esp32-camera) ZOSTALA ZASTAPIONA biblioteka JPEGENC
+// (Larry Bank). Powod: samo ZLINKOWANIE fmt2jpg wciagalo ~8 kB STATYCZNEGO RAM (statyczne
+// tablice Huffmana/kwantyzacji enkodera jpge, file-static w libie kamery) -- nie do
+// przeniesienia do PSRAM/heap. Zmierzone: RAM statyczny szedl wtedy do 81800 B, czyli
+// PONAD projektowy budzet 76000 B. Przy zmierzonym largest_free_block ~39 kB te 8 kB
+// zbijaly najwiekszy wolny blok ponizej progu TLS (~40 kB) -- grozba zablokowania OTA
+// (urzadzenie jest TYLKO na OTA, bez USB). Bariera 76000 w tools/release.sh przed tym chroni.
+//
+// JPEGENC trzyma tablice Huffmana/kwantyzacji jako 'const ... PROGMEM' -> lada w OSPI
+// FLASH, wiec RAM STATYCZNY NIE ROSNIE. Robocza pamiec enkodera to obiekt JPEGE_IMAGE
+// (~3,2 kB: ucFileBuf 2 kB + bufory MCU) alokowany NA STOSIE helpera encodeFrameJpeg()
+// (wolanego dopiero PO petli renderujacej, wiec jego 3,2 kB nie nakalda sie na najglebszy
+// lancuch paintFrame; stos webTask to 16 kB). Bufory obrazu (RGB565 153,6 kB + wyjscie
+// JPEG ~96 kB) ida do PSRAM. Awaryjnie zostaje stara sciezka BMP, gdy PSRAM/enkoder zawiedzie.
+//
+// Nadal PRZELACZNIK: 1 = JPEG (JPEGENC), 0 = tylko awaryjny BMP (JPEGENC nie referowany).
+// Domyslnie 1 -- i teraz RAM statyczny zostaje POD 76000 B nawet przy 1.
+#ifndef WEATHER_UI_SCREENSHOT_JPEG
+#define WEATHER_UI_SCREENSHOT_JPEG 1
+#endif
+#if WEATHER_UI_SCREENSHOT_JPEG
+#include <JPEGENC.h>
+#endif
+
 // ---------------------------------------------------------------- pomocnicze --
 
 namespace {
@@ -2346,6 +2371,11 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
     // zeby sie aktualizowaly, ale nie 20x/s.
     if (view_ == cfg::VIEW_MEM || view_ == cfg::VIEW_MOTION || view_ == cfg::VIEW_STATS)
       mix(nowMs / 2000);
+    // Ekran GLOWNY: przerysowanie co SEKUNDE, zeby dwukropek zegara mogl mrugac
+    // (wlasciciel). 1 klatka/s na jasnym tle jest niezauwazalna, a nie 20/s jak przed
+    // naprawa migotania. Reszta ekranow (radar animuje sam) bez sekundowego ticku.
+    if (view_ == cfg::VIEW_NOW || view_ == cfg::VIEW_RETRO || view_ == cfg::VIEW_HOURS)
+      mix(nowMs / 1000);
     mix(static_cast<uint32_t>(static_cast<int>(w.current.tempC * 10)) ^
         (static_cast<uint32_t>(w.current.weatherCode) << 16) ^ (w.current.isDay ? 1u : 0u));
     mix(static_cast<uint32_t>(static_cast<int>(w.current.feelsC * 10)) ^
@@ -4468,6 +4498,46 @@ bool WeatherUi::v3ProgressPos(int& cur, int& total) const {
   return cur >= 0 && total > 0;
 }
 
+#if WEATHER_UI_SCREENSHOT_JPEG
+namespace {
+
+// Enkoduje CALA klatke WxH RGB565 (ciagly bufor 'rgb', bytesPerLine = w*2) do bufora
+// wyjsciowego 'out' o pojemnosci 'outCap' za pomoca JPEGENC. Zwraca dlugosc gotowego
+// JPEG w bajtach (>0) albo 0, gdy ktorykolwiek krok zawiedzie (wtedy wolajacy leci na BMP).
+//
+// UWAGA STOS: klasa JPEGENC trzyma w sobie JPEGE_IMAGE (~3,2 kB: ucFileBuf[2048] + bufory
+// MCU) i obiekt 'jpg' zyje NA STOSIE tej funkcji. Jest wolana DOPIERO po zakonczeniu petli
+// renderujacej klatke, wiec te 3,2 kB nie wspolistnieje z najglebszym lancuchem paintFrame()
+// (stos webTask to 16 kB, ciasno). Dlatego enkoder jest tu, a nie inline w streamScreenshot.
+//
+// BEZPIECZENSTWO BUFORA: JPEGENC pisze wprost do 'out', ale gdy wskaznik dojdzie do
+// out+outCap-512 (pHighWater), ustawia iError=JPEGE_NO_BUFFER i przerywa -- brak przepelnienia.
+// Zwracamy wtedy 0 (addFrame != SUCCESS lub getLastError() != SUCCESS) i wolajacy leci na BMP.
+size_t encodeFrameJpeg(uint8_t* rgb, int w, int h, uint8_t* out, size_t outCap) {
+  JPEGENC jpg;
+  JPEGENCODE enc;
+  if (jpg.open(out, static_cast<int>(outCap)) != JPEGE_SUCCESS) {
+    return 0;
+  }
+  // 4:2:0 + jakosc HIGH: rozsadny kompromis rozmiar/jakosc dla plaskich teł i gradientow UI.
+  if (jpg.encodeBegin(&enc, w, h, JPEGE_PIXEL_RGB565,
+                      JPEGE_SUBSAMPLE_420, JPEGE_Q_HIGH) != JPEGE_SUCCESS) {
+    return 0;
+  }
+  // addFrame enkoduje wszystkie MCU jednym wywolaniem; iPitch = bajty na linie = w*2 = 640.
+  if (jpg.addFrame(&enc, rgb, w * 2) != JPEGE_SUCCESS) {
+    return 0;
+  }
+  const int jpgLen = jpg.close();   // dopisuje marker EOI, zwraca laczna dlugosc JPEG
+  if (jpgLen <= 0 || jpg.getLastError() != JPEGE_SUCCESS) {
+    return 0;
+  }
+  return static_cast<size_t>(jpgLen);
+}
+
+}  // namespace
+#endif  // WEATHER_UI_SCREENSHOT_JPEG
+
 void WeatherUi::streamScreenshot(WiFiClient& client, const WeatherModel& w, const PvModel& pv,
                                  const PvHistory& hist, const FlightModel& fl, bool wifiOk) {
   if (!ready_ || freed_) {
@@ -4476,6 +4546,114 @@ void WeatherUi::streamScreenshot(WiFiClient& client, const WeatherModel& w, cons
 
   constexpr int WD = cfg::SCREEN_W;
   constexpr int HT = cfg::SCREEN_H;
+
+  // Jedna klatka = jeden moment w czasie. Lapiemy nowMs i heapNow RAZ i wieziemy przez
+  // OBA warianty (JPEG glowny i awaryjny BMP). Gdyby kazdy pas/wiersz bral swieze millis()
+  // albo swiezy odczyt sterty, rozjechalyby sie nie tylko animacje: przy BMP miedzy
+  // wierszami leci transmisja (setki ms), wiec napisy "OK 12s temu" i "WOLNY RAM" na
+  // ekranie statystyk pokazalyby w kolejnych pasach ROZNE wartosci i litery rwalyby sie
+  // w pol. W JPEG cala klatka trafia najpierw do bufora, wiec tam to mniej pali, ale
+  // spojnosc obu sciezek trzymamy tak samo.
+  const uint32_t nowMs = millis();
+  const uint32_t heapNow = ESP.getFreeHeap();
+
+#if WEATHER_UI_SCREENSHOT_JPEG
+  // === WARIANT GLOWNY: JPEG enkodowany NA URZADZENIU ==========================
+  // Cala klatka 320x240 idzie do jednego ciaglego bufora RGB565 w PSRAM (153,6 kB),
+  // a JPEGENC (encodeFrameJpeg nizej) robi z niego JPEG. Panel pobiera ~10x mniej
+  // bajtow i odswieza sie plynnie. Wszystko dzieje sie PRZED wyslaniem naglowkow HTTP —
+  // jesli cokolwiek zawiedzie (malo PSRAM, brak sprite'a, blad enkodera), po cichu
+  // spadamy do awaryjnej sciezki BMP na dole, ktora dopiero wtedy zaczyna pisac do klienta.
+  {
+    const size_t rgbLen = static_cast<size_t>(WD) * HT * 2;   // 320*240*2 = 153600
+    const size_t outCap = 96u * 1024u;                        // 98304 -- z zapasem na JPEG 320x240
+
+    // Dwa bufory ida do PSRAM: ciagly RGB565 calej klatki (153,6 kB) oraz wyjscie JPEG
+    // (96 kB -- 320x240 przy 4:2:0/HIGH miesci sie z ogromnym zapasem, a JPEGENC i tak
+    // przerwie na pHighWater=outCap-512 bez przepelnienia). Wymagamy zapasu, zeby nie
+    // zabrac pamieci radarowi/TLS; przy niedoborze po cichu lecimy BMP. getFreePsram()==0
+    // (brak PSRAM) tez zbija nas do BMP.
+    uint8_t* rgb = nullptr;
+    uint8_t* out = nullptr;
+    if (ESP.getFreePsram() >= rgbLen + outCap + 24u * 1024u) {   // prog ~276 kB
+      rgb = static_cast<uint8_t*>(ps_malloc(rgbLen));   // MALLOC_CAP_SPIRAM, NIE stos webTask
+    }
+
+    if (rgb != nullptr) {
+      // Pas roboczy 320x24x16bpp = 15,4 kB — ten sam co w sciezce BMP. NIE bufor
+      // wyswietlacza: rysujemy od nowa, wiec obraz na TFT sie nie zatrzymuje.
+      TFT_eSprite shot(&tft_);
+      shot.setColorDepth(16);
+      if (shot.createSprite(WD, SHOT_H) != nullptr) {
+        shot.setSwapBytes(false);
+        // Renderujemy pas po pasie (jak BMP), ale zamiast wysylac -- przepisujemy piksele
+        // do ciaglego bufora RGB565. KOLEJNOSC BAJTOW: JPEGENC czyta kazdy piksel jako
+        // natywny uint16_t (us = *(uint16_t*)pSrc w JPEGSubSample16), czyli na ESP32-S3
+        // (little-endian) MLODSZY bajt idzie pierwszy. readPixel() zwraca 565 w porzadku
+        // hosta (uint16_t, R w bitach 15-11), wiec pakujemy LSB-first: dst[0]=c&0xFF,
+        // dst[1]=c>>8. JPEGENC rozklada wtedy R=(us&0xf800), G=(us&0x7e0), B=(us&0x1f) --
+        // te same bity co sciezka BMP nizej, wiec kolory wychodza wiernie. GDYBY kolory
+        // wyszly zamienione (czerwony<->niebieski), odwroc te dwie linie na big-endian:
+        //   dst[x*2+0]=c>>8; dst[x*2+1]=c&0xFF;
+        for (int top = 0; top < HT; top += SHOT_H) {
+          setBand(shot, top, HT);          // uklad globalny 0..239 (ze stopka)
+          if (backlightSweepActive(nowMs)) {
+            drawBacklightSweep(shot, nowMs);
+          } else {
+            paintFrame(shot, w, pv, hist, fl, wifiOk, nowMs, heapNow);
+          }
+          // Ten sam dolny pas co live-render i sciezka BMP: V3 ma wlasny pas, RETRO wlasny
+          // HUD, reszta stopke PV. Bez tego podglad pokazywalby zly dol pod ukladem V3/RETRO.
+          if (settings().theme == 3) {
+            drawV3Bottom(shot, view_, w, pv, fl, nowMs, heapNow);
+          } else if (view_ == cfg::VIEW_RETRO) {
+            drawViewRetroFooter(shot, w);
+          } else {
+            drawFooterTo(shot, pv, wifiOk);
+          }
+          for (int y = top; y < top + SHOT_H && y < HT; ++y) {
+            uint8_t* dst = rgb + static_cast<size_t>(y) * WD * 2;
+            for (int x = 0; x < WD; ++x) {
+              const uint16_t c = shot.readPixel(x, y);              // wspolrzedne globalne
+              dst[x * 2 + 0] = static_cast<uint8_t>(c & 0xFF);      // LSB: GGGBBBBB (little-endian)
+              dst[x * 2 + 1] = static_cast<uint8_t>(c >> 8);        // MSB: RRRRRGGG
+            }
+          }
+        }
+        shot.deleteSprite();
+
+        // Enkodujemy DOPIERO teraz -- petla renderujaca (najglebszy paintFrame) juz zeszla
+        // ze stosu, wiec ~3,2 kB obiektu JPEGENC w encodeFrameJpeg() nie nakalda sie na nia.
+        // Bufor wyjsciowy w PSRAM; przy jego braku po cichu lecimy BMP.
+        out = static_cast<uint8_t*>(ps_malloc(outCap));
+        if (out != nullptr) {
+          const size_t jpgLen = encodeFrameJpeg(rgb, WD, HT, out, outCap);
+          if (jpgLen > 0) {
+            free(rgb);   // bufor RGB565 juz zbedny -- gotowy JPEG jest w 'out'
+            rgb = nullptr;
+            client.print("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n");
+            client.printf("Content-Length: %u\r\n", static_cast<unsigned>(jpgLen));
+            client.print("Cache-Control: no-store\r\nConnection: close\r\n\r\n");
+            // Body w kawalkach -- jeden wielki write bywa krotki, gdy bufor TCP jest pelny.
+            size_t sent = 0;
+            while (sent < jpgLen) {
+              const size_t n = client.write(out + sent, jpgLen - sent);
+              if (n == 0) break;   // klient zerwal polaczenie
+              sent += n;
+            }
+            client.flush();
+            free(out);
+            return;   // sukces JPEG -- NIE schodzimy do BMP
+          }
+          free(out);   // enkoder zawiodl (malo miejsca/blad) -- oddajemy PSRAM i lecimy BMP
+        }
+      }
+      free(rgb);   // sprite sie nie udal albo enkoder zawiodl -- oddajemy PSRAM i lecimy BMP
+    }
+  }
+#endif  // WEATHER_UI_SCREENSHOT_JPEG
+
+  // === WARIANT AWARYJNY: nieskompresowany BMP 320x240x24 (jak dotad) ==========
   const uint32_t rowSize = WD * 3;            // 320*3 = 960, podzielne przez 4
   const uint32_t dataSize = rowSize * HT;
   const uint32_t fileSize = 54 + dataSize;
@@ -4504,13 +4682,6 @@ void WeatherUi::streamScreenshot(WiFiClient& client, const WeatherModel& w, cons
   client.printf("Content-Length: %lu\r\n", static_cast<unsigned long>(fileSize));
   client.print("Cache-Control: no-store\r\nConnection: close\r\n\r\n");
   client.write(hdr, sizeof(hdr));
-
-  // Jedna klatka = jeden moment w czasie. Gdyby każdy pasek brał świeże millis()
-  // albo świeży odczyt sterty, rozjechałyby się nie tylko animacje: między paskami
-  // leci transmisja BMP (setki ms), więc napisy "OK 12s temu" i "WOLNY RAM" na ekranie
-  // statystyk pokazałyby w kolejnych paskach RÓŻNE wartości i litery rwałyby się w pół.
-  const uint32_t nowMs = millis();
-  const uint32_t heapNow = ESP.getFreeHeap();
 
   static uint8_t line[WD * 3];
   for (int top = HT - SHOT_H; top >= 0; top -= SHOT_H) {   // BMP idzie od dołu

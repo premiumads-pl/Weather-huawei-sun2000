@@ -54,9 +54,11 @@ class WeatherUi {
   // nie mają z czego działać.
   void releaseBuffer(bool clearScreen = true);
 
-  // Zrzut ekranu do przegladarki: BMP 320x240 24-bit, wysylany wierszami.
-  // Rysuje ekran od nowa do wlasnego, malego sprite'a — nie dotyka bufora
-  // wyswietlacza, wiec obraz na TFT sie nie zatrzymuje.
+  // Zrzut ekranu do przegladarki: JPEG 320x240 enkodowany na urzadzeniu (JPEGENC, tablice
+  // we flashu, ~zero statyku RAM; ~15-30 kB zamiast 230 kB BMP -- podglad w panelu plynny).
+  // Awaryjnie, gdy PSRAM lub enkoder zawiedzie, wysyla nieskompresowany BMP 24-bit
+  // wierszami (stara sciezka). Rysuje ekran od nowa do wlasnego, malego sprite'a — nie
+  // dotyka bufora wyswietlacza, wiec obraz na TFT sie nie zatrzymuje.
   void streamScreenshot(WiFiClient& client, const WeatherModel& w, const PvModel& pv,
                         const PvHistory& hist, const FlightModel& fl, bool wifiOk);
   void drawFooterTo(TFT_eSPI& dst, const PvModel& pv, bool wifiOk);
