@@ -37,7 +37,7 @@
 #include "AirData.h"
 #include "AirClient.h"       // airIndexName()
 #include "RoomData.h"
-#include "RoomHistory.h"   // RoomHistory:: (sparkline trendu 24 h w tle wierszy POKOJE)
+#include "RoomHistory.h"   // RoomHistory:: (wspolny wykres temperatur 24 h na ekranie POKOJE)
 #include "RadarData.h"
 #include "PvData.h"
 #include "WeatherData.h"
@@ -998,51 +998,45 @@ void v3PvBottom(TFT_eSPI& tft, const PvModel& pv) {
 }
 
 // ============================================================ POKOJE ===========
-// Makieta 14. Pelnojasne tlo, wiersze czujnikow.
+// Wykres temperatur wielu pokoi na WSPOLNEJ, OPISANEJ osi Y (°C) i osi X (ruchome
+// okno 24 h). Zastapil dawna liste wierszy ze sparkline w tle: wlasciciel odrzucil
+// tamten uklad wprost ("wykresy bez osi X i Y opisanych"). Kluczowa roznica: skala
+// pionowa jest TERAZ WSPOLNA dla wszystkich pokoi (nie per-wiersz), wiec 1° roznicy
+// miedzy pokojami widac od razu i mozna je porownac. Biezace wartosci + legenda
+// kolorow siedza w dolnym pasie (v3HomeBottom), zeby na samym wykresie zostaly tylko
+// linie i osie.
 
-// Sparkline trendu 24 h w TLE wiersza czujnika (makieta 14). Cienka, delikatna linia
-// (col::RAIN4) laczaca probki temperatury z RoomHistory dla danego slotu pokoju,
-// wpasowana w prostokat [x..x+w] x [yTop..yTop+h]. Rysowana PRZED tekstem, wiec nazwa/
-// temperatura/kropka lezą na wierzchu. Skala pionowa jest per pokoj (min..max z jego
-// wlasnej doby), zeby drobne wahania byly widoczne. Dziura w historii (NO_T, np. przerwa
-// w zasilaniu) PRZERYWA linie — nie laczymy w poprzek luki. Gdy pokoj ma <2 probek,
-// nie rysujemy nic (wiersz czysty).
-void roomSparkline(TFT_eSPI& s, const RoomHistory& rh, int slot, int x, int yTop, int w, int h) {
-  float mn = 1e9f, mx = -1e9f;
-  int valid = 0;
-  for (int i = 0; i < RoomHistory::SLOTS; ++i) {
-    const int16_t v = rh.t10[slot][rh.idx(i)];
-    if (v == RoomHistory::NO_T) continue;
-    const float t = v / 10.f;
-    if (t < mn) mn = t;
-    if (t > mx) mx = t;
-    ++valid;
-  }
-  if (valid < 2) return;
-  const float range = mx - mn;
-  int prevX = -1, prevY = -1;
-  for (int i = 0; i < RoomHistory::SLOTS; ++i) {
-    const int16_t v = rh.t10[slot][rh.idx(i)];
-    if (v == RoomHistory::NO_T) { prevX = -1; continue; }   // dziura — przerwij linie
-    // Temperatura prawie stala (range < 0,5) -> linia w polowie pasma, a nie przyklejona
-    // do dolu (inaczej wygladalaby jak mylace podkreslenie, ktore mamy tu wlasnie usunac).
-    const float norm = range < 0.5f ? 0.5f : (v / 10.f - mn) / range;
-    const int px = x + (i * w) / (RoomHistory::SLOTS - 1);
-    const int py = yTop + (h - 1) - static_cast<int>(norm * (h - 1) + 0.5f);
-    if (prevX >= 0) s.drawLine(prevX, prevY, px, py, col::RAIN4);
-    prevX = px;
-    prevY = py;
-  }
+// Szesc rozroznialnych na jasnym tle kolorow linii, indeksowanych slotem pokoju
+// (RoomHistory / Settings::ble[]). const -> .rodata we flashu: zero statycznego RAM-u.
+// Pierwsze cztery to kolory danych z palety motywu; piaty i szosty to JEDYNE surowe
+// hexy w tym ekranie — paleta tv3 nie ma piatego ani szostego koloru serii.
+static const uint16_t kRoomColors[6] = {
+  col::RAIN,   // 0 niebieski
+  col::GRID,   // 1 czerwony
+  col::OK,     // 2 zielony
+  col::WARN,   // 3 bursztyn
+  0x8A35,      // 4 fiolet  #8E44AD
+  0x0C6F,      // 5 morski  #0E8C7A
+};
+
+// Polska odmiana rzeczownika "czujnik" wg liczby (naglowek: "1 czujnik", "4 czujniki",
+// "5 czujnikow"). Zwraca literal z flasha — bez bufora w RAM.
+const char* czujnikNoun(int n) {
+  const int t = n % 100, u = n % 10;
+  if (n == 1) return "czujnik";
+  if (u >= 2 && u <= 4 && (t < 12 || t > 14)) return "czujniki";
+  return "czujników";
 }
 
 void v3Home(TFT_eSPI& s, const RoomModel* rmp, const RoomHistory* rhp, uint32_t nowMs) {
-  (void)nowMs;
+  (void)nowMs;   // etykiety godzin bierzemy z time() (czas lokalny), nowMs tu zbedny
   s.fillRect(0, 0, grid::W, 206, col::BG);
   static const RoomModel kEmpty{};
   const RoomModel& rm = rmp ? *rmp : kEmpty;
 
-  char hr[28];
-  snprintf(hr, sizeof(hr), "%d czujników · %d z odczytem", rm.sensorCount, rm.count);
+  // Naglowek: ile czujnikow widzi bramka + okno wykresu. Pusty stan (0 czujnikow) jak dotad.
+  char hr[24];
+  snprintf(hr, sizeof(hr), "%d %s · 24 h", rm.sensorCount, czujnikNoun(rm.sensorCount));
   lightHeader(s, "POKOJE", rm.sensorCount ? hr : nullptr);
 
   if (rm.count == 0) {
@@ -1051,56 +1045,153 @@ void v3Home(TFT_eSPI& s, const RoomModel* rmp, const RoomHistory* rhp, uint32_t 
     return;
   }
 
-  const int rowY0 = 50, pitch = 31;
-  int drawn = 0;
-  for (int i = 0; i < rm.count && drawn < 5; ++i) {
-    const RoomRow& r = rm.rows[i];
-    const int y = rowY0 + drawn * pitch;
-    const bool stale = r.ageS >= 900;
-
-    // TLO wiersza: sparkline trendu 24 h (przed tekstem). Tylko czujniki ze slotem
-    // historii (r.slot 0..ROOMS-1) i gdy warstwa danych podpiela RoomHistory. Kolumna
-    // x=96..216: na prawo od najczestszych nazw, na lewo od wilgotnosci/temperatury i
-    // kropki swiezosci — nie tyka ich ukladu.
-    if (rhp && r.slot >= 0 && r.slot < RoomHistory::ROOMS)
-      roomSparkline(s, *rhp, r.slot, 96, y - 6, 120, 26);
-
-    // Nazwa (albo MAC) - pogrubiona.
-    plex::str(s, plex::f20(), r.name ? r.name : "-", grid::MARGIN, y + 6,
-              stale ? col::MUTE : col::PANEL);
-
-    // Podtytul: stan / bateria / wilgotnosc.
-    char sub[32] = "";
-    if (r.slot < 0 && r.hasTemp) snprintf(sub, sizeof(sub), "bez nazwy - nadaj w panelu");
-    else if (!r.hasTemp) snprintf(sub, sizeof(sub), "widzę czujnik - brak klucza");
-    else if (stale) agoWords(sub, sizeof(sub), r.ageS);
-    else if (r.batteryPct > 0 && r.batteryPct < 25)
-      snprintf(sub, sizeof(sub), "bat. %d%%", r.batteryPct);
-    if (sub[0]) plex::str(s, plex::f13(), sub, grid::MARGIN, y + 22, col::MUTE);
-
-    // Wilgotnosc (srodek-prawo).
-    if (r.hasHum) {
-      char hm[8];
-      snprintf(hm, sizeof(hm), "%.0f%%", r.humidity);
-      plex::strRight(s, plex::f13(), hm, 250, y + 6, col::MUTE);
+  // ---- GORA: biezace temperatury WIELKA czcionka (f24), 2 kolumny x 2 wiersze ----
+  // Wlasciciel: dolna mini-legenda byla nieczytelna. Wartosci ida na gore duzym fontem,
+  // a wykres scisniety i zepchniety w dol. Kolejnosc cel = kolejnosc czujnikow (slot):
+  // lewa kolumna pierwsze dwa, prawa nastepne dwa. Kolorowa kropka przy nazwie wiaze
+  // wartosc z linia na wykresie (legenda wtopiona w naglowki — osobnej juz nie ma).
+  {
+    const int colX[2]     = {grid::MARGIN, grid::W / 2 + 4};   // 7, 164
+    const int nameBase[2] = {48, 90};                          // linie bazowe nazw (f13)
+    const int tempBase[2] = {72, 114};                         // linie bazowe wielkich temperatur (f24)
+    for (int i = 0; i < rm.count && i < 4; ++i) {
+      const RoomRow& r = rm.rows[i];
+      const int cx = colX[i / 2], row = i % 2;
+      const bool stale = r.ageS >= 900;
+      const uint16_t dotC = (r.slot >= 0 && r.slot < RoomHistory::ROOMS) ? kRoomColors[r.slot % 6] : col::MUTE;
+      s.fillCircle(cx + 3, nameBase[row] - 4, 3, dotC);
+      plex::str(s, plex::f13(), r.name ? r.name : "-", cx + 11, nameBase[row],
+                stale ? col::MUTE : col::SECOND);
+      char tvb[12];
+      if (r.hasTemp) { char t[10]; fmt1(t, sizeof(t), r.tempC); snprintf(tvb, sizeof(tvb), "%s°", t); }
+      else snprintf(tvb, sizeof(tvb), "-");
+      plex::str(s, plex::f24(), tvb, cx + 11, tempBase[row], (stale || !r.hasTemp) ? col::MUTE : col::PANEL);
     }
-
-    // Temperatura (wielka) + kropka swiezosci.
-    if (r.hasTemp) {
-      char tv[10];
-      fmt1(tv, sizeof(tv), r.tempC);
-      char tv2[12];
-      snprintf(tv2, sizeof(tv2), "%s°", tv);
-      plex::strRight(s, plex::f20(), tv2, grid::DATA_R, y + 8, stale ? col::MUTE : col::PANEL);
-    } else {
-      plex::strRight(s, plex::f20(), "-", grid::DATA_R, y + 8, col::MUTE);
-    }
-    freshDot(s, grid::W - 6, y + 2, !r.hasTemp ? Fresh::UNKNOWN : (stale ? Fresh::STALE : Fresh::OK));
-
-    // Separatory drawFastHLine USUNIETE — wyglądały jak popsute podkreślenia i myliły
-    // sie z trendem. Wiersze rozdziela teraz odstep (pitch) oraz sam sparkline w tle.
-    ++drawn;
   }
+
+  // ---- DOL: wykres SCISNIETY (~50% wysokosci) i zepchniety w dol pod wartosci ----
+  // plotX0 zostawia z lewej ~26 px na etykiety osi Y (°C). plotY1=188 trzyma etykiety
+  // godzin (y=199) jeszcze w sprite (<206). plotY0=126: obszar zaczyna sie pod blokiem
+  // temperatur (dolny wiersz f24 konczy sie ~119).
+  const int plotX0 = grid::MARGIN + 26;   // 33
+  const int plotX1 = grid::DATA_R;         // 313
+  const int plotY0 = 126;                  // gora obszaru (pod blokiem wartosci)
+  const int plotY1 = 188;                  // baza wykresu
+
+  // WSPOLNE min/max po WSZYSTKICH pokojach: i po historii (t10 != NO_T), i po biezacych
+  // temperaturach (pokoj bez historii tez ma miescic sie w osi). Przy okazji liczymy, ile
+  // pokoi ma dosc probek na linie (>=2) — zero => stan "zbieram dane".
+  float tmin = 1e9f, tmax = -1e9f;
+  int roomsPlotted = 0;
+  for (int i = 0; i < rm.count; ++i) {
+    const RoomRow& r = rm.rows[i];
+    if (r.hasTemp) {
+      if (r.tempC < tmin) tmin = r.tempC;
+      if (r.tempC > tmax) tmax = r.tempC;
+    }
+    if (!rhp || r.slot < 0 || r.slot >= RoomHistory::ROOMS) continue;
+    int valid = 0;
+    for (int k = 0; k < RoomHistory::SLOTS; ++k) {
+      const int16_t v = rhp->t10[r.slot][k];
+      if (v == RoomHistory::NO_T) continue;
+      const float t = v / 10.f;
+      if (t < tmin) tmin = t;
+      if (t > tmax) tmax = t;
+      ++valid;
+    }
+    if (valid >= 2) ++roomsPlotted;
+  }
+  if (tmin > tmax) { tmin = 20.f; tmax = 22.f; }   // brak jakichkolwiek liczb — zakres zapasowy
+
+  // OS Y: padding po 0,5° i zaokraglenie do pelnych stopni; wymuszony MINIMALNY rozstaw 3°
+  // (przy realnym rozrzucie ~1° bliskie linie inaczej by sie zlepily) rozciagniety
+  // symetrycznie. Krok 1° do rozpietosci 5°, dalej 2°. Gorny prog wyrownany do
+  // wielokrotnosci kroku, zeby ostatnia podzialka trafiala dokladnie w krawedz wykresu.
+  int yLo = static_cast<int>(floorf(tmin - 0.5f));
+  int yHi = static_cast<int>(ceilf(tmax + 0.5f));
+  if (yHi - yLo < 3) { const int need = 3 - (yHi - yLo); yLo -= need / 2; yHi += need - need / 2; }
+  const int step = (yHi - yLo <= 5) ? 1 : 2;
+  if ((yHi - yLo) % step) yHi += step - ((yHi - yLo) % step);
+  // Mapowanie temperatury na y (baza=yLo u dolu, yHi u gory). Uzywane przez podzialke i linie.
+  auto yOf = [&](float t) {
+    return plotY1 - static_cast<int>((t - yLo) / static_cast<float>(yHi - yLo) * (plotY1 - plotY0) + 0.5f);
+  };
+
+  // Poziome linie podzialki na cala szerokosc + etykieta "%d°" do prawej, tuz przed osia.
+  for (int tv = yLo; tv <= yHi; tv += step) {
+    const int y = yOf(static_cast<float>(tv));
+    s.drawFastHLine(plotX0, y, plotX1 - plotX0, col::LINE);
+    char lbl[8];
+    snprintf(lbl, sizeof(lbl), "%d°", tv);
+    plex::strRight(s, plex::f10(), lbl, plotX0 - 3, y + 3, col::MUTE);
+  }
+
+  // OS X: ruchome 24 h. Pionowe linie siatki + etykiety godzin co 6 h. Pozycje liczymy z
+  // CZASU (t godzin wstecz od teraz), nie z numeru slotu — dzieki temu podpis "12" stoi
+  // tam, gdzie realnie byla godzina 12, niezaleznie od fazy okna. Zegar nieustawiony
+  // (przed NTP) -> zapasowo pokazujemy offset "−Nh" zamiast zmyslonej godziny.
+  const time_t now = time(nullptr);
+  const bool clockOk = now > 1700000000;
+  for (int th = 24; th >= 0; th -= 6) {
+    const int x = plotX1 - static_cast<int>((th / 24.f) * (plotX1 - plotX0) + 0.5f);
+    if (th != 0 && th != 24) s.drawFastVLine(x, plotY0, plotY1 - plotY0, col::LINE);
+    char hb[8];
+    if (th == 0) snprintf(hb, sizeof(hb), "teraz");
+    else if (clockOk) {
+      const time_t moment = now - static_cast<time_t>(th) * 3600;
+      struct tm tmv{};
+      localtime_r(&moment, &tmv);
+      snprintf(hb, sizeof(hb), "%d", tmv.tm_hour);
+    } else {
+      snprintf(hb, sizeof(hb), "−%dh", th);
+    }
+    // Skrajne podpisy wyrownane do wnetrza (teraz do prawej, −24h do lewej), zeby "teraz"
+    // nie wyszlo poza ekran, a lewy podpis nie wlazl w kolumne etykiet °C; srodkowe centrowane.
+    if (th == 0) plex::strRight(s, plex::f10(), hb, plotX1, plotY1 + 11, col::MUTE);
+    else if (th == 24) plex::str(s, plex::f10(), hb, plotX0, plotY1 + 11, col::MUTE);
+    else plex::strCenter(s, plex::f10(), hb, x, plotY1 + 11, col::MUTE);
+  }
+
+  // LINIE POKOI na wierzchu siatki. Kolor = slot pokoju. Dziura (NO_T, np. przerwa w
+  // zasilaniu) PRZERYWA linie — nie laczymy w poprzek luki. Grubosc 2 px (drugi segment
+  // przesuniety o +1 w y), bo cienka linia na tanim, zaparowanym ST7789 z 2 m ginela.
+  if (rhp) {
+    for (int i = 0; i < rm.count; ++i) {
+      const RoomRow& r = rm.rows[i];
+      if (r.slot < 0 || r.slot >= RoomHistory::ROOMS) continue;
+      int valid = 0;
+      for (int k = 0; k < RoomHistory::SLOTS; ++k)
+        if (rhp->t10[r.slot][k] != RoomHistory::NO_T) ++valid;
+      if (valid < 2) continue;   // <2 probek: pokoj tylko w legendzie (wartosc biezaca)
+      const uint16_t c = kRoomColors[r.slot % 6];
+      int px = -1, py = -1;
+      for (int k = 0; k < RoomHistory::SLOTS; ++k) {   // k=0 najstarsza -> lewa krawedz
+        const int16_t v = rhp->t10[r.slot][rhp->idx(k)];
+        if (v == RoomHistory::NO_T) { px = -1; continue; }
+        const int x = plotX0 + (k * (plotX1 - plotX0)) / (RoomHistory::SLOTS - 1);
+        const int y = yOf(v / 10.f);
+        if (px >= 0) { s.drawLine(px, py, x, y, c); s.drawLine(px, py + 1, x, y + 1, c); }
+        px = x; py = y;
+      }
+    }
+  }
+
+  // Sa czujniki, ale zaden nie ma jeszcze 2 probek: osie juz stoja (z biezacych temperatur),
+  // dorysuj delikatny komunikat na srodku obszaru — ekran nigdy nie jest pusty.
+  if (roomsPlotted == 0)
+    plex::strCenter(s, plex::f13(), "wykres pojawi się po zebraniu danych",
+                    (plotX0 + plotX1) / 2, (plotY0 + plotY1) / 2, col::MUTE);
+}
+
+// Dolny pas POKOJE. Wartosci biezace przeniesione na GORE ekranu (duzy font, 2 kolumny),
+// wiec dawna mini-legenda kolorow jest juz niepotrzebna — kropki stoja przy nazwach na
+// gorze. Tu zostaje tylko cichy podpis, ze pionowa skala wykresu jest WSPOLNA dla wszystkich
+// pokoi (bez tego ktos moglby czytac kazda linie we wlasnej skali). Rysowany WPROST na TFT.
+void v3HomeBottom(TFT_eSPI& tft, const RoomModel* rmp) {
+  tft.fillRect(0, 206, grid::W, 34, col::BG);
+  tft.drawFastHLine(grid::MARGIN, 210, grid::W - 2 * grid::MARGIN, col::LINE);
+  if (!rmp || rmp->count == 0) return;   // brak czujnikow: pusty pas (obszar wykresu ma komunikat)
+  plex::strCenter(tft, plex::f11(), "WSPÓLNA SKALA · RUCHOME 24 H", grid::W / 2, 227, col::MUTE);
 }
 
 // ============================================================ OGRZEWANIE =======
@@ -1798,7 +1889,7 @@ void WeatherUi::drawV3Bottom(TFT_eSPI& tft, uint8_t view, const WeatherModel& w,
       v3PvBottom(tft, pv);
       break;
     case cfg::VIEW_HOME:
-      tft.fillRect(0, 206, tv3::grid::W, 34, tv3::col::BG);
+      v3HomeBottom(tft, roomModel_);   // legenda: kropki kolorow + biezace temperatury
       break;
     case cfg::VIEW_BOILER:
       v3BoilerBottom(tft, boiler_);

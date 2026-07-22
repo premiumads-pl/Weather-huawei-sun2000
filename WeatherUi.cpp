@@ -2386,9 +2386,21 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
                   static_cast<uint32_t>(air_->pm25 * 10));
     if (roomModel_) {
       mix(static_cast<uint32_t>(roomModel_->count) | (static_cast<uint32_t>(roomModel_->sensorCount) << 8));
-      for (int i = 0; i < roomModel_->count && i < 6; ++i)
+      // Ekran POKOJE (V3) to teraz WYKRES wszystkich pokoi na wspolnej osi — jego wyglad
+      // zalezy od kazdej temperatury i od okna historii, wiec obok wartosci per-wiersz
+      // mieszamy tez SUME biezacych temperatur (domyka przypadek zamiany wartosci miedzy
+      // wierszami, przy ktorej same skladniki daja te sama sygnature).
+      int32_t tSum = 0;
+      for (int i = 0; i < roomModel_->count && i < 6; ++i) {
+        tSum += static_cast<int>(roomModel_->rows[i].tempC * 10);
         mix(static_cast<uint32_t>(static_cast<int>(roomModel_->rows[i].tempC * 10)) ^
             ((roomModel_->rows[i].ageS / 60) << 16));
+      }
+      mix(static_cast<uint32_t>(tSum));
+      // rooms_->head/lastSlot: numer biezacego slotu ruchomego okna 24 h. Zmienia sie co
+      // 10 min przy przewinieciu historii — wtedy wykres przesuwa sie w lewo i MUSI sie
+      // przerysowac, nawet gdy biezace temperatury sa identyczne (inaczej okno "zamarza").
+      if (rooms_) mix(static_cast<uint32_t>(rooms_->head) ^ (rooms_->lastSlot << 16));
     }
     if (boiler_) mix(static_cast<uint32_t>(static_cast<int>(boiler_->dhwTempC * 10)) ^
                      (boiler_->burnerActive ? 1u : 0u) ^
