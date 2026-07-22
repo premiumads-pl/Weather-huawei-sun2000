@@ -1965,9 +1965,13 @@ void loop() {
         blLevel == 0 ? "ciemno" : (blLevel == 1 ? "polmrok" : "swiatlo"));
   }
 
-  ui.setBacklightTarget(blLevel == 0   ? cfg::BL_NIGHT
-                        : blLevel == 1 ? cfg::BL_DIM
-                                       : cfg::BL_DAY);
+  // Poziomy jasnosci edytowalne z panelu (settings().bl*, clampowane w Settings z
+  // TWARDYM minimum 15/30/60 — panel nie zgasi ekranu na stale). Czytane na biezaco,
+  // wiec zmiana z panelu dziala od nastepnej klatki, bez restartu. cfg::BL_* zostaja
+  // domyslnymi tych pol (patrz Settings::load) i nadal sluza ekranom startowym/OTA.
+  ui.setBacklightTarget(blLevel == 0   ? settings().blNight
+                        : blLevel == 1 ? settings().blDim
+                                       : settings().blDay);
 
   // Dioda zostaje DWUSTANOWA, mimo trzech poziomow ekranu. `night` = poziom najciemniejszy.
   // Powod: LED_DAY/LED_NIGHT to liczby dostrojone okiem, a trzecia byla by zmyslona —

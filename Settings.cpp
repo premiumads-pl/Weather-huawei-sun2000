@@ -80,6 +80,17 @@ void Settings::load() {
   const uint8_t th = prefs.getUChar("theme", 3);
   theme = (th >= 1 && th <= 3) ? th : 3;   // 1=V1 ciemny, 2=V2 retro, 3=V3 "Pasmowy" (domyslny)
 
+  // Ustawienia wyswietlacza (tryb nocny + rotacja + jasnosc). Domyslne = dawne stale
+  // z Config.h; clampTuning() nizej pilnuje zakresow (m.in. TWARDE minimum jasnosci),
+  // wiec nawet blob z uszkodzonego/przyszlego NVS nie zejdzie ponizej progu.
+  nightStartH = prefs.getUChar("nstart", 22);
+  nightEndH   = prefs.getUChar("nend", 6);
+  dwellS      = prefs.getUShort("dwell", 9);
+  blDay       = prefs.getUChar("blday", 255);
+  blDim       = prefs.getUChar("bldim", 130);
+  blNight     = prefs.getUChar("blnight", 45);
+  clampTuning();
+
   String mh = prefs.getString("mqhost", "");
   String mu = prefs.getString("mquser", "");
   String mp = prefs.getString("mqpass", "");
@@ -181,6 +192,49 @@ bool Settings::setTheme(uint8_t t) {
     return false;
   }
   prefs.putUChar("theme", theme);
+  prefs.end();
+  return true;
+}
+
+// Jedno zrodlo prawdy o zakresach ustawien wyswietlacza. Godziny do 0..23; czas
+// ekranu do DWELL_MIN..DWELL_MAX; jasnosc podbijana do TWARDEGO minimum (gorna
+// granica 255 jest darmowa — uint8_t). Bez zejscia ponizej progu ekranu nie da sie
+// zgasic na stale, a urzadzenie w lazience nie ma jak wrocic z czerni.
+void Settings::clampTuning() {
+  if (nightStartH > 23) nightStartH = 23;
+  if (nightEndH > 23) nightEndH = 23;
+  if (dwellS < DWELL_MIN) dwellS = DWELL_MIN;
+  if (dwellS > DWELL_MAX) dwellS = DWELL_MAX;
+  if (blDay < BL_DAY_MIN) blDay = BL_DAY_MIN;
+  if (blDim < BL_DIM_MIN) blDim = BL_DIM_MIN;
+  if (blNight < BL_NIGHT_MIN) blNight = BL_NIGHT_MIN;
+}
+
+// Osobno od save(): ustawienia wyswietlacza zmienia sie z panelu niezaleznie od
+// reszty formularzy, wiec nie ma po co przy kazdej zmianie przepisywac WiFi/MQTT.
+// Ten sam wzorzec co setTheme()/viSave()/meterSave(). Clamp NAJPIERW — do NVS i do
+// RAM trafiaja juz wartosci w zakresie, wiec panel czytajacy je z powrotem widzi
+// PRAWDE (np. jasnosc podbita do minimum).
+bool Settings::saveTuning(uint8_t nStart, uint8_t nEnd, uint16_t dwell,
+                          uint8_t bDay, uint8_t bDim, uint8_t bNight) {
+  nightStartH = nStart;
+  nightEndH   = nEnd;
+  dwellS      = dwell;
+  blDay       = bDay;
+  blDim       = bDim;
+  blNight     = bNight;
+  clampTuning();
+
+  Preferences prefs;
+  if (!prefs.begin(NS_CFG, false)) {
+    return false;
+  }
+  prefs.putUChar("nstart", nightStartH);
+  prefs.putUChar("nend", nightEndH);
+  prefs.putUShort("dwell", dwellS);
+  prefs.putUChar("blday", blDay);
+  prefs.putUChar("bldim", blDim);
+  prefs.putUChar("blnight", blNight);
   prefs.end();
   return true;
 }

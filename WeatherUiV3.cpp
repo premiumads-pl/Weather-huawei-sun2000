@@ -154,17 +154,29 @@ void wrap2(const pltxt::FontSet& f, const char* src, int w, char* l1, char* l2) 
   snprintf(l2, 48, "%s", src + cut + 1);
 }
 
-// Czy jest noc "do zwiniecia ekranu": ciemno w pokoju (blTarget na BL_NIGHT) ORAZ pora
-// nocna wg zegara (godz. <6 lub >=22). Bez NTP nie zgadujemy pory — zwracamy false, wiec
-// przy braku czasu zostaje zwykly, dwukolumnowy ekran glowny. Czysty odczyt (time()/
-// blTarget przekazane z metody) — bezpieczny takze w watku zrzutu.
+// Czy jest noc "do zwiniecia ekranu": ciemno w pokoju (blTarget na poziomie nocnym)
+// ORAZ pora nocna wg zegara (okno edytowalne z panelu, domyslnie 22..6). Bez NTP nie
+// zgadujemy pory — zwracamy false, wiec przy braku czasu zostaje zwykly, dwukolumnowy
+// ekran glowny. Czysty odczyt (time()/blTarget przekazane z metody) — bezpieczny
+// takze w watku zrzutu.
 bool isNightNow(uint8_t blTarget) {
-  if (blTarget != cfg::BL_NIGHT) return false;
+  // Poziom nocny jest edytowalny z panelu (settings().blNight), wiec gate porownuje z
+  // NIM, nie ze stala cfg::BL_NIGHT — inaczej podbicie jasnosci nocnej w panelu
+  // rozspoiloby "ciemno w pokoju" z decyzja o zwinieciu ekranu do zegara.
+  if (blTarget != settings().blNight) return false;
   const time_t now = time(nullptr);
   if (now < 1700000000) return false;
   struct tm tmv{};
   localtime_r(&now, &tmv);
-  return tmv.tm_hour < 6 || tmv.tm_hour >= 22;
+  // Okno nocne z settings (domyslnie 22..6). Trzy przypadki: start>end => okno przez
+  // polnoc (godz. >= start LUB < end); start<end => okno w obrebie doby; start==end =>
+  // okno zdegenerowane, traktujemy jako BRAK nocy (nie "cala doba"), zeby literowka w
+  // panelu nie zwinela ekranu na zawsze.
+  const int h = tmv.tm_hour;
+  const uint8_t s = settings().nightStartH, e = settings().nightEndH;
+  if (s == e) return false;
+  if (s < e) return h >= s && h < e;
+  return h >= s || h < e;
 }
 
 // Kolor temperatury - plaskie odcienie z palety (spec: zero gradientow).
@@ -1159,14 +1171,26 @@ void v3AirBottom(TFT_eSPI& tft, const AirModel* ap) {
 // Makieta 12. Pelnojasne tlo, lista lotow.
 
 void v3Flights(TFT_eSPI& s, const FlightModel& fl, uint32_t nowMs) {
+  (void)nowMs;   // wiek liczymy z zegara (epoch), nie z millis — patrz nizej
   s.fillRect(0, 0, grid::W, 206, col::BG);
+  // Loty NIE maja wieku per-samolot, ale CALA lista ma czas pobrania: diag().flightOkAt
+  // to EPOCH ostatniego udanego fetchu (Log.h), NIE millis — dlatego wiek to
+  // time(nullptr) - flightOkAt. Znacznik swiezosci spojny z reszta ekranow (kropka w
+  // lightHeader): OK gdy lista swieza (<60 s), STALE gdy starsza, UNKNOWN gdy jeszcze
+  // nie bylo udanego pobrania (flightOkAt==0) albo brak NTP (wieku nie znamy).
   char hr[24] = "";
-  if (fl.ready && diag().flightOkAt) {
-    const uint32_t sec = (nowMs - diag().flightOkAt) / 1000;
-    if (sec < 90) snprintf(hr, sizeof(hr), "odświeżono %lu s temu", static_cast<unsigned long>(sec));
-    else snprintf(hr, sizeof(hr), "odświeżono %lu min temu", static_cast<unsigned long>(sec / 60));
+  Fresh fresh = Fresh::UNKNOWN;
+  if (diag().flightOkAt) {
+    const time_t now = time(nullptr);
+    if (now > 1700000000) {
+      long age = static_cast<long>(now - static_cast<time_t>(diag().flightOkAt));
+      if (age < 0) age = 0;   // zegar mogl cofnac sie po synchronizacji NTP
+      fresh = age < 60 ? Fresh::OK : Fresh::STALE;
+      if (age < 90) snprintf(hr, sizeof(hr), "odświeżono %ld s temu", age);
+      else snprintf(hr, sizeof(hr), "odświeżono %ld min temu", age / 60);
+    }
   }
-  lightHeader(s, "NAD NAMI", fl.ready ? hr : nullptr, fl.ready ? Fresh::OK : Fresh::UNKNOWN);
+  lightHeader(s, "NAD NAMI", fl.ready ? hr : nullptr, fl.ready ? fresh : Fresh::UNKNOWN);
 
   if (!fl.ready) {
     plex::strCenter(s, plex::f20(), "Pobieram dane...", grid::W / 2, 110, col::MUTE);

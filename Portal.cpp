@@ -173,6 +173,27 @@ li:hover{border-color:var(--accent)}
 </div>
 
 <div class=c>
+<h2>Tryb nocny i jasność</h2>
+<label>Tryb nocny — ekran główny zwija się do samego zegara (godziny 0–23)</label>
+<div class=row>
+<div><label>Początek</label><input id=nstart type=number min=0 max=23 step=1></div>
+<div><label>Koniec</label><input id=nend type=number min=0 max=23 step=1></div>
+</div>
+<label>Czas jednego ekranu w rotacji [s] (3–60)</label>
+<input id=dwell type=number min=3 max=60 step=1>
+<label>Jasność podświetlenia (0–255)</label>
+<div class=row>
+<div><label>Dzień</label><input id=blday type=number min=60 max=255 step=1></div>
+<div><label>Półmrok</label><input id=bldim type=number min=30 max=255 step=1></div>
+<div><label>Noc</label><input id=blnight type=number min=15 max=255 step=1></div>
+</div>
+<button onclick=saveTune()>Zapisz ustawienia wyświetlacza</button>
+<div class=hint id=tunmsg>Zmiana działa od razu, bez restartu. Minimalna jasność jest wymuszona
+(dzień 60, półmrok 30, noc 15), żeby nie dało się zgasić ekranu na stałe — urządzenie
+wisi w łazience bez klawiatury.</div>
+</div>
+
+<div class=c>
 <h2>Sieć Wi-Fi</h2>
 <button class=s onclick=scan()>Wyszukaj sieci bezprzewodowe</button>
 <ul id=nets></ul>
@@ -338,6 +359,21 @@ async function setTheme(v){
   $('thmsg').textContent=r.ok?'Zapisano — ekran przełączy się od razu.':'Nie udało się zapisać.';
  }catch(e){$('thmsg').className='hint err';$('thmsg').textContent='Błąd połączenia';}
  themeUI();
+}
+async function saveTune(){
+ $('tunmsg').className='hint';$('tunmsg').textContent='Zapisuję…';
+ const q='nightStart='+(+$('nstart').value)+'&nightEnd='+(+$('nend').value)
+  +'&dwell='+(+$('dwell').value)+'&blDay='+(+$('blday').value)
+  +'&blDim='+(+$('bldim').value)+'&blNight='+(+$('blnight').value);
+ try{
+  const r=await(await fetch('/api/tuning?'+q,{method:'POST'})).json();
+  // Serwer clampuje — pokazujemy realnie zapisane wartosci (np. jasnosc podbita do minimum).
+  $('nstart').value=r.night_start;$('nend').value=r.night_end;$('dwell').value=r.dwell;
+  $('blday').value=r.bl_day;$('bldim').value=r.bl_dim;$('blnight').value=r.bl_night;
+  $('tunmsg').className='hint '+(r.ok?'ok':'err');
+  $('tunmsg').textContent=r.ok?'Zapisano — działa od razu (jasność mogła zostać podbita do minimum).'
+   :'Nie udało się zapisać.';
+ }catch(e){$('tunmsg').className='hint err';$('tunmsg').textContent='Błąd połączenia';}
 }
 async function pickView(i){
  pin=i;tabs();
@@ -546,6 +582,9 @@ async function load(){
  $('cur').textContent=r.city+' ('+r.lat.toFixed(4)+', '+r.lon.toFixed(4)+')';
  $('ssid').value=r.ssid||'';$('mb').value=r.mb||'';$('peak').value=(r.peak/1000).toFixed(1);
  theme=r.theme||3;themeUI();
+ // Ustawienia wyswietlacza — wartosci przychodza juz clampniete z urzadzenia.
+ $('nstart').value=r.night_start;$('nend').value=r.night_end;$('dwell').value=r.dwell;
+ $('blday').value=r.bl_day;$('bldim').value=r.bl_dim;$('blnight').value=r.bl_night;
  $('mqen').checked=!!r.mq_en;$('mqhost').value=r.mq_host||'';$('mqport').value=r.mq_port||1883;
  $('mqpre').value=r.mq_pre||'';$('mquser').value=r.mq_user||'';$('mqpass').value='';
  // Pola generuje JS z tablicy, zeby ich liczba szla za firmware'em, a nie za HTML-em.
@@ -637,6 +676,15 @@ void apiState() {
   d["mb"] = settings().modbusHost;
   d["peak"] = settings().pvPeakW;
   d["theme"] = settings().theme;   // 1/2/3 — panel czyta to przy kazdym ladowaniu
+
+  // Ustawienia wyswietlacza (tryb nocny + rotacja + jasnosc). Wartosci sa juz
+  // clampniete w Settings::load(), wiec panel pokazuje PRAWDE (to, co realnie dziala).
+  d["night_start"] = settings().nightStartH;
+  d["night_end"] = settings().nightEndH;
+  d["dwell"] = settings().dwellS;
+  d["bl_day"] = settings().blDay;
+  d["bl_dim"] = settings().blDim;
+  d["bl_night"] = settings().blNight;
 
   // UWAGA: hasla brokera nie zwracamy NIGDY — tylko flage "cos jest ustawione".
   d["mq_en"] = settings().mqttEnabled;
@@ -1716,6 +1764,39 @@ void apiTheme() {
   server.send(200, "application/json", buf);
 }
 
+// Ustawienia wyswietlacza edytowalne z panelu: okno trybu nocnego (nightStart/nightEnd),
+// czas jednego ekranu w rotacji (dwell [s]) i trzy poziomy jasnosci (blDay/blDim/blNight).
+// Kazdy argument opcjonalny — brakujacy zostaje bez zmian (bierzemy biezaca wartosc).
+// Walidacja i CLAMP siedza w Settings::saveTuning()/clampTuning(): w szczegolnosci
+// TWARDE minimum jasnosci (dzien 60 / polmrok 30 / noc 15), zeby panel NIE MOGL zgasic
+// ekranu na stale — urzadzenie wisi bez klawiatury i z czerni nie ma jak wrocic.
+// Dziala NATYCHMIAST bez restartu (settings() czytane na biezaco przez rysowanie i
+// backlight), jak przelacznik motywu. Zwracamy realnie zapisane wartosci, zeby panel
+// pokazal PRAWDE (np. jasnosc podbita do minimum).
+void apiTuning() {
+  Settings& st = settings();
+  const int nStart = server.hasArg("nightStart") ? server.arg("nightStart").toInt() : st.nightStartH;
+  const int nEnd   = server.hasArg("nightEnd")   ? server.arg("nightEnd").toInt()   : st.nightEndH;
+  const int dwell  = server.hasArg("dwell")      ? server.arg("dwell").toInt()      : st.dwellS;
+  const int bDay   = server.hasArg("blDay")      ? server.arg("blDay").toInt()      : st.blDay;
+  const int bDim   = server.hasArg("blDim")      ? server.arg("blDim").toInt()      : st.blDim;
+  const int bNight = server.hasArg("blNight")    ? server.arg("blNight").toInt()    : st.blNight;
+
+  auto u8 = [](int v) -> uint8_t { return static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v)); };
+  auto u16 = [](int v) -> uint16_t { return static_cast<uint16_t>(v < 0 ? 0 : (v > 65535 ? 65535 : v)); };
+  const bool ok = st.saveTuning(u8(nStart), u8(nEnd), u16(dwell), u8(bDay), u8(bDim), u8(bNight));
+
+  char buf[192];
+  snprintf(buf, sizeof(buf),
+           "{\"ok\":%s,\"night_start\":%u,\"night_end\":%u,\"dwell\":%u,"
+           "\"bl_day\":%u,\"bl_dim\":%u,\"bl_night\":%u}",
+           ok ? "true" : "false", static_cast<unsigned>(st.nightStartH),
+           static_cast<unsigned>(st.nightEndH), static_cast<unsigned>(st.dwellS),
+           static_cast<unsigned>(st.blDay), static_cast<unsigned>(st.blDim),
+           static_cast<unsigned>(st.blNight));
+  server.send(200, "application/json", buf);
+}
+
 // Wizualny test podswietlenia: /api/blsweep?ms=60000 — ekran przejmuje tryb testowy
 // (duza liczba PWM + rampa w gore i w dol), zeby dalo sie GOLYM OKIEM sprawdzic, czy
 // sterowanie jasnoscia w ogole dziala. Sam wygasa.
@@ -2134,6 +2215,7 @@ void routes() {
   server.on("/api/view", apiView);
   server.on("/api/tap", HTTP_POST, apiTap);
   server.on("/api/theme", HTTP_POST, apiTheme);
+  server.on("/api/tuning", HTTP_POST, apiTuning);
   server.on("/api/bl", apiBacklight);
   server.on("/api/blsweep", apiBacklightSweep);
   server.on("/api/ble", HTTP_GET, apiBleList);

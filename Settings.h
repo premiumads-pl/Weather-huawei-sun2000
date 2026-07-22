@@ -34,6 +34,38 @@ struct Settings {
   // NVS zostaja nietkniete.
   bool setTheme(uint8_t t);
 
+  // --- USTAWIENIA WYSWIETLACZA edytowalne z panelu (dawniej stale w Config.h) ---
+  // Trzymane jako WARTOSCI GOTOWE (nie sentinel 0): load() nakłada clamp, a rysowanie
+  // i backlight czytaja je WPROST, bez logiki fallbacku — to samo pole zawsze niesie
+  // wartosc uzywalna. Domyslne rowne dotychczasowym stalym (noc 22..6, ekran 9 s,
+  // jasnosc 255/130/45), wiec urzadzenie sprzed tej wersji zachowuje sie identycznie.
+  uint8_t  nightStartH = 22;  // godzina poczatku okna nocnego (0..23) — ekran glowny zwija sie do zegara
+  uint8_t  nightEndH   = 6;   // godzina konca okna nocnego (0..23)
+  uint16_t dwellS      = 9;   // czas jednego ekranu rotacji [s] (DWELL_MIN..DWELL_MAX)
+  uint8_t  blDay       = 255; // jasnosc podswietlenia: swiatlo (>= BL_DAY_MIN)
+  uint8_t  blDim       = 130; // jasnosc podswietlenia: polmrok (>= BL_DIM_MIN)
+  uint8_t  blNight     = 45;  // jasnosc podswietlenia: ciemno  (>= BL_NIGHT_MIN)
+
+  // TWARDE MINIMUM jasnosci. Urzadzenie wisi w lazience bez klawiatury — z czarnego
+  // ekranu nie ma jak wrocic, wiec panel NIE MOZE zejsc ponizej tych progow. Jedno
+  // zrodlo prawdy: clampTuning() (load i saveTuning) i endpoint clampuja tak samo.
+  static constexpr uint8_t  BL_DAY_MIN   = 60;
+  static constexpr uint8_t  BL_DIM_MIN   = 30;
+  static constexpr uint8_t  BL_NIGHT_MIN = 15;
+  static constexpr uint16_t DWELL_MIN    = 3;
+  static constexpr uint16_t DWELL_MAX    = 60;
+
+  // Zapis OD RAZU do NVS (jak setTheme()/viSave()): osobne klucze, natychmiastowo,
+  // niezaleznie od save(). Argumenty sa clampowane w srodku (przez clampTuning),
+  // wiec panel moze podac cokolwiek — twardych progow pilnujemy TU, nie w UI. Po
+  // zapisie pola w RAM sa juz clampniete i nastepna klatka czyta nowe wartosci
+  // (bez restartu). false = NVS niedostepny.
+  bool saveTuning(uint8_t nStart, uint8_t nEnd, uint16_t dwell,
+                  uint8_t bDay, uint8_t bDim, uint8_t bNight);
+  // Wspolny clamp dla load() i saveTuning() — zeby oba dawaly IDENTYCZNIE poprawne
+  // wartosci (inaczej blob z przyszlej/uszkodzonej wersji ominalby progi minimum).
+  void clampTuning();
+
   // --- MQTT / Home Assistant (domyslnie WYLACZONE) ---
   // Prefix jest krotki celowo: wchodzi do kazdego retained pakietu discovery,
   // a bufor klienta MQTT ma tylko 512 B (patrz MqttClient.cpp).

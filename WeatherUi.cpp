@@ -2006,7 +2006,11 @@ uint32_t WeatherUi::holdFor(uint8_t view) const {
   // v111: geste ekrany eksploracyjne — wiecej czasu na przeczytanie (patrz Config.h).
   if (view == cfg::VIEW_MEM) return cfg::VIEW_HOLD_MEM_MS;
   if (view == cfg::VIEW_MOTION) return cfg::VIEW_HOLD_MOTION_MS;
-  return cfg::VIEW_HOLD_MS;
+  // Baza rotacji edytowalna z panelu (settings().dwellS, w sekundach). Dotyczy
+  // ekranow BEZ wlasnej stalej powyzej — FLIGHTS/RADAR/MEM/MOTION/STATS maja swoj
+  // czas i CELOWO ich nie ruszamy. dwellS jest juz clampniete w Settings (3..60 s),
+  // wiec tu bez dodatkowej obrony; cfg::VIEW_HOLD_MS zostaje domyslna tej wartosci.
+  return static_cast<uint32_t>(settings().dwellS) * 1000UL;
 }
 
 bool WeatherUi::needsFlights(uint32_t nowMs) const {
