@@ -277,6 +277,8 @@ li:hover{border-color:var(--accent)}
   </div>
   <label>Czas jednego ekranu w rotacji [s] (3–60)</label>
   <input id=dwell type=number min=3 max=60 step=1>
+  <label><input type=checkbox id=arot style="width:auto;margin-right:8px"> Automatyczna rotacja ekranów (motyw „Pasmowy")</label>
+  <div class=hint>Domyślnie wyłączona — ekrany przełącza dotyk. Po włączeniu widoki zmieniają się same co „czas jednego ekranu” (pole powyżej); dotyk pauzuje rotację, a po 60 s wraca ekran główny i cykl rusza dalej.</div>
   <label>Jasność automatu LDR (0–255)</label>
   <div class=row>
    <div><label>Dzień</label><input id=blday type=number min=60 max=255 step=1></div>
@@ -518,12 +520,14 @@ async function saveTune(){
  $('tunmsg').className='hint';$('tunmsg').textContent='Zapisuję…';
  const q='nightStart='+(+$('nstart').value)+'&nightEnd='+(+$('nend').value)
   +'&dwell='+(+$('dwell').value)+'&blDay='+(+$('blday').value)
-  +'&blDim='+(+$('bldim').value)+'&blNight='+(+$('blnight').value);
+  +'&blDim='+(+$('bldim').value)+'&blNight='+(+$('blnight').value)
+  +'&arot='+($('arot').checked?1:0);
  try{
   const r=await(await fetch('/api/tuning?'+q,{method:'POST'})).json();
   // Serwer clampuje — pokazujemy realnie zapisane wartosci (np. jasnosc podbita do minimum).
   $('nstart').value=r.night_start;$('nend').value=r.night_end;$('dwell').value=r.dwell;
   $('blday').value=r.bl_day;$('bldim').value=r.bl_dim;$('blnight').value=r.bl_night;
+  $('arot').checked=!!r.arot;
   $('tunmsg').className='hint '+(r.ok?'ok':'err');
   $('tunmsg').textContent=r.ok?'Zapisano — działa od razu (jasność mogła zostać podbita do minimum).'
    :'Nie udało się zapisać.';
@@ -774,6 +778,7 @@ async function load(){
  // Ustawienia wyswietlacza — wartosci przychodza juz clampniete z urzadzenia.
  $('nstart').value=r.night_start;$('nend').value=r.night_end;$('dwell').value=r.dwell;
  $('blday').value=r.bl_day;$('bldim').value=r.bl_dim;$('blnight').value=r.bl_night;
+ $('arot').checked=!!r.arot;
  $('mqen').checked=!!r.mq_en;$('mqhost').value=r.mq_host||'';$('mqport').value=r.mq_port||1883;
  $('mqpre').value=r.mq_pre||'';$('mquser').value=r.mq_user||'';$('mqpass').value='';
  $('sMqtt').textContent=r.mq_en?'włączone':'wyłączone';$('sMqtt').className='sig '+(r.mq_en?'ok':'');
@@ -879,6 +884,7 @@ void apiState() {
   d["bl_day"] = settings().blDay;
   d["bl_dim"] = settings().blDim;
   d["bl_night"] = settings().blNight;
+  d["arot"] = settings().autoRotate;   // auto-rotacja V3 (checkbox w panelu)
 
   // UWAGA: hasla brokera nie zwracamy NIGDY — tylko flage "cos jest ustawione".
   d["mq_en"] = settings().mqttEnabled;
@@ -1987,19 +1993,22 @@ void apiTuning() {
   const int bDay   = server.hasArg("blDay")      ? server.arg("blDay").toInt()      : st.blDay;
   const int bDim   = server.hasArg("blDim")      ? server.arg("blDim").toInt()      : st.blDim;
   const int bNight = server.hasArg("blNight")    ? server.arg("blNight").toInt()    : st.blNight;
+  // Auto-rotacja V3: 0/1. Panel zawsze wysyla wprost (&arot=0/1 w saveTune), wiec brak
+  // argu == "bez zmian" (biezaca wartosc). TYLKO motyw V3 to czyta (render); V1/V2 nie.
+  const bool arot  = server.hasArg("arot")       ? (server.arg("arot").toInt() != 0) : st.autoRotate;
 
   auto u8 = [](int v) -> uint8_t { return static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v)); };
   auto u16 = [](int v) -> uint16_t { return static_cast<uint16_t>(v < 0 ? 0 : (v > 65535 ? 65535 : v)); };
-  const bool ok = st.saveTuning(u8(nStart), u8(nEnd), u16(dwell), u8(bDay), u8(bDim), u8(bNight));
+  const bool ok = st.saveTuning(u8(nStart), u8(nEnd), u16(dwell), u8(bDay), u8(bDim), u8(bNight), arot);
 
-  char buf[192];
+  char buf[224];
   snprintf(buf, sizeof(buf),
            "{\"ok\":%s,\"night_start\":%u,\"night_end\":%u,\"dwell\":%u,"
-           "\"bl_day\":%u,\"bl_dim\":%u,\"bl_night\":%u}",
+           "\"bl_day\":%u,\"bl_dim\":%u,\"bl_night\":%u,\"arot\":%u}",
            ok ? "true" : "false", static_cast<unsigned>(st.nightStartH),
            static_cast<unsigned>(st.nightEndH), static_cast<unsigned>(st.dwellS),
            static_cast<unsigned>(st.blDay), static_cast<unsigned>(st.blDim),
-           static_cast<unsigned>(st.blNight));
+           static_cast<unsigned>(st.blNight), st.autoRotate ? 1u : 0u);
   server.send(200, "application/json", buf);
 }
 

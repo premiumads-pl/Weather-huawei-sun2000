@@ -130,6 +130,16 @@ void agoWords(char* b, size_t n, uint32_t sec) {
   else snprintf(b, n, "sprzed %lu dni", static_cast<unsigned long>(sec / 86400));
 }
 
+// Czas pracy urzadzenia na slowa. "0 d 0 h" bylo bez sensu przy krotkim uptime
+// (a po kazdej aktualizacji OTA uptime startuje od zera): ponizej 1 h pokazujemy
+// minuty, ponizej doby godziny+minuty, dalej dni+godziny.
+void fmtUptime(char* b, size_t n, uint32_t sec) {
+  const unsigned long d = sec / 86400, h = (sec / 3600) % 24, m = (sec / 60) % 60;
+  if (d > 0) snprintf(b, n, "%lu d %lu h", d, h);
+  else if (h > 0) snprintf(b, n, "%lu h %lu min", h, m);
+  else snprintf(b, n, "%lu min", m);
+}
+
 // Zawija `src` do dwoch linii (po spacji), tak by kazda zmiescila sie w `w` px przy
 // foncie f. l1/l2 MUSZA miec >= 48 B. l2 zostaje puste, gdy calosc miesci sie w jednej
 // linii albo gdy nie ma sensownej spacji do podzialu. Wzorzec jak przy opisie pogody
@@ -1266,10 +1276,9 @@ void v3FlightsBottom(TFT_eSPI& tft, const FlightModel& fl) {
 void v3Diag1(TFT_eSPI& s, uint32_t nowMs, const AirModel* ap) {
   s.fillRect(0, 0, grid::W, 206, col::BG);
   {
-    char hr[24];
-    const uint32_t up = nowMs / 1000;
-    snprintf(hr, sizeof(hr), "FW %d · %lu d %lu h", FW_VERSION, static_cast<unsigned long>(up / 86400),
-             static_cast<unsigned long>((up / 3600) % 24));
+    char hr[28], ut[16];
+    fmtUptime(ut, sizeof(ut), nowMs / 1000);
+    snprintf(hr, sizeof(hr), "FW %d · %s", FW_VERSION, ut);
     darkHeader(s, "URZĄDZENIE", hr);
   }
 
@@ -1423,10 +1432,9 @@ void v3Diag2Bottom(TFT_eSPI& tft, uint32_t nowMs) {
   char l[24];
   snprintf(l, sizeof(l), "FW %d · stabilna", FW_VERSION);
   plex::str(tft, plex::f13(), l, grid::MARGIN, 227, col::ONDARK_DIM);
-  const uint32_t up = nowMs / 1000;
-  char m[20];
-  snprintf(m, sizeof(m), "praca %lu d %lu h", static_cast<unsigned long>(up / 86400),
-           static_cast<unsigned long>((up / 3600) % 24));
+  char ut[16], m[24];
+  fmtUptime(ut, sizeof(ut), nowMs / 1000);
+  snprintf(m, sizeof(m), "praca %s", ut);
   plex::strCenter(tft, plex::f13(), m, grid::W / 2, 227, col::ONDARK_DIM);
   plex::strRight(tft, plex::f13(), "stuknij 2× - wyjście", grid::W - grid::MARGIN, 227, col::ONDARK_DIM);
 }
@@ -1575,6 +1583,42 @@ void WeatherUi::drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const Weath
       if (isNightNow(blTarget_)) v3MainNight(spr, w);
       else v3Main(spr, w, pv);
       break;
+  }
+
+  // PASEK POSTEPU V3 "Pasmowy" (2 px na samej gorze, y=0..1). Segmenty poziome —
+  // jeden na DOSTEPNY ekran PETLI (kV3Loop, z pominieciem viewSkipped). Pokazuje, na
+  // ktorym z ilu ekranow jestesmy: OBEJRZANE ciemniejsze (col::RAIN), PRZED nami
+  // jasniejsze (col::RAIN4), AKTUALNY podswietlony (col::ACCENT). Przy WLACZONEJ
+  // auto-rotacji aktualny segment wypelnia sie od lewej (col::RAIN2) w miare uplywu
+  // dwellS — widac, ile zostalo do przelaczenia. Na ekranach spoza petli (diagnostyka)
+  // v3ProgressPos zwraca false i paska nie ma. Rysowany PO tresci (nad nia); pozycje
+  // liczy WeatherUi.cpp (kV3Loop/viewSkipped — te same, co rotacja i dotyk).
+  // Pelne kwalifikatory tv3:: — drawV3() to metoda w zasiegu globalnym (poza anonimowym
+  // namespace tego pliku), wiec alias `col`/`grid` koliduje tu z globalnym `col` z
+  // Colors.h (wciaganym przez WeatherIcons.h->Moon.h). Ten sam wzorzec, co kropka
+  // feedbacku nizej (tv3::col::OK / tv3::grid::W).
+  int curSeg = 0, totSeg = 0;
+  if (v3ProgressPos(curSeg, totSeg)) {
+    const int barW = tv3::grid::W;   // 320
+    for (int i = 0; i < totSeg; ++i) {
+      // Krawedzie liczone od pelnej szerokosci (nie stalym segW): zaokraglenie nie
+      // zostawia szczerby po prawej — ostatni segment domyka do barW. 1 px przerwy.
+      const int x0 = (i * barW) / totSeg;
+      const int x1 = ((i + 1) * barW) / totSeg;
+      const int segW = (x1 - x0) - 1;
+      if (segW <= 0) continue;
+      const uint16_t base = (i < curSeg) ? tv3::col::RAIN     // obejrzany (ciemny)
+                          : (i > curSeg) ? tv3::col::RAIN4    // przed nami (jasny)
+                                         : tv3::col::ACCENT;  // aktualny (podswietlony)
+      spr.fillRect(x0, 0, segW, 2, base);
+      if (i == curSeg && settings().autoRotate) {
+        const uint32_t dwellMs = static_cast<uint32_t>(settings().dwellS) * 1000UL;
+        float frac = dwellMs ? static_cast<float>(nowMs - viewStart_) / dwellMs : 0.f;
+        frac = clampf(frac, 0.f, 1.f);
+        const int fillW = static_cast<int>(segW * frac);
+        if (fillW > 0) spr.fillRect(x0, 0, fillW, 2, tv3::col::RAIN2);
+      }
+    }
   }
 
   // KROPKA FEEDBACKU DOTYKU (spec 7a). Natychmiast po surowym dotyku elektrody —

@@ -46,6 +46,15 @@ struct Settings {
   uint8_t  blDim       = 130; // jasnosc podswietlenia: polmrok (>= BL_DIM_MIN)
   uint8_t  blNight     = 45;  // jasnosc podswietlenia: ciemno  (>= BL_NIGHT_MIN)
 
+  // --- AUTO-ROTACJA EKRANOW (TYLKO motyw V3 "Pasmowy") -----------------------
+  // Domyslnie WYLACZONA: brief V3 (spec 7a) mowi, ze ekrany NIE przelaczaja sie same
+  // — przelacza je dotyk (touchTapV3). Gdy WLACZONA z panelu: widoki petli V3 zmieniaja
+  // sie same co dwellS sekund (ten sam interwal "czas jednego ekranu"), a dotyk pauzuje
+  // rotacje (po 60 s bez dotyku wraca GLOWNY i cykl rusza dalej). V1/V2 tego pola NIE
+  // czytaja — ich rotacja leci zawsze (holdFor). Zapis: saveTuning(), klucz NVS "arot",
+  // natychmiast (jak reszta tuningu). Bez clampu — bool.
+  bool autoRotate = false;
+
   // TWARDE MINIMUM jasnosci. Urzadzenie wisi w lazience bez klawiatury — z czarnego
   // ekranu nie ma jak wrocic, wiec panel NIE MOZE zejsc ponizej tych progow. Jedno
   // zrodlo prawdy: clampTuning() (load i saveTuning) i endpoint clampuja tak samo.
@@ -61,7 +70,7 @@ struct Settings {
   // zapisie pola w RAM sa juz clampniete i nastepna klatka czyta nowe wartosci
   // (bez restartu). false = NVS niedostepny.
   bool saveTuning(uint8_t nStart, uint8_t nEnd, uint16_t dwell,
-                  uint8_t bDay, uint8_t bDim, uint8_t bNight);
+                  uint8_t bDay, uint8_t bDim, uint8_t bNight, bool autoRot);
   // Wspolny clamp dla load() i saveTuning() — zeby oba dawaly IDENTYCZNIE poprawne
   // wartosci (inaczej blob z przyszlej/uszkodzonej wersji ominalby progi minimum).
   void clampTuning();

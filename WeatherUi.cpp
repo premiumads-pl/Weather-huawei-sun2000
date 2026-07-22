@@ -47,6 +47,17 @@ constexpr int CH = cfg::CONTENT_H;                  // 172
 // CB usuniete — bylo martwe (zero uzyc) i bylo TRZECIM bytem opisujacym liczbe 206,
 // obok VIEW_H (jedyny zywy) i skasowanego juz cfg::FOOTER_Y, ktory twierdzil 208.
 
+// PETLA 8 WIDOKOW V3 "Pasmowy" — JEDYNE zrodlo prawdy o kolejnosci (spec 7a):
+// GLOWNY->RADAR->5 DNI->PRAD->POKOJE->OGRZEWANIE->POWIETRZE->SAMOLOTY->(GLOWNY).
+// NIE numeryczna cfg::VIEW_* — ta kolejnosc jest projektowa. Do v_now byla lokalna
+// w touchTapV3(); wyniesiona tu, bo korzystaja z niej TRZY miejsca w TYM pliku:
+// touchTapV3() (krok 1x), render() (auto-rotacja co dwellS) i v3ProgressPos()
+// (pasek postepu). Pomijanie niedostepnych widokow liczy viewSkipped(v, air_).
+constexpr uint8_t kV3Loop[] = {
+    cfg::VIEW_NOW, cfg::VIEW_RADAR, cfg::VIEW_DAYS, cfg::VIEW_PV,
+    cfg::VIEW_HOME, cfg::VIEW_BOILER, cfg::VIEW_AIR, cfg::VIEW_FLIGHTS};
+constexpr int kV3LoopN = sizeof(kV3Loop) / sizeof(kV3Loop[0]);
+
 float clampf(float v, float lo, float hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
@@ -2219,13 +2230,38 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
         viewStart_ = nowMs;
       }
     } else if (settings().theme == 3) {
-      // V3 "Pasmowy" (spec 7a): BRAK auto-rotacji. Nawigacja recznie dotykiem
-      // (touchTapV3/touchDoubleV3). Zamiast rotacji: po 60 s BEZ dotyku kazdy widok
-      // wraca do GLOWNEGO (VIEW_NOW). Liczymy od ostatniego STUKNIECIA (lastTouchMs_)
-      // — panel-pin bez dotyku (lastTouchMs_==0) NIE wraca, zeby pin z /api/view dalej
-      // dzialal (twarde ograniczenie 4). GLOWNY sam z siebie nic nie robi.
-      if (view_ != cfg::VIEW_NOW && lastTouchMs_ != 0 &&
-          nowMs - lastTouchMs_ >= 60000UL) {
+      // V3 "Pasmowy" (spec 7a): domyslnie BRAK auto-rotacji — nawigacja recznie
+      // dotykiem (touchTapV3/touchDoubleV3). Wlasciciel moze wlaczyc auto-rotacje w
+      // panelu (settings().autoRotate); wtedy widoki petli zmieniaja sie same co dwellS.
+      if (settings().autoRotate && pinned_ < 0 && lastTouchMs_ == 0) {
+        // AUTO-ROTACJA: tylko gdy wlaczona, bez pinu z panelu i bez SWIEZEGO dotyku
+        // (lastTouchMs_==0 znaczy "rotacja nie jest zapauzowana"). Co dwellS sekund
+        // przechodzimy do NASTEPNEGO niepomijanego widoku w kV3Loop — ta sama logika
+        // co touchTapV3(), ale BEZ diag-toggle i BEZ ruszania lastTouchMs_ (zostaje 0,
+        // wiec cykl leci dalej klatka po klatce).
+        if (nowMs - viewStart_ >= static_cast<uint32_t>(settings().dwellS) * 1000UL) {
+          int idx = 0;
+          for (int i = 0; i < kV3LoopN; ++i)
+            if (kV3Loop[i] == view_) { idx = i; break; }
+          for (int step = 0; step < kV3LoopN; ++step) {
+            idx = (idx + 1) % kV3LoopN;
+            if (!viewSkipped(kV3Loop[idx], air_)) break;
+          }
+          prevView_ = view_;
+          view_ = kV3Loop[idx];
+          viewStart_ = nowMs;
+          enterStart_ = nowMs;
+          v3Sig_ = 0xFFFFFFFFu;
+          // NIE ruszamy lastTouchMs_ — auto-rotacja to nie dotyk.
+        }
+      } else if (view_ != cfg::VIEW_NOW && lastTouchMs_ != 0 &&
+                 nowMs - lastTouchMs_ >= 60000UL) {
+        // Powrot po 60 s ciszy: albo auto-rotacja wylaczona (dotyk to jedyna
+        // nawigacja), albo wlaczona, ale zapauzowana SWIEZYM dotykiem (lastTouchMs_!=0).
+        // Kazdy widok wraca do GLOWNEGO (VIEW_NOW). Liczymy od ostatniego STUKNIECIA —
+        // panel-pin bez dotyku (lastTouchMs_==0) NIE wraca, zeby pin z /api/view dalej
+        // dzialal (twarde ograniczenie 4). Po powrocie lastTouchMs_=0, wiec przy
+        // autoRotate=on cykl wznawia sie naturalnie od GLOWNEGO.
         prevView_ = view_;
         view_ = static_cast<uint8_t>(cfg::VIEW_NOW);
         viewStart_ = nowMs;
@@ -2271,6 +2307,16 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
   const float enterT = clampf(static_cast<float>(nowMs - enterStart_) / cfg::ENTER_ANIM_MS,
                               0.f, 1.f);
 
+  // Temperatura CPU: cache co 10 s. Do v135 aktualizowana TYLKO w drawFooter (stopka
+  // V1/V2), a w V3 stopka nie jest wolana — przez co cpuTempC_ zostawal 0 i ekran
+  // diagnostyki V3 pokazywal "0 °C". Teraz odswiezane dla KAZDEGO motywu, przed
+  // ewentualnym pominieciem klatki ponizej (inaczej przy statycznym V3 nigdy by sie
+  // nie zaktualizowala).
+  if (nowMs - cpuTempAt_ > 10000 || cpuTempAt_ == 0) {
+    cpuTempC_ = temperatureRead();
+    cpuTempAt_ = nowMs;
+  }
+
   // --- V3: pomijanie przerysowania, gdy nic widocznego sie nie zmienilo -----------
   // loop() wola render() co ~50 ms i BEZWARUNKOWO wypycha bufor na TFT. Na ciemnym
   // tle (V1/V2) przepisanie tych samych pikseli jest niewidoczne; na JASNYM ukladzie
@@ -2279,8 +2325,12 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
   // przy animacji Mario). V3 czyta SUROWE modele, stale miedzy pobraniami z sieci, wiec
   // tresc realnie zmienia sie rzadko. Liczymy sygnature tego, co widac; gdy bez zmian —
   // nie rysujemy i nie wypychamy. Radar (dryf chmur), przejscia i alerty rysuja sie zawsze.
-  if (settings().theme == 3 && view_ != cfg::VIEW_RADAR && !transitioning_ &&
-      !alertActive_ && (nowMs - enterStart_) >= cfg::ENTER_ANIM_MS) {
+  // `&& !settings().autoRotate`: przy WLACZONEJ auto-rotacji pasek postepu ANIMUJE sie
+  // (wypelnienie aktualnego segmentu rosnie do przelaczenia), wiec nie wolno pomijac
+  // klatek — rysujemy co klatke. Przy wylaczonej (domyslnie) pasek jest statyczny,
+  // wiec pomijanie zostaje i migotanie na ST7789 nie wraca (patrz spec V3, ograniczenie 4).
+  if (settings().theme == 3 && !settings().autoRotate && view_ != cfg::VIEW_RADAR &&
+      !transitioning_ && !alertActive_ && (nowMs - enterStart_) >= cfg::ENTER_ANIM_MS) {
     uint32_t sig = 2166136261u;
     auto mix = [&](uint32_t x) { sig = (sig ^ x) * 16777619u; };
     mix(view_);
@@ -4372,22 +4422,19 @@ void WeatherUi::touchTapV3() {
     setViewV3(view_ == cfg::VIEW_STATS ? cfg::VIEW_MEM : cfg::VIEW_STATS);
     return;
   }
-  // PETLA 8 WIDOKOW — kolejnosc ze specyfikacji 7a, NIE numeryczna cfg::VIEW_*.
-  // Zrodlo prawdy dla ruchu 1x w V3.
-  static constexpr uint8_t kV3Loop[] = {
-      cfg::VIEW_NOW, cfg::VIEW_RADAR, cfg::VIEW_DAYS, cfg::VIEW_PV,
-      cfg::VIEW_HOME, cfg::VIEW_BOILER, cfg::VIEW_AIR, cfg::VIEW_FLIGHTS};
-  constexpr int kN = sizeof(kV3Loop) / sizeof(kV3Loop[0]);
+  // PETLA 8 WIDOKOW: zrodlo prawdy (kolejnosc 7a) stoi w kV3Loop na gorze pliku —
+  // ta sama, ktorej uzywa auto-rotacja w render() i pasek postepu (v3ProgressPos).
   // Znajdz biezacy widok w petli; jesli go tam nie ma (np. RUCH z panelu albo stan
   // startowy), traktuj jak pozycje GLOWNEGO, wiec pierwszy krok wejdzie za NOW.
   int idx = 0;
-  for (int i = 0; i < kN; ++i)
+  for (int i = 0; i < kV3LoopN; ++i)
     if (kV3Loop[i] == view_) { idx = i; break; }
   // Nastepny NIEPOMIJANY (viewSkipped: radar bez opadu, pokoje bez czujnikow, piec
-  // bez autoryzacji, powietrze bez danych — to samo pyta rotacja V1/V2). Do kN krokow;
-  // gdy wszystko inne pominiete, wracamy na biezacy (nie jest pomijany — stoimy na nim).
-  for (int step = 0; step < kN; ++step) {
-    idx = (idx + 1) % kN;
+  // bez autoryzacji, powietrze bez danych — to samo pyta rotacja V1/V2). Do kV3LoopN
+  // krokow; gdy wszystko inne pominiete, wracamy na biezacy (na nim stoimy — nie jest
+  // pomijany).
+  for (int step = 0; step < kV3LoopN; ++step) {
+    idx = (idx + 1) % kV3LoopN;
     if (!viewSkipped(kV3Loop[idx], air_)) break;
   }
   setViewV3(kV3Loop[idx]);
@@ -4400,6 +4447,25 @@ void WeatherUi::touchDoubleV3() {
     setViewV3(static_cast<uint8_t>(cfg::VIEW_NOW));
   else
     setViewV3(static_cast<uint8_t>(cfg::VIEW_STATS));
+}
+
+// Pozycja biezacego widoku w PETLI V3 (kV3Loop) wsrod NIEPOMIJANYCH ekranow — zrodlo
+// dla paska postepu rysowanego w drawV3() (WeatherUiV3.cpp). Definicja tutaj, bo kV3Loop
+// i viewSkipped zyja w TEJ jednostce kompilacji (anonimowy namespace); WeatherUiV3.cpp
+// wola ten helper, zamiast duplikowac kolejnosc petli. `total` = ile ekranow petli jest
+// TERAZ dostepnych (viewSkipped: radar bez opadu, pokoje bez czujnikow, piec bez
+// autoryzacji, powietrze bez danych). `cur` = pozycja biezacego wsrod nich (0..total-1).
+// Zwraca false, gdy biezacy widok NIE nalezy do petli (diagnostyka STATS/MEM/MOTION albo
+// stan startowy) — wtedy pasek nie ma czego pokazac i drawV3 go nie rysuje.
+bool WeatherUi::v3ProgressPos(int& cur, int& total) const {
+  cur = -1;
+  total = 0;
+  for (int i = 0; i < kV3LoopN; ++i) {
+    if (viewSkipped(kV3Loop[i], air_)) continue;
+    if (kV3Loop[i] == view_) cur = total;
+    ++total;
+  }
+  return cur >= 0 && total > 0;
 }
 
 void WeatherUi::streamScreenshot(WiFiClient& client, const WeatherModel& w, const PvModel& pv,

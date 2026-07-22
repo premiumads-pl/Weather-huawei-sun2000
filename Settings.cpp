@@ -89,6 +89,8 @@ void Settings::load() {
   blDay       = prefs.getUChar("blday", 255);
   blDim       = prefs.getUChar("bldim", 130);
   blNight     = prefs.getUChar("blnight", 45);
+  // Auto-rotacja V3 — domyslnie false (spec 7a: dotyk przelacza, ekrany nie same).
+  autoRotate  = prefs.getBool("arot", false);
   clampTuning();
 
   String mh = prefs.getString("mqhost", "");
@@ -216,13 +218,14 @@ void Settings::clampTuning() {
 // RAM trafiaja juz wartosci w zakresie, wiec panel czytajacy je z powrotem widzi
 // PRAWDE (np. jasnosc podbita do minimum).
 bool Settings::saveTuning(uint8_t nStart, uint8_t nEnd, uint16_t dwell,
-                          uint8_t bDay, uint8_t bDim, uint8_t bNight) {
+                          uint8_t bDay, uint8_t bDim, uint8_t bNight, bool autoRot) {
   nightStartH = nStart;
   nightEndH   = nEnd;
   dwellS      = dwell;
   blDay       = bDay;
   blDim       = bDim;
   blNight     = bNight;
+  autoRotate  = autoRot;   // bool — bez clampu; klucz NVS "arot"
   clampTuning();
 
   Preferences prefs;
@@ -235,6 +238,7 @@ bool Settings::saveTuning(uint8_t nStart, uint8_t nEnd, uint16_t dwell,
   prefs.putUChar("blday", blDay);
   prefs.putUChar("bldim", blDim);
   prefs.putUChar("blnight", blNight);
+  prefs.putBool("arot", autoRotate);
   prefs.end();
   return true;
 }

@@ -359,6 +359,10 @@ class WeatherUi {
               uint32_t nowMs, uint32_t heapNow);
   void drawV3Bottom(TFT_eSPI& tft, uint8_t view, const WeatherModel& w, const PvModel& pv,
                     const FlightModel& fl, uint32_t nowMs, uint32_t heapNow);
+  // Pozycja biezacego widoku w petli V3 (kV3Loop) wsrod niepomijanych — zrodlo dla
+  // paska postepu (2 px) rysowanego na gorze drawV3(). false = widok spoza petli
+  // (diagnostyka) => paska nie rysujemy. Definicja w WeatherUi.cpp, gdzie zyje kV3Loop.
+  bool v3ProgressPos(int& cur, int& total) const;
   // Plansza zdarzenia w stylu V3 (makiety 13/18/19): ciemne tlo, glif/trojkat po lewej,
   // tytul + tekst alertu po prawej, akcent kolorem alert_.color. Rysowana zamiast drawV3()
   // gdy alertActive_ (patrz paintFrame). `t` = postep wejscia jak V1 drawAlert (260 ms).
