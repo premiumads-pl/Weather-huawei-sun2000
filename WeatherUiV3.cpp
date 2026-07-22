@@ -1262,36 +1262,36 @@ void v3AirBottom(TFT_eSPI& tft, const AirModel* ap) {
 // Obiekt naziemny (nie samolot): callsign zaczyna sie od "SPVAN" ALBO jest przy ziemi i
 // wolno jedzie (altFt<=0 i gs<50 kt). Zabezpieczenie na wypadek, gdyby backend przepuscil
 // pojazd naziemny do listy — pomijamy go i przy rysowaniu, i przy liczeniu "najbliższe".
+// Pojazd naziemny lotniska / smieciowa ramka ADS-B — NIE samolot. Filtrujemy:
+//  * callsign SPVAN* (wozy techniczne lotniska, zgloszone przez wlasciciela),
+//  * altFt<=0 && gs<50 (stoi na plycie),
+//  * gs>700 wezlow (~1300 km/h) — dla samolotu cywilnego niemozliwe; to bledna
+//    ramka (u wlasciciela "SPSMIM 914 kt / 1,3 km" — bzdura), a nie realny lot,
+//  * gs<40 wezlow przy niskim pulapie (<2000 ft) — kolowanie/pojazd przy lotnisku.
 bool isGroundVehicle(const Flight& f) {
   if (strncmp(f.callsign, "SPVAN", 5) == 0) return true;
   if (f.altFt <= 0 && f.gs < 50) return true;
+  if (f.gs > 700) return true;                       // predkosc niemozliwa = smieciowa ramka
+  if (f.altFt > 0 && f.altFt < 2000 && f.gs < 40) return true;   // kolowanie / woz przy plycie
   return false;
 }
 
 void v3Flights(TFT_eSPI& s, const FlightModel& fl, uint32_t nowMs) {
-  (void)nowMs;   // wiek liczymy z zegara (epoch), nie z millis — patrz nizej
   s.fillRect(0, 0, grid::W, 206, col::BG);
-  // Loty NIE maja wieku per-samolot, ale CALA lista ma czas pobrania: diag().flightOkAt
-  // to EPOCH ostatniego udanego fetchu (Log.h), NIE millis — dlatego wiek to
-  // time(nullptr) - flightOkAt. Znacznik swiezosci spojny z reszta ekranow (kropka w
-  // lightHeader): OK gdy lista swieza (<60 s), STALE gdy starsza, UNKNOWN gdy jeszcze
-  // nie bylo udanego pobrania (flightOkAt==0) albo brak NTP (wieku nie znamy).
+  // Loty NIE maja wieku per-samolot, ale CALA lista ma czas pobrania: diag().flightOkAt.
+  // UWAGA: to znacznik MILLIS (ustawiany `diag().flightOkAt = millis()` w .ino), a NIE
+  // epoch — dlatego wiek to (nowMs - flightOkAt)/1000, tak samo jak liczy ekran
+  // diagnostyki. Wczesniej traktowano to jak epoch i wychodzilo "29743112 min temu"
+  // (roznica millis vs epoch ~ 1,78 mld s). flightOkAt==0 = jeszcze nie pobrano.
   char hr[24] = "";
   Fresh fresh = Fresh::UNKNOWN;
   if (diag().flightOkAt == 0) {
-    // NIGDY nie bylo udanego pobrania. NIE liczymy time()-flightOkAt — dla flightOkAt==0
-    // daloby wiek rzedu dekad (epoch od 1970) albo liczbe ujemna. Piszemy wprost, a
-    // kropka swiezosci zostaje UNKNOWN.
     snprintf(hr, sizeof(hr), "nieodpytywane");
   } else {
-    const time_t now = time(nullptr);
-    if (now > 1700000000) {
-      long age = static_cast<long>(now - static_cast<time_t>(diag().flightOkAt));
-      if (age < 0) age = 0;   // zegar mogl cofnac sie po synchronizacji NTP
-      fresh = age < 60 ? Fresh::OK : Fresh::STALE;
-      if (age < 90) snprintf(hr, sizeof(hr), "odświeżono %ld s temu", age);
-      else snprintf(hr, sizeof(hr), "odświeżono %ld min temu", age / 60);
-    }
+    const uint32_t ageS = (nowMs - diag().flightOkAt) / 1000;
+    fresh = ageS < 60 ? Fresh::OK : Fresh::STALE;
+    if (ageS < 90) snprintf(hr, sizeof(hr), "odświeżono %lu s temu", static_cast<unsigned long>(ageS));
+    else snprintf(hr, sizeof(hr), "odświeżono %lu min temu", static_cast<unsigned long>(ageS / 60));
   }
   lightHeader(s, "NAD NAMI", hr[0] ? hr : nullptr, fresh);
 
