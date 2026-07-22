@@ -37,6 +37,7 @@
 #include "AirData.h"
 #include "AirClient.h"       // airIndexName()
 #include "RoomData.h"
+#include "RoomHistory.h"   // RoomHistory:: (sparkline trendu 24 h w tle wierszy POKOJE)
 #include "RadarData.h"
 #include "PvData.h"
 #include "WeatherData.h"
@@ -348,41 +349,51 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top
   plex::str(s, plex::f13(), producing ? " kW produkcji" : " kW pobór domu",
             lx + bwv, top + 34, col::SECOND);
 
-  // Pasek proporcji: produkcja (zielona) z naniesionym poborem (niebieski) albo
-  // pobor z sieci (czerwony) gdy dobieramy.
+  // --- PASEK PRZEPLYWU ENERGII (dynamiczny, wszystkie przypadki) ----------------
+  // Rozklad mocy na trzy skladniki:
+  //   selfUse = min(prod, load)  — PV zjadana przez dom  (NIEBIESKI col::SELF)
+  //   export  = max(0, prod-load) — nadwyzka PV do sieci  (ZIELONY  col::OK)
+  //   import  = max(0, load-prod) — dom dobiera z sieci   (CZERWONY col::GRID)
+  // Szerokosc paska = max(prod, load), wiec oba scenariusze sie mieszcza:
+  //   prod > load -> [niebieski selfUse][zielony export]  (oddajemy nadprodukcje)
+  //   prod < load -> [niebieski selfUse][czerwony import] (kupujemy z sieci)
+  //   prod ~ 0    -> caly czerwony import                 (noc / brak slonca)
+  // (void)gridW/producing niepotrzebne — liczymy przeplyw wprost z prod/load; gridW
+  // sluzy tylko do etykiety kierunku, ktora i tak wynika z export/import.
+  const int selfUse = prod < load ? prod : load;
+  const int expW = prod > load ? prod - load : 0;
+  const int impW = load > prod ? load - prod : 0;
+  const int span = prod > load ? prod : load;
   const int barX = lx, barY = top + 44, barW = grid::DATA_R - grid::DATA_L, barH = 8;
-  if (producing) {
-    tv3::bar(s, barX, barY, barW, barH, load > 0 ? clampf(load / static_cast<float>(prod), 0.f, 1.f) : 0.f,
-             col::SELF, col::OK);
-  } else {
-    const int imp = gridW < 0 ? -gridW : 0;
-    const int tot = load > 0 ? load : 1;
-    tv3::bar(s, barX, barY, barW, barH, clampf(prod / static_cast<float>(tot), 0.f, 1.f),
-             col::OK, col::GRID);
-    (void)imp;
+  s.fillRect(barX, barY, barW, barH, col::LINE);   // tor (gdy prod=load=0)
+  if (span > 0) {
+    const int sw = static_cast<int>(barW * (selfUse / static_cast<float>(span)) + 0.5f);
+    if (sw > 0) s.fillRect(barX, barY, sw, barH, col::SELF);
+    if (expW > 0) {
+      s.fillRect(barX + sw, barY, barW - sw, barH, col::OK);
+    } else if (impW > 0) {
+      s.fillRect(barX + sw, barY, barW - sw, barH, col::GRID);
+    }
   }
 
-  // Podpisy - jeden wiersz: "dom" po lewej (bez " kW" — jednostke niesie wielka
-  // liczba wyzej), bilans sieci po prawej. Bez " kW" przy "dom" oba napisy mieszcza
-  // sie obok siebie nawet przy dwucyfrowych wartosciach (wczesniej nachodzily).
-  char l1[40];
-  fmt1(today, sizeof(today), load / 1000.f);
-  snprintf(l1, sizeof(l1), "dom %s", today);
-  plex::str(s, plex::f13(), l1, lx, top + 64, col::SECOND);
-
-  char l2[48];
-  if (!w.ready) {
-    snprintf(l2, sizeof(l2), "falownik lokalny - bez internetu");
-  } else if (gridW >= 0) {
-    char e[16];
-    fmt1(e, sizeof(e), gridW / 1000.f);
-    snprintf(l2, sizeof(l2), "oddajemy %s kW", e);
-  } else {
-    char e[16];
-    fmt1(e, sizeof(e), -gridW / 1000.f);
-    snprintf(l2, sizeof(l2), "z sieci %s kW", e);
-  }
-  plex::strRight(s, plex::f13(), l2, grid::DATA_R, top + 64, gridW >= 0 ? col::OK : col::GRID);
+  // --- TRZY WARTOSCI POD PASKIEM (kolory = segmenty; jednostka kW z wielkiej liczby
+  // wyzej, wiec wartosci bez jednostki). produkcja (zielony) · z PV do domu (niebieski)
+  // · sieC: pobor (czerwony) albo oddawanie (zielony). Font f11 (waski) — trzy zmieszcza
+  // sie w kolumnie danych z zapasem.
+  const bool exporting = expW > 0;
+  char va[10], vb[10], vc[10], sa[16], sb[16], sc[18];
+  fmt1(va, sizeof(va), prod / 1000.f);
+  fmt1(vb, sizeof(vb), selfUse / 1000.f);
+  fmt1(vc, sizeof(vc), (exporting ? expW : impW) / 1000.f);
+  snprintf(sa, sizeof(sa), "prod %s", va);
+  snprintf(sb, sizeof(sb), "z PV %s", vb);
+  snprintf(sc, sizeof(sc), "%s %s", exporting ? "→sieć" : "z sieci", vc);
+  int vx = lx;
+  vx += plex::str(s, plex::f11(), sa, vx, top + 66, col::OK) + 8;
+  vx += plex::str(s, plex::f11(), sb, vx, top + 66, col::SELF) + 8;
+  plex::str(s, plex::f11(), sc, vx, top + 66, exporting ? col::OK : col::GRID);
+  (void)producing;
+  (void)gridW;
 }
 
 void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
@@ -442,18 +453,23 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
   }
 
   // --- kolumna danych (jasna): OPAD 12 H ---
-  plex::str(s, plex::f11(), "OPAD 12 H", grid::DATA_L, 26, col::SECOND);
+  // Etykieta "OPAD" bez "12 H": trzymanie w tytule "12 H" obok dopisku "za 10 h"
+  // mylilo (wlasciciel: "za 10 czy za 12 h?"). 12 h to zakres WYKRESU (widac na osi
+  // godzin ponizej), a dopisek mowi, KIEDY spodziewany jest szczyt opadu — podany
+  // teraz jako GODZINA ZEGAROWA (np. "~22:00 · 85%"), a nie "za N h", bo godzina jest
+  // jednoznaczna i nie kloci sie z "12 h" z tytulu.
+  plex::str(s, plex::f11(), "OPAD", grid::DATA_L, 26, col::SECOND);
   {
-    // Dopisek: kiedy i z jakim prawdopodobienstwem najblizszy opad.
-    int bestProb = 0, bestOff = 0;
+    int bestProb = 0, bestHour = -1;
     for (int i = 0; i < WX_HOURS; ++i)
       if (w.hours[i].valid && w.hours[i].data.precipProb > bestProb) {
         bestProb = w.hours[i].data.precipProb;
-        bestOff = w.hours[i].offsetHours;
+        bestHour = w.hours[i].hourOfDay;
       }
     char hint[24];
     if (!w.ready) snprintf(hint, sizeof(hint), "jeszcze nie pobrany");
-    else if (bestProb >= 20) snprintf(hint, sizeof(hint), "za %d h · %d%%", bestOff, bestProb);
+    else if (bestProb >= 20 && bestHour >= 0)
+      snprintf(hint, sizeof(hint), "~%d:00 · %d%%", bestHour, bestProb);
     else snprintf(hint, sizeof(hint), "sucho");
     int rx = grid::DATA_R;
     freshDot(s, rx - 3, 22, w.ready ? Fresh::OK : Fresh::UNKNOWN);
@@ -769,26 +785,34 @@ void v3Days(TFT_eSPI& s, const WeatherModel& w) {
 
     wx::glyph(s, d.weatherCode, false, 78, y + 4, 9, true);
 
-    // Pasek temperatury na wspolnej skali (plaski kolor wg tempMax).
-    const int barX = 108, barW = 96;
+    // Pasek temperatury na wspolnej skali (plaski kolor wg tempMax). Zwezony ze 96 do 84,
+    // zeby oddac szerokosc kolumnom liczb po prawej (temp + opad nie kolidowaly).
+    const int barX = 108, barW = 84;
     const int xa = barX + static_cast<int>((d.tempMin - wkMin) / (wkMax - wkMin) * barW);
     const int xb = barX + static_cast<int>((d.tempMax - wkMin) / (wkMax - wkMin) * barW);
     s.fillRect(barX, y + 1, barW, 6, col::LINE);
     s.fillRoundRect(xa, y, (xb - xa > 4 ? xb - xa : 4), 8, 3, tempCol(d.tempMax));
 
+    // UKLAD PRAWEJ STRONY (naprawa: "11 mm" nachodzilo na temperature). Dwie ROZLACZNE
+    // kolumny wyrownane do prawej:
+    //   [ ... temp max° min° ]  <odstep>  [ OPAD ]|DATA_R
+    // Opad ma STALA kolumne przy prawej krawedzi — rezerwujemy szerokosc "88 mm", wiec
+    // jej lewa granica (precipL) nie zalezy od tego, czy opad ma 1 czy 2 cyfry ani czy w
+    // ogole jest. Temperatura wyrownana do prawej do precipL - odstep, rosnie w LEWO (ku
+    // paskowi), NIGDY w kolumne opadu. Wszystkie granice liczone z plex::width na zywo.
+    char pm[10];
+    const bool hasP = d.precipMm >= 0.1f;
+    if (hasP) snprintf(pm, sizeof(pm), "%.0f mm", d.precipMm);
+    else      snprintf(pm, sizeof(pm), "-");
+    plex::strRight(s, plex::f13(), pm, grid::DATA_R, y + 8, hasP ? col::RAIN : col::MUTE);
+    const int precipL = grid::DATA_R - plex::width(plex::f13(), "88 mm");
+
     char hi[8], lo[8];
     snprintf(hi, sizeof(hi), "%.0f°", d.tempMax);
     snprintf(lo, sizeof(lo), "%.0f°", d.tempMin);
-    const int hiw = plex::str(s, plex::f20(), hi, 218, y + 8, col::PANEL);
-    plex::str(s, plex::f13(), lo, 218 + hiw + 4, y + 8, col::MUTE);
-
-    if (d.precipMm >= 0.1f) {
-      char pm[10];
-      snprintf(pm, sizeof(pm), "%.0f mm", d.precipMm);
-      plex::strRight(s, plex::f13(), pm, grid::DATA_R, y + 8, col::RAIN);
-    } else {
-      plex::strRight(s, plex::f13(), "-", grid::DATA_R, y + 8, col::MUTE);
-    }
+    const int loX = precipL - 12 - plex::width(plex::f13(), lo);
+    plex::str(s, plex::f13(), lo, loX, y + 8, col::MUTE);
+    plex::str(s, plex::f20(), hi, loX - 6 - plex::width(plex::f20(), hi), y + 8, col::PANEL);
     ++r;
   }
 }
@@ -939,7 +963,42 @@ void v3PvBottom(TFT_eSPI& tft, const PvModel& pv) {
 // ============================================================ POKOJE ===========
 // Makieta 14. Pelnojasne tlo, wiersze czujnikow.
 
-void v3Home(TFT_eSPI& s, const RoomModel* rmp, uint32_t nowMs) {
+// Sparkline trendu 24 h w TLE wiersza czujnika (makieta 14). Cienka, delikatna linia
+// (col::RAIN4) laczaca probki temperatury z RoomHistory dla danego slotu pokoju,
+// wpasowana w prostokat [x..x+w] x [yTop..yTop+h]. Rysowana PRZED tekstem, wiec nazwa/
+// temperatura/kropka lezą na wierzchu. Skala pionowa jest per pokoj (min..max z jego
+// wlasnej doby), zeby drobne wahania byly widoczne. Dziura w historii (NO_T, np. przerwa
+// w zasilaniu) PRZERYWA linie — nie laczymy w poprzek luki. Gdy pokoj ma <2 probek,
+// nie rysujemy nic (wiersz czysty).
+void roomSparkline(TFT_eSPI& s, const RoomHistory& rh, int slot, int x, int yTop, int w, int h) {
+  float mn = 1e9f, mx = -1e9f;
+  int valid = 0;
+  for (int i = 0; i < RoomHistory::SLOTS; ++i) {
+    const int16_t v = rh.t10[slot][rh.idx(i)];
+    if (v == RoomHistory::NO_T) continue;
+    const float t = v / 10.f;
+    if (t < mn) mn = t;
+    if (t > mx) mx = t;
+    ++valid;
+  }
+  if (valid < 2) return;
+  const float range = mx - mn;
+  int prevX = -1, prevY = -1;
+  for (int i = 0; i < RoomHistory::SLOTS; ++i) {
+    const int16_t v = rh.t10[slot][rh.idx(i)];
+    if (v == RoomHistory::NO_T) { prevX = -1; continue; }   // dziura — przerwij linie
+    // Temperatura prawie stala (range < 0,5) -> linia w polowie pasma, a nie przyklejona
+    // do dolu (inaczej wygladalaby jak mylace podkreslenie, ktore mamy tu wlasnie usunac).
+    const float norm = range < 0.5f ? 0.5f : (v / 10.f - mn) / range;
+    const int px = x + (i * w) / (RoomHistory::SLOTS - 1);
+    const int py = yTop + (h - 1) - static_cast<int>(norm * (h - 1) + 0.5f);
+    if (prevX >= 0) s.drawLine(prevX, prevY, px, py, col::RAIN4);
+    prevX = px;
+    prevY = py;
+  }
+}
+
+void v3Home(TFT_eSPI& s, const RoomModel* rmp, const RoomHistory* rhp, uint32_t nowMs) {
   (void)nowMs;
   s.fillRect(0, 0, grid::W, 206, col::BG);
   static const RoomModel kEmpty{};
@@ -961,6 +1020,13 @@ void v3Home(TFT_eSPI& s, const RoomModel* rmp, uint32_t nowMs) {
     const RoomRow& r = rm.rows[i];
     const int y = rowY0 + drawn * pitch;
     const bool stale = r.ageS >= 900;
+
+    // TLO wiersza: sparkline trendu 24 h (przed tekstem). Tylko czujniki ze slotem
+    // historii (r.slot 0..ROOMS-1) i gdy warstwa danych podpiela RoomHistory. Kolumna
+    // x=96..216: na prawo od najczestszych nazw, na lewo od wilgotnosci/temperatury i
+    // kropki swiezosci — nie tyka ich ukladu.
+    if (rhp && r.slot >= 0 && r.slot < RoomHistory::ROOMS)
+      roomSparkline(s, *rhp, r.slot, 96, y - 6, 120, 26);
 
     // Nazwa (albo MAC) - pogrubiona.
     plex::str(s, plex::f20(), r.name ? r.name : "-", grid::MARGIN, y + 6,
@@ -994,7 +1060,8 @@ void v3Home(TFT_eSPI& s, const RoomModel* rmp, uint32_t nowMs) {
     }
     freshDot(s, grid::W - 6, y + 2, !r.hasTemp ? Fresh::UNKNOWN : (stale ? Fresh::STALE : Fresh::OK));
 
-    if (drawn < 4) s.drawFastHLine(grid::MARGIN, y + pitch - 4, grid::W - 2 * grid::MARGIN, col::LINE);
+    // Separatory drawFastHLine USUNIETE — wyglądały jak popsute podkreślenia i myliły
+    // sie z trendem. Wiersze rozdziela teraz odstep (pitch) oraz sam sparkline w tle.
     ++drawn;
   }
 }
@@ -1192,6 +1259,15 @@ void v3AirBottom(TFT_eSPI& tft, const AirModel* ap) {
 // ============================================================ SAMOLOTY =========
 // Makieta 12. Pelnojasne tlo, lista lotow.
 
+// Obiekt naziemny (nie samolot): callsign zaczyna sie od "SPVAN" ALBO jest przy ziemi i
+// wolno jedzie (altFt<=0 i gs<50 kt). Zabezpieczenie na wypadek, gdyby backend przepuscil
+// pojazd naziemny do listy — pomijamy go i przy rysowaniu, i przy liczeniu "najbliższe".
+bool isGroundVehicle(const Flight& f) {
+  if (strncmp(f.callsign, "SPVAN", 5) == 0) return true;
+  if (f.altFt <= 0 && f.gs < 50) return true;
+  return false;
+}
+
 void v3Flights(TFT_eSPI& s, const FlightModel& fl, uint32_t nowMs) {
   (void)nowMs;   // wiek liczymy z zegara (epoch), nie z millis — patrz nizej
   s.fillRect(0, 0, grid::W, 206, col::BG);
@@ -1202,7 +1278,12 @@ void v3Flights(TFT_eSPI& s, const FlightModel& fl, uint32_t nowMs) {
   // nie bylo udanego pobrania (flightOkAt==0) albo brak NTP (wieku nie znamy).
   char hr[24] = "";
   Fresh fresh = Fresh::UNKNOWN;
-  if (diag().flightOkAt) {
+  if (diag().flightOkAt == 0) {
+    // NIGDY nie bylo udanego pobrania. NIE liczymy time()-flightOkAt — dla flightOkAt==0
+    // daloby wiek rzedu dekad (epoch od 1970) albo liczbe ujemna. Piszemy wprost, a
+    // kropka swiezosci zostaje UNKNOWN.
+    snprintf(hr, sizeof(hr), "nieodpytywane");
+  } else {
     const time_t now = time(nullptr);
     if (now > 1700000000) {
       long age = static_cast<long>(now - static_cast<time_t>(diag().flightOkAt));
@@ -1212,23 +1293,21 @@ void v3Flights(TFT_eSPI& s, const FlightModel& fl, uint32_t nowMs) {
       else snprintf(hr, sizeof(hr), "odświeżono %ld min temu", age / 60);
     }
   }
-  lightHeader(s, "NAD NAMI", fl.ready ? hr : nullptr, fl.ready ? fresh : Fresh::UNKNOWN);
+  lightHeader(s, "NAD NAMI", hr[0] ? hr : nullptr, fresh);
 
   if (!fl.ready) {
     plex::strCenter(s, plex::f20(), "Pobieram dane...", grid::W / 2, 110, col::MUTE);
     return;
   }
-  if (fl.count == 0) {
-    plex::strCenter(s, plex::f20(), "Puste niebo", grid::W / 2, 100, col::MUTE);
-    plex::strCenter(s, plex::f13(), "brak samolotów nad zatoką", grid::W / 2, 124, col::MUTE);
-    return;
-  }
-
   const int rowY0 = 44, pitch = 52;
-  const int n = fl.count > 3 ? 3 : fl.count;
-  for (int i = 0; i < n; ++i) {
+  int drawn = 0;
+  for (int i = 0; i < fl.count && drawn < 3; ++i) {
     const Flight& f = fl.list[i];
-    const int y = rowY0 + i * pitch;
+    if (isGroundVehicle(f)) continue;   // pojazd naziemny — nie liczymy do wierszy
+    const int y = rowY0 + drawn * pitch;
+
+    if (drawn > 0)
+      s.drawFastHLine(grid::MARGIN, y - 14, grid::W - 2 * grid::MARGIN, col::LINE);
 
     // Znacznik: trojkat (trasa znana) / kolko (nieznana).
     if (f.routeKnown) {
@@ -1247,24 +1326,43 @@ void v3Flights(TFT_eSPI& s, const FlightModel& fl, uint32_t nowMs) {
     else snprintf(route, sizeof(route), "trasa nieznana · kurs nieznany");
     plex::str(s, plex::f13(), route, 40, y + 26, f.routeKnown ? col::SECOND : col::MUTE);
 
-    // Wysokosc + predkosc.
+    // JEDNOSTKI METRYCZNE. Wysokosc altFt jest w STOPACH -> metry (x0,3048): ponizej
+    // 1000 m w metrach ("850 m"), wyzej w kilometrach ("10,4 km"). Predkosc gs jest w
+    // WEZLACH -> km/h (x1,852): "796 km/h".
     char alt[16];
-    snprintf(alt, sizeof(alt), "%ld ft", static_cast<long>(f.altFt));
+    const float altM = f.altFt * 0.3048f;
+    if (altM >= 1000.f) {
+      char km[8];
+      fmt1(km, sizeof(km), altM / 1000.f);   // polski przecinek
+      snprintf(alt, sizeof(alt), "%s km", km);
+    } else {
+      snprintf(alt, sizeof(alt), "%d m", altM > 0.f ? static_cast<int>(altM + 0.5f) : 0);
+    }
     plex::strRight(s, plex::f13(), alt, grid::DATA_R, y + 8, col::PANEL);
     char gs[12];
-    snprintf(gs, sizeof(gs), "%d kt", f.gs);
+    snprintf(gs, sizeof(gs), "%d km/h", static_cast<int>(f.gs * 1.852f + 0.5f));
     plex::strRight(s, plex::f13(), gs, grid::DATA_R, y + 26, col::MUTE);
 
-    if (i < n - 1) s.drawFastHLine(grid::MARGIN, y + pitch - 14, grid::W - 2 * grid::MARGIN, col::LINE);
+    ++drawn;
+  }
+
+  // Puste niebo: brak lotow ALBO wszystkie z listy to pojazdy naziemne (odfiltrowane).
+  if (drawn == 0) {
+    plex::strCenter(s, plex::f20(), "Puste niebo", grid::W / 2, 100, col::MUTE);
+    plex::strCenter(s, plex::f13(), "brak samolotów nad zatoką", grid::W / 2, 124, col::MUTE);
   }
 }
 
 void v3FlightsBottom(TFT_eSPI& tft, const FlightModel& fl) {
   tft.fillRect(0, 206, grid::W, 34, col::BG);
   tft.drawFastHLine(grid::MARGIN, 210, grid::W - 2 * grid::MARGIN, col::LINE);
+  // "najbliższe" = ile REALNIE pokazuje lista (z pominieciem pojazdow naziemnych), max 3
+  // — spojnie z v3Flights/isGroundVehicle, zeby licznik nie klamal wzgledem wierszy.
+  int shown = 0;
+  for (int i = 0; i < fl.count && shown < 3; ++i)
+    if (!isGroundVehicle(fl.list[i])) ++shown;
   char b[56];
-  snprintf(b, sizeof(b), "w zasięgu: %d · najbliższe %d · loty do Gdańska", fl.total,
-           fl.count > 3 ? 3 : fl.count);
+  snprintf(b, sizeof(b), "w zasięgu: %d · najbliższe %d · loty do Gdańska", fl.total, shown);
   // f10, nie f13: pelny podpis w f13 nie miescil sie w 296 px i ucinal "Gdańska"
   // do "Gdań". Makieta 12 ma tu maly tekst — f10 miesci calosc.
   plex::str(tft, plex::f10(), b, grid::MARGIN, 228, col::MUTE);
@@ -1276,9 +1374,11 @@ void v3FlightsBottom(TFT_eSPI& tft, const FlightModel& fl) {
 void v3Diag1(TFT_eSPI& s, uint32_t nowMs, const AirModel* ap) {
   s.fillRect(0, 0, grid::W, 206, col::BG);
   {
-    char hr[28], ut[16];
+    char hr[40], ut[16];
     fmtUptime(ut, sizeof(ut), nowMs / 1000);
-    snprintf(hr, sizeof(hr), "FW %d · %s", FW_VERSION, ut);
+    // Licznik "1/2" przy prawej krawedzi — spojnie z v3Diag2 ("2/2"). Para diagnostyki:
+    // STATS = 1/2 (zrodla), MEM = 2/2 (stan). FW/uptime zostaja po lewej od licznika.
+    snprintf(hr, sizeof(hr), "FW %d · %s · 1/2", FW_VERSION, ut);
     darkHeader(s, "URZĄDZENIE", hr);
   }
 
@@ -1526,10 +1626,16 @@ void v3Motion(TFT_eSPI& s, uint32_t nowMs) {
 
 void v3MotionBottom(TFT_eSPI& tft) {
   tft.fillRect(0, 206, grid::W, 34, col::PANEL);
-  char b[56];
+  // Bez "PIR GPIO13 · LDR GPIO1" — numery pinow nic nie mowia uzytkownikowi.
+  // "1,1%" opisane uczciwie: to udzial CZASU POMIARU z wykrytym ruchem (suma HIGH z PIR /
+  // sekundy realnego zbierania). NIE "doby" — pomiar zbiera sie przez wiele dni (RTC
+  // przezywa OTA), wiec "% doby" wprowadzaloby w blad.
   const float pct = gPir.collectedS ? (gPir.totalMs / 1000.f) / gPir.collectedS * 100.f : 0.f;
-  snprintf(b, sizeof(b), "wyzwoleń %lu · %.1f%% doby · PIR GPIO13 · LDR GPIO1",
-           static_cast<unsigned long>(gPir.rises), pct);
+  char pcts[8];
+  fmt1(pcts, sizeof(pcts), pct);   // polski przecinek dziesietny
+  char b[56];
+  snprintf(b, sizeof(b), "wyzwoleń PIR: %lu · ruch przez %s%% czasu",
+           static_cast<unsigned long>(gPir.rises), pcts);
   plex::str(tft, plex::f13(), b, grid::MARGIN, 227, col::ONDARK_DIM);
 }
 
@@ -1553,7 +1659,7 @@ void WeatherUi::drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const Weath
       v3Pv(spr, pv, hist);
       break;
     case cfg::VIEW_HOME:
-      v3Home(spr, roomModel_, nowMs);
+      v3Home(spr, roomModel_, rooms_, nowMs);
       break;
     case cfg::VIEW_BOILER:
       v3Boiler(spr, boiler_, burner_);
@@ -1610,13 +1716,15 @@ void WeatherUi::drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const Weath
       const uint16_t base = (i < curSeg) ? tv3::col::RAIN     // obejrzany (ciemny)
                           : (i > curSeg) ? tv3::col::RAIN4    // przed nami (jasny)
                                          : tv3::col::ACCENT;  // aktualny (podswietlony)
-      spr.fillRect(x0, 0, segW, 2, base);
+      // Wysokosc 3 px (bylo 2): przy 2 px pasek byl bardzo malo czytelny z 2 m
+      // (wlasciciel). 3 px to wciaz cienka listwa, ale wyraznie widoczna.
+      spr.fillRect(x0, 0, segW, 3, base);
       if (i == curSeg && settings().autoRotate) {
         const uint32_t dwellMs = static_cast<uint32_t>(settings().dwellS) * 1000UL;
         float frac = dwellMs ? static_cast<float>(nowMs - viewStart_) / dwellMs : 0.f;
         frac = clampf(frac, 0.f, 1.f);
         const int fillW = static_cast<int>(segW * frac);
-        if (fillW > 0) spr.fillRect(x0, 0, fillW, 2, tv3::col::RAIN2);
+        if (fillW > 0) spr.fillRect(x0, 0, fillW, 3, tv3::col::RAIN2);
       }
     }
   }

@@ -193,8 +193,17 @@ bool FlightClient::fetch(FlightModel& out) {
   ac["calc_track"] = true;
 
   JsonDocument doc;
-  if (!httpGetJson(url, doc, &filter)) {
-    strncpy(out.errorMsg, "Brak danych ADS-B", sizeof(out.errorMsg) - 1);
+  const int code = httpGetJson(url, doc, &filter);
+  if (code != 200) {
+    // httpGetJson oddaje KOD HTTP (0 = blad transportu/TLS/JSON). Stare "if (!...)"
+    // traktowalo wynik jak bool: HTTP 4xx/5xx (np. 429 = limit zapytan) sa != 0, wiec
+    // przechodzily dalej z PUSTYM `doc` i konczyly jako mylace "Pusta odpowiedz" zamiast
+    // prawdziwej przyczyny. Rozrozniamy je teraz jawnie, zeby diag pokazywal realny blad.
+    if (code == 0) {
+      strncpy(out.errorMsg, "Brak danych ADS-B", sizeof(out.errorMsg) - 1);
+    } else {
+      snprintf(out.errorMsg, sizeof(out.errorMsg), "ADS-B: HTTP %d", code);
+    }
     return false;
   }
 
@@ -234,6 +243,19 @@ bool FlightClient::fetch(FlightModel& out) {
       continue;
     }
 
+    // Pojazdy naziemne lotniska (wozy Follow-me "SPVAN...", ciagniki, odsniezarki) nadaja
+    // ADS-B z wlasnym znakiem wywolawczym, a alt_baro potrafia podac jako LICZBE ~0 —
+    // wtedy nie lapie ich ani filtr "brak flight", ani filtr "ground" (string) powyzej.
+    // Do listy SAMOLOTOW nie naleza, wiec odrzucamy je: po znaku ("SPVAN") oraz po
+    // "stoi/pelza tuz przy ziemi" (alt <= 0 i predkosc < 50 kt). Prawdziwy samolot na
+    // niskim przelocie ma gs znacznie > 50, wiec nie wypada. Filtr jest PRZED ++total,
+    // bo "w zasiegu" liczymy samoloty, nie wozy techniczne.
+    const int32_t altFt = alt.as<int32_t>();
+    const int gsKt = static_cast<int>(a["gs"] | 0.f);
+    if (strncmp(f.callsign, "SPVAN", 5) == 0 || (altFt <= 0 && gsKt < 50)) {
+      continue;
+    }
+
     // Bylo tu "if (n >= kMaxCandidates) break;" — czyli obciecie PRZED sortowaniem.
     // adsb.fi oddaje samoloty w SWOJEJ kolejnosci, nie po odleglosci: kod bral
     // pierwszych 18 z odpowiedzi, sortowal je i pokazywal "6 najblizszych" —
@@ -256,8 +278,8 @@ bool FlightClient::fetch(FlightModel& out) {
     }
     f.lat = lat;
     f.lon = lon;
-    f.altFt = alt.as<int32_t>();
-    f.gs = static_cast<int16_t>(a["gs"] | 0.f);
+    f.altFt = altFt;
+    f.gs = static_cast<int16_t>(gsKt);
     // MLAT czasem nie ma "track", tylko "calc_track"
     float tr = a["track"] | -1.f;
     if (tr < 0.f) {

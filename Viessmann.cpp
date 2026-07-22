@@ -199,22 +199,21 @@ void storeTokens(JsonDocument& doc) {
       LOG("Piec: zapisano nowy refresh token");
     }
 
-  // Licznik dni do wygasniecia liczyl od ZLEJ daty: viAuthAt ruszal sie tylko przy
-  // rotacji refresh tokena, a rotacja to polityka serwera, nie gwarancja protokolu.
-  // Gdy Viessmann odsylal ten sam token, viAuthAt zostawal na dacie pierwszej
-  // autoryzacji i panel po pol roku wolal "autoryzuj piec ponownie", choc token
-  // dzialal bez zarzutu. Kazde udane odswiezenie wlasnie POTWIERDZILO waznosc
-  // tokena — wiec liczymy od niego.
-  // Licznik jest orientacyjny (kRefreshTtlDays = 180 to zalozenie, nie dana z API);
-  // prawdziwym sygnalem do ponownej autoryzacji jest blad odswiezenia.
-  // Do NVS zapisujemy dopiero, gdy przyrost przekroczy dobe: odswiezenie leci co
-  // ~55 min, a zapis do flasha co godzine przez lata to nie jest cena za licznik.
-    if (acc[0] != '\0' && now > 1700000000UL) {
-      const uint32_t prev = settings().viAuthAt;
+  // viAuthAt = data PIERWSZEJ autoryzacji (viLink), ustawiana RAZ i NIE ruszana przy
+  // odswiezaniu. Wczesniej przesuwala sie przy kazdym udanym odswiezeniu tokena (co
+  // ~55 min) w imie "kazde odswiezenie potwierdza waznosc" — ale skutek byl taki, ze
+  // daysLeft() stal na ~180 i wlasciciel NIE WIDZIAL zadnego odliczania. A on chce
+  // wiedziec, ile realnie czasu zostalo do ewentualnej recznej autoryzacji.
+  // Refresh token Viessmanna rotuje przy kazdym uzyciu (nowy dostaje swoje 180 dni), wiec
+  // dopoki odswiezanie dziala, token faktycznie nie wygasa — licznik od pierwszej
+  // autoryzacji jest ORIENTACYJNY (kRefreshTtlDays = 180 to zalozenie, nie dana z API).
+  // PRAWDZIWYM sygnalem "autoryzuj ponownie" jest blad odswiezania, a ten widac osobno:
+  // diag().viErr / viOkAt, a w panelu /api/vi -> pole ok/ok_ago_s (swiezosc danych).
+  // Zerowane wylacznie przez forget(); po restarcie wraca z NVS niezerowe, wiec warunek
+  // "== 0" ustawia je dokladnie raz — przy pierwszej autoryzacji.
+    if (acc[0] != '\0' && now > 1700000000UL && settings().viAuthAt == 0) {
       settings().viAuthAt = now;
-      // Cofniety zegar tez lapie sie tutaj: przy prev > now odejmowanie sie przekreca
-      // i wychodzi wartosc znacznie wieksza niz doba.
-      if (prev == 0 || now - prev > 86400UL) save = true;
+      save = true;
     }
   }   // <- tu oddajemy gMx, PRZED zapisem do flasha
   if (save) settings().viSave();

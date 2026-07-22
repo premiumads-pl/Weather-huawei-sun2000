@@ -295,7 +295,7 @@ li:hover{border-color:var(--accent)}
   <h2>Integracje — skrót</h2>
   <div class=intline><span class=il>Falownik</span><span class=sig id=sInv>—</span></div>
   <div class=intline><span class=il>Piec Viessmann</span><span class=rgt>
-   <span class=sig id=sVi>—</span><button class=s onclick=viLink()>Odnów</button></span></div>
+   <span class=sig id=sVi>—</span><button class=s onclick=goViAuth()>Odnów</button></span></div>
   <div class=intline><span class=il>MQTT</span><span class=sig id=sMqtt>—</span></div>
   <div class=hint>Pełne ustawienia tych integracji są w zakładce „Integracje”.</div>
  </div>
@@ -432,6 +432,13 @@ li:hover{border-color:var(--accent)}
 <button class=sechead data-sec=diag><span>Diagnostyka</span><span class=hgrp><span class=chev>▸</span></span></button>
 <div class=secbody>
  <div class=blk>
+  <h2>Stan i awarie — po ludzku</h2>
+  <div class=hint>Zwięzłe podsumowanie bez znajomości kodu: restarty po awarii, ostatnia
+   awaria (jeśli była) oraz łączność z falownikiem i piecem.</div>
+  <button class=s onclick=fails()>Odczytaj stan</button>
+  <div id=failout style=margin-top:10px></div>
+ </div>
+ <div class=blk>
   <h2>Diagnostyka</h2>
   <div class=row>
    <button class=s style=margin:0 onclick=dg()>Stan urządzenia</button>
@@ -483,10 +490,24 @@ const $=i=>document.getElementById(i);
 // te, ktore przyjmuje pinView() (WeatherUi.cpp). RETRO=0 i HOURS=2 nie istnieja w V3, wiec
 // ich tu nie ma. Ekrany diagnostyczne to osobna, mniejsza grupa pigulek.
 const VIEWS=[['Auto',-1],['Główny',1],['Radar',3],['5 dni',4],['Prąd',7],['Pokoje',5],['Ogrzewanie',6],['Powietrze',9],['Samoloty',8]];
-const VDIAG=[['Pamięć',10],['Ruch',11],['Statystyki',12]];
+// Kolejnosc jak numeracja na wyswietlaczu: para dotykowa Statystyki(1/2, VIEW_STATS=12)
+// -> Pamiec(2/2, VIEW_MEM=10), a potem osobny Ruch(VIEW_MOTION=11).
+const VDIAG=[['Statystyki',12],['Pamięć',10],['Ruch',11]];
 let live=true,pin=-1,theme=3;
 
 function bset(cls,txt){document.querySelectorAll('.'+cls).forEach(e=>e.textContent=txt);}
+// Uptime czytelnie takze przy krotkiej pracy: <1 h -> "X min", <doba -> "X h Y min",
+// dalej "X d Y h". Wczesniej pokazywalo "0 d 0 h" przez pierwsza godzine po restarcie.
+function fmtUptime(u){const dd=Math.floor(u/86400),hh=Math.floor(u%86400/3600),mm=Math.floor(u%3600/60);
+ if(u<3600)return mm+' min';
+ if(u<86400)return hh+' h '+mm+' min';
+ return dd+' d '+hh+' h';}
+// "ile temu" po ludzku (sekundy -> tekst). -1/undefined = nigdy.
+function agoTxt(s){if(s==null||s<0)return 'nigdy';if(s<60)return 'przed chwilą';
+ if(s<3600)return Math.floor(s/60)+' min temu';if(s<86400)return Math.floor(s/3600)+' h temu';
+ return Math.floor(s/86400)+' d temu';}
+// polska mnogosc dla "raz/razy": 1 -> "raz", reszta -> "razy" (0,2,5,22... = razy).
+function razy(n){return n===1?'raz':'razy';}
 
 function tabs(){
  $('tabs').innerHTML=VIEWS.map(([n,i])=>
@@ -553,8 +574,7 @@ function toggleSection(s){$('sec-'+s).classList.toggle('open');}
 async function diagPills(){
  try{
   const d=await(await fetch('/api/diag?'+Date.now())).json();
-  const u=d.uptime_s||0,dd=Math.floor(u/86400),hh=Math.floor(u%86400/3600);
-  $('up').textContent=dd+' d '+hh+' h';
+  $('up').textContent=fmtUptime(d.uptime_s||0);
   if(d.reset)$('stab').textContent=d.reset.was_crash?'po awarii':'stabilna';
   if(d.pv){
    const p=d.pv;let t='❌ brak łączności',c='err';
@@ -708,6 +728,16 @@ async function saveBle(mac,i){
  $('bmsg').textContent=r.msg;
  bles();
 }
+// "Odnów" w skrocie (sekcja Ekran) wolal viLink(), ale link i komunikat (vihref/viauth/
+// vimsg) sa w sekcji INTEGRACJE — na komputerze ukrytej (SPA), na telefonie zwinietej.
+// Efekt: klikam "Odnów" i nic nie widac ("nie dziala"). Najpierw wiec pokazujemy sekcje
+// Integracje (SPA + rozwiniecie akordeonu + przewiniecie), dopiero potem generujemy link.
+async function goViAuth(){
+ showSection('integr');
+ $('sec-integr').classList.add('open');
+ $('sec-integr').scrollIntoView({behavior:'smooth',block:'start'});
+ await viLink();
+}
 async function viLink(){
  $('vimsg').textContent='...';
  const r=await(await fetch('/api/vi/link',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -731,13 +761,25 @@ async function viStat(){
    $('sVi').textContent='niepodłączony';$('sVi').className='sig';
    return;
   }
-  bset('b-token','token '+r.days+' dni');
-  $('sVi').textContent=r.ok?('✓ token '+r.days+' dni'):('token '+r.days+' dni · '+(r.err||'—'));
-  $('sVi').className='sig '+(r.ok?'ok':'warn');
-  $('vistat').className='hint ok';
-  $('vistat').textContent=r.ok
-    ? `Połączono. CWU ${r.dhw.toFixed(1)}°C, zasilanie ${r.sup.toFixed(1)}°C. Autoryzacja ważna jeszcze ${r.days} dni.`
-    : `Autoryzowano (ważne ${r.days} dni), ale: ${r.err}`;
+  const dni=(r.days>=0?r.days:'?')+' dni';
+  bset('b-token','ważny '+dni);
+  if(r.ok){
+   // Dane swieze = odswiezanie tokena dziala. Licznik dni liczony od PIERWSZEJ
+   // autoryzacji (Viessmann.cpp), wiec realnie odlicza.
+   $('sVi').textContent='✓ ważny '+dni;$('sVi').className='sig ok';
+   $('vistat').className='hint ok';
+   $('vistat').textContent=`Połączono. CWU ${r.dhw.toFixed(1)}°C, zasilanie ${r.sup.toFixed(1)}°C. `
+    +`Autoryzacja ważna jeszcze ok. ${dni} (od pierwszej autoryzacji) — odświeżana automatycznie, `
+    +`ostatni odczyt ${agoTxt(r.ok_ago_s)}.`;
+  }else{
+   // Dane NIEAKTUALNE = odswiezanie realnie zawodzi -> zwykle trzeba autoryzowac od nowa.
+   $('sVi').textContent='⚠ '+dni+' · sprawdź';$('sVi').className='sig warn';
+   $('vistat').className='hint warn';
+   $('vistat').textContent=(r.ok_ago_s<0?'Jeszcze ani jednego udanego odczytu. '
+      :`Brak świeżych danych (ostatni ${agoTxt(r.ok_ago_s)}). `)
+    +(r.err?('Błąd: '+r.err+'. '):'')
+    +'Jeśli to się utrzymuje, kliknij „1. Zapisz i wygeneruj link autoryzacyjny” i autoryzuj piec ponownie.';
+  }
  }catch(e){}
 }
 async function demo(on){
@@ -745,6 +787,59 @@ async function demo(on){
  const r=await(await fetch('/api/radardemo?on='+on)).json();
  $('dmsg').className='hint ok';$('dmsg').textContent=r.msg;
  if(on) pickView(3);   // VIEW_RADAR=3 (dawniej bledne pickView(2)=VIEW_HOURS, nieobecny w V3)
+}
+// Kolorowy blok "po ludzku": kropka statusu + tytul + tresc. cls: 'ok'|'warn'|'err'.
+function fblock(title,body,cls){
+ const col=cls==='err'?'#C04A3A':cls==='warn'?'#B8901F':'#4D9A4D';
+ return '<div style="padding:8px 0;border-bottom:1px solid #D9DCD6">'
+  +'<div style="display:flex;align-items:center;gap:8px">'
+  +'<span style="width:9px;height:9px;border-radius:50%;background:'+col+';flex:0 0 auto"></span>'
+  +'<b style=color:#1A1C1E>'+title+'</b></div>'
+  +'<div style="font:12px system-ui;color:#6C6F6A;margin-top:4px">'+body+'</div></div>';}
+// Czytelny stan awarii i lacznosci z /api/diag: reset (crashes_total/reason/was_crash),
+// skrot coredumpa (zadanie+adres+backtrace, tylko czesc bezpieczna), liczniki Modbusa
+// falownika opisane po ludzku, oraz stan pieca. Ma byc zrozumiale bez znajomosci kodu.
+async function fails(){
+ const o=$('failout');o.innerHTML='<div class=hint>Odczytuję…</div>';
+ try{
+  const d=await(await fetch('/api/diag?'+Date.now())).json();
+  let h='';
+  const rs=d.reset||{},cr=rs.crashes_total||0;
+  h+=fblock('Restarty po awarii',
+   (cr>0?('Urządzenie zrestartowało się po awarii (panice) '+cr+' '+razy(cr)+' od początku pomiaru. ')
+        :'Ani jednego restartu po awarii. ')
+   +'Ostatni restart: '+(rs.reason||'?')+(rs.was_crash?' — to była awaria.':' — normalny (nie awaria).'),
+   rs.was_crash?'err':(cr>0?'warn':'ok'));
+  const c=d.coredump||{};
+  if(c.present){
+   const bt=(c.bt||[]).slice(0,6).join(' ');
+   let t='Zadanie „'+(c.task||'?')+'”, adres upadku '+(c.pc||'?')
+    +(c.panic_reason?(' — '+c.panic_reason):'')+'.';
+   if(bt)t+=' Ślad wywołań: '+bt+'.';
+   if(c.elf_match===false)t+=' Uwaga: zrzut z innej wersji firmware — adresy mogą nie pasować.';
+   t+=' Pełne dane i pobranie: „Zrzut awaryjny” niżej.';
+   h+=fblock('Ostatnia awaria — skrót',t,'warn');
+  }else{
+   h+=fblock('Ostatnia awaria','Brak zapisanego zrzutu — urządzenie nie padło od ostatniego skasowania.','ok');
+  }
+  const pv=d.pv||{},fm=pv.fail_meas||{};
+  const cf=(fm.connect_fail_day||0)+(fm.connect_fail_night||0);
+  const sf=(fm.silent_fail_day||0)+(fm.silent_fail_night||0);
+  const mr=(fm.missing_reg_day||0)+(fm.missing_reg_night||0);
+  let pt='Falownik nie połączył się '+cf+' '+razy(cf)+' (brak sesji), '
+   +'milczał '+sf+' '+razy(sf)+' (sesja żyła, rejestry nie odpowiadały)';
+  if(mr>0)pt+=', brakowało rejestru mocy '+mr+' '+razy(mr);
+  pt+='. Nocą falownik bywa uśpiony (Huawei wyłącza Modbus) — to normalne. Teraz: '
+   +(pv.ok_ago_s>=0&&pv.ok_ago_s<1800?'połączony.':(pv.asleep?'uśpiony (noc).':'brak łączności.'));
+  h+=fblock('Falownik (Modbus)',pt,(pv.ok_ago_s>=0&&pv.ok_ago_s<1800)||pv.asleep?'ok':'warn');
+  const vi=d.vi;
+  if(vi){
+   const t=(vi.ok_ago_s<0?'Jeszcze nieodpytywany. ':('Ostatni odczyt '+agoTxt(vi.ok_ago_s)+'. '))
+    +(vi.err?('Ostatni błąd: '+vi.err+'.'):'Bez błędów.');
+   h+=fblock('Piec Viessmann (chmura)',t,vi.ok_ago_s>=0&&vi.ok_ago_s<900?'ok':'warn');
+  }
+  o.innerHTML=h;
+ }catch(e){o.innerHTML='<div class="hint err">Nie udało się odczytać stanu.</div>';}
 }
 async function dg(){$('dbg').textContent=await(await fetch('/api/diag')).text();}
 async function lg(){$('dbg').textContent=await(await fetch('/api/log')).text();}
@@ -2367,8 +2462,18 @@ void apiViState() {
   o["days"] = vi::daysLeft();
 
   const Diag& d = diag();
-  o["ok"] = d.viOkAt != 0 && d.viErr[0] == '\0';
-  o["err"] = d.viErr;
+  // "ok" = mamy SWIEZE dane, a nie "zero bledow w calej historii". Piec odpytujemy co
+  // 3 min i Viessmann potrafi oddac pojedynczy HTTP 400/429 w trakcie sprawnej pracy —
+  // stary warunek (viErr puste) zamienial taki PRZEJSCIOWY blad w "piec nie dziala",
+  // choc ostatni udany odczyt byl sprzed 3 minut. To wlasnie dawalo panelowi "token 180
+  // dni - API HTTP 400" przy w pelni dzialajacym piecu. viOkAt NIE jest kasowany przy
+  // porazce (patrz netTask w pogoda-gdynia.ino), wiec jego wiek to wiarygodny znacznik
+  // "czy dane sa aktualne". Dopiero brak swiezosci = odswiezanie realnie zawodzi.
+  const int32_t dms = static_cast<int32_t>(millis() - d.viOkAt);
+  const int okAgo = d.viOkAt == 0 ? -1 : (dms < 0 ? 0 : dms / 1000);
+  o["ok"] = okAgo >= 0 && okAgo < 900;   // 15 min = 5 nieudanych cykli z rzedu
+  o["ok_ago_s"] = okAgo;
+  o["err"] = d.viErr;                    // ostatni blad — do pokazania, gdy dane stare
   o["dhw"] = d.viDhwC;
   o["sup"] = d.viSupplyC;
 
