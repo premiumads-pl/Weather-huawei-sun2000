@@ -843,7 +843,10 @@ void v3Pv(TFT_eSPI& s, const PvModel& pv, const PvHistory& hist) {
   // wciaz nad wykresem (cy=90).
   plex::strRight(s, plex::f13(), tot, grid::DATA_R, 84, col::MUTE);
 
-  // Wykres doby: produkcja (slupki), pobor (linia).
+  // Wykres doby: WYPELNIONY (nie linia — na zywo linia byla nieczytelna). Sluply
+  // POBORU domu (niebieski) jako tlo + PRODUKCJA (bursztyn) na wierzchu. Efekt:
+  // wykres jest "pelny" o kazdej porze (dom zawsze cos ciagnie), a w dzien bursztyn
+  // slonca narasta na niebieskim tle. Slupki maja pelna szerokosc slotu, bez przerw.
   const int cx = grid::MARGIN, cy = 90, cw = grid::W - 2 * grid::MARGIN, ch = 84;
   const int base = cy + ch;
   s.drawFastHLine(cx, base, cw, col::LINE);
@@ -860,20 +863,17 @@ void v3Pv(TFT_eSPI& s, const PvModel& pv, const PvHistory& hist) {
     }
   }
   if (peak > 0) {
-    int prevX = -1, prevY = -1;
     for (int i = 0; i < PvHistory::SLOTS; ++i) {
-      const int x = cx + (i * cw) / PvHistory::SLOTS;
+      const int x0 = cx + (i * cw) / PvHistory::SLOTS;
+      const int x1 = cx + ((i + 1) * cw) / PvHistory::SLOTS;
+      const int bw = (x1 - x0) > 1 ? (x1 - x0) : 1;   // pelna szerokosc slotu, bez luk
       if (hist.filled[i]) {
-        const int hh = static_cast<int>((ch - 2) * (hist.watts[i] / static_cast<float>(peak)));
-        if (hh > 0) s.drawFastVLine(x, base - hh, hh, col::PV);
-        // Linia poboru domu.
         const int lh = static_cast<int>((ch - 2) * (hist.load[i] / static_cast<float>(peak)));
-        const int ly = base - lh;
-        if (prevX >= 0) s.drawLine(prevX, prevY, x, ly, col::SELF);
-        prevX = x;
-        prevY = ly;
+        if (lh > 0) s.fillRect(x0, base - lh, bw, lh, col::SELF);   // pobor domu (tlo)
+        const int ph = static_cast<int>((ch - 2) * (hist.watts[i] / static_cast<float>(peak)));
+        if (ph > 0) s.fillRect(x0, base - ph, bw, ph, col::PV);     // produkcja (na wierzchu)
       } else if (i > curSlot && curSlot >= 0) {
-        s.drawFastVLine(x, base - 2, 2, col::LINE);   // reszta doby - jeszcze przed nami
+        s.fillRect(x0, base - 2, bw, 2, col::LINE);   // reszta doby - jeszcze przed nami
       }
     }
   } else {
@@ -895,8 +895,8 @@ void v3PvBottom(TFT_eSPI& tft, const PvModel& pv) {
   // Legenda.
   tft.fillRect(grid::MARGIN, 226, 10, 8, col::PV);
   plex::str(tft, plex::f13(), "produkcja", grid::MARGIN + 14, 233, col::SECOND);
-  tft.drawFastHLine(120, 230, 12, col::SELF);
-  plex::str(tft, plex::f13(), "pobór domu", 136, 233, col::SECOND);
+  tft.fillRect(120, 226, 10, 8, col::SELF);   // próbka wypełniona, jak wykres (nie linia)
+  plex::str(tft, plex::f13(), "pobór domu", 134, 233, col::SECOND);
   // "reszta doby" zamiast "reszta doby przed nami" — pelny napis naslo by na
   // "pobór domu" (trzy podpisy w jednym pasku f13 nie miesczą sie w 296 px).
   plex::strRight(tft, plex::f13(), "reszta doby", grid::W - grid::MARGIN, 233, col::MUTE);

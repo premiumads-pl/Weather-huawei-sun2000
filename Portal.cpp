@@ -98,41 +98,57 @@ const char kApPass[] = "pogoda123";
 const char PAGE[] PROGMEM = R"HTML(<!doctype html><html lang=pl><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Pogoda + PV</title><style>
+/* MOTYW PANELU "PASMOWY" (V3): jasne tlo, pasma rozdzielane cienka linia zamiast
+   ciemnych kart, typografia kondensowana w naglowkach, paleta ze specyfikacji
+   projektanta (docs/design-v3/SPECYFIKACJA.md). Ta sama rodzina wizualna co ekran. */
 *{box-sizing:border-box}
-body{margin:0;background:#070d18;color:#e9f0f8;font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-.w{max-width:640px;margin:0 auto;padding:20px 16px 60px}
-h1{font-size:20px;margin:8px 0 2px}
-.sub{color:#7d93ad;font-size:13px;margin-bottom:22px}
-.c{background:#111d31;border:1px solid #1e3350;border-radius:12px;padding:16px;margin-bottom:14px}
-h2{font-size:13px;letter-spacing:.09em;text-transform:uppercase;color:#00dcf0;margin:0 0 12px}
-label{display:block;font-size:12px;color:#8fa6bf;margin:10px 0 4px}
-input,select{width:100%;padding:10px 12px;background:#081221;border:1px solid #24405f;
-  border-radius:8px;color:#e9f0f8;font-size:15px}
-input:focus,select:focus{outline:none;border-color:#00dcf0}
-button{width:100%;margin-top:14px;padding:11px;border:0;border-radius:8px;background:#00b9cc;
-  color:#04121c;font-weight:600;font-size:15px;cursor:pointer}
+:root{--bg:#F4F4F0;--panel:#1A1C1E;--second:#6C6F6A;--mute:#9A9C96;--line:#D9DCD6;
+  --card:#FFFFFF;--accent:#2563C4;--ok:#4D9A4D;--warn:#B8901F;--warnbg:#F3E4C2;--err:#C04A3A;
+  --cond:"IBM Plex Sans Condensed","Roboto Condensed","Arial Narrow",system-ui,sans-serif}
+body{margin:0;background:var(--bg);color:var(--panel);
+  font:15px/1.5 -apple-system,system-ui,Segoe UI,Roboto,sans-serif}
+.w{max-width:720px;margin:0 auto;padding:0 0 60px}
+/* Pasek tytulowy — echo ciemnej kolumny kontekstu z wyswietlacza */
+.top{background:var(--panel);color:var(--bg);padding:18px 16px 15px}
+h1{font-size:21px;margin:0;font-family:var(--cond);font-weight:600;letter-spacing:.01em}
+.sub{color:var(--mute);font-size:13px;margin-top:3px}
+/* Sekcje = pasma. Bez ramek, rozdzielone linia 1 px, oddech miedzy nimi. */
+.c{padding:18px 16px;margin:0;border-bottom:1px solid var(--line);background:var(--bg)}
+h2{font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--second);margin:0 0 12px;
+  font-family:var(--cond);font-weight:600}
+label{display:block;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--second);
+  margin:10px 0 4px;font-family:var(--cond);font-weight:600}
+input,select{width:100%;padding:10px 12px;background:var(--card);border:1px solid var(--line);
+  border-radius:8px;color:var(--panel);font-size:15px}
+input:focus,select:focus{outline:none;border-color:var(--accent)}
+button{width:100%;margin-top:14px;padding:11px;border:0;border-radius:8px;background:var(--panel);
+  color:var(--bg);font-weight:600;font-size:15px;cursor:pointer}
 button:active{transform:translateY(1px)}
-button.s{background:#1e3350;color:#cfe0f0;margin-top:8px}
+button.s{background:var(--card);color:var(--panel);border:1px solid var(--line);margin-top:8px}
 .row{display:flex;gap:10px}.row>*{flex:1}
-.hint{font-size:12px;color:#6f849c;margin-top:8px}
-.ok{color:#28e070}.err{color:#ff5555}
+.hint{font-size:12px;color:var(--second);margin-top:8px}
+.ok{color:var(--ok)}.err{color:var(--err)}
 ul{list-style:none;margin:10px 0 0;padding:0}
-li{padding:10px 12px;border:1px solid #24405f;border-radius:8px;margin-bottom:6px;cursor:pointer;
-  display:flex;justify-content:space-between;align-items:center}
-li:hover{border-color:#00dcf0;background:#0d1c30}
-.sig{color:#7d93ad;font-size:12px}
-.b{display:inline-block;padding:2px 7px;border-radius:5px;background:#1e3350;font-size:11px;color:#9fb6cf}
-.scr{position:relative;background:#000;border:2px solid #24405f;border-radius:10px;overflow:hidden;
+li{padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;cursor:pointer;
+  display:flex;justify-content:space-between;align-items:center;background:var(--card)}
+li:hover{border-color:var(--accent)}
+.sig{color:var(--mute);font-size:12px}
+.b{display:inline-block;padding:2px 7px;border-radius:5px;background:#EDEEE9;font-size:11px;color:var(--second)}
+.scr{position:relative;background:#000;border:1px solid var(--line);border-radius:10px;overflow:hidden;
   aspect-ratio:4/3}
 .scr img{display:block;width:100%;height:100%;image-rendering:pixelated}
 .tabs{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
-.tabs button{flex:1 1 auto;width:auto;margin:0;padding:8px 6px;font-size:12px;font-weight:600;
-  background:#1e3350;color:#9fb6cf}
-.tabs button.on{background:#00b9cc;color:#04121c}
-.live{float:right;font-size:11px;font-weight:600;color:#28e070;letter-spacing:0}
+.tabs button{flex:1 1 auto;width:auto;margin:0;padding:8px 10px;font-size:12px;font-weight:600;
+  font-family:var(--cond);letter-spacing:.02em;background:var(--card);color:var(--panel);border:1px solid var(--line)}
+.tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.live{float:right;font-size:11px;font-weight:600;color:var(--ok);letter-spacing:0}
+/* Telefon: pelna szerokosc, wieksze cele dotykowe; komputer: wysrodkowana kolumna. */
+@media(max-width:520px){.tabs button{flex:1 1 40%}}
 </style><div class=w>
+<div class=top>
 <h1>Pogoda Gdynia + Fotowoltaika</h1>
 <div class=sub>Firmware v<span id=fw>?</span> &middot; <span id=st>...</span></div>
+</div>
 
 <div class=c>
 <h2>Ekran urządzenia <span class=live id=live>● na żywo</span></h2>
@@ -236,14 +252,14 @@ sam okres.</div>
 <div class=hint>Twój Vitodens nie wystawia niczego w sieci lokalnej (sprawdzone: zero
 otwartych portów) — jedyna droga to chmura ViCare. Client ID weź z
 <a href="https://app.developer.viessmann-climatesolutions.com" target=_blank
- style="color:#00dcf0">portalu deweloperskiego</a>. Jest publiczny; token dostępu
+ style="color:#2563C4">portalu deweloperskiego</a>. Jest publiczny; token dostępu
 zostaje wyłącznie w pamięci urządzenia.</div>
 <label>Client ID</label><input id=vicid autocapitalize=off autocorrect=off
  placeholder="np. 962d...b35ce">
 <button class=s onclick=viLink()>1. Zapisz i wygeneruj link autoryzacyjny</button>
 <div class=hint id=vimsg></div>
 <div id=viauth style="display:none">
- <a id=vihref target=_blank style="color:#00dcf0;font-weight:600">
+ <a id=vihref target=_blank style="color:#2563C4;font-weight:600">
   2. Otwórz i zaloguj się do Viessmann →</a>
  <div class=hint>Po zalogowaniu przeglądarka wróci tutaj sama i zapisze dostęp.
  Kod autoryzacyjny żyje 20 sekund, więc nie zwlekaj.</div>
@@ -284,8 +300,8 @@ Symulacja pokazuje sztuczny front — do obejrzenia, jak wygląda wizualizacja.<
 <button class=s style=margin:0 onclick=lg()>Logi</button>
 <button class=s style=margin:0 onclick=cd()>Zrzut awaryjny</button>
 </div>
-<pre id=dbg style="white-space:pre-wrap;font:12px ui-monospace,monospace;color:#9fb6cf;
- background:#081221;border:1px solid #24405f;border-radius:8px;padding:10px;margin-top:10px;
+<pre id=dbg style="white-space:pre-wrap;font:12px ui-monospace,monospace;color:#6C6F6A;
+ background:#FAFAF8;border:1px solid #D9DCD6;border-radius:8px;padding:10px;margin-top:10px;
  max-height:300px;overflow:auto"></pre>
 <div id=cdact style=display:none>
 <div class="hint err">Surowy zrzut to kopia pamięci urządzenia — mogą w nim być hasła Wi-Fi
@@ -332,19 +348,19 @@ async function pickView(i){
 async function tap(n){try{await fetch('/api/tap?n='+n,{method:'POST'});}catch(e){}}
 function kb(b){if(b==null)return '—';if(b>=1048576)return (b/1048576).toFixed(2)+' MB';if(b>=1024)return (b/1024).toFixed(1)+' kB';return b+' B';}
 function memBar(used,total){var p=total>0?Math.round(used/total*100):0;
- return '<div style="height:8px;background:#12314c;border-radius:4px;overflow:hidden;margin:3px 0">'
- +'<div style="height:8px;width:'+p+'%;background:'+(p>85?'#c0524a':p>65?'#c79a3a':'#4d9a6a')+'"></div></div>';}
+ return '<div style="height:8px;background:#EDEEE9;border-radius:4px;overflow:hidden;margin:3px 0">'
+ +'<div style="height:8px;width:'+p+'%;background:'+(p>85?'#C04A3A':p>65?'#B8901F':'#4D9A4D')+'"></div></div>';}
 function memRow(name,cap,used,free,buf,desc){
  var body='';
  if(cap!=null)body+='<b>'+kb(cap)+'</b> pojemność';
  if(used!=null)body+=' · zajęte '+kb(used);
- if(free!=null)body+=' · <b style=color:#7fd6a0>wolne '+kb(free)+'</b>';
+ if(free!=null)body+=' · <b style=color:#4D9A4D>wolne '+kb(free)+'</b>';
  if(buf!=null)body+=' · '+buf;
  var bar=(cap!=null&&used!=null)?memBar(used,cap):'';
- return '<div style="padding:8px 0;border-bottom:1px solid #16324c">'
-  +'<div style="display:flex;justify-content:space-between"><b style=color:#cfe3f5>'+name+'</b></div>'
-  +bar+'<div style="font:12px system-ui;color:#9fb6cf">'+body+'</div>'
-  +'<div style="font:11px system-ui;color:#6d8199;margin-top:2px">'+desc+'</div></div>';}
+ return '<div style="padding:8px 0;border-bottom:1px solid #D9DCD6">'
+  +'<div style="display:flex;justify-content:space-between"><b style=color:#1A1C1E>'+name+'</b></div>'
+  +bar+'<div style="font:12px system-ui;color:#6C6F6A">'+body+'</div>'
+  +'<div style="font:11px system-ui;color:#9A9C96;margin-top:2px">'+desc+'</div></div>';}
 async function mem(){
  var o=$('memout');o.innerHTML='<div class=hint>Odczytuję…</div>';
  try{
@@ -372,12 +388,12 @@ async function mem(){
     app0:'Partycja aplikacji OTA #0.',app1:'Partycja aplikacji OTA #1.',
     spiffs:'Zarezerwowana — projekt NIE używa systemu plików (odzyskane miejsce oddano partycjom app).',
     coredump:'Zrzut awaryjny po panice: zadanie, adres upadku, backtrace.'};
-   var ph='<div style="padding:8px 0"><b style=color:#cfe3f5>Podział na partycje (OTA i dane)</b>'
-    +'<table style="width:100%;border-collapse:collapse;font:12px system-ui;color:#9fb6cf;margin-top:4px">'
-    +'<tr style=color:#6d8199><td>nazwa</td><td>adres</td><td style=text-align:right>rozmiar</td></tr>';
+   var ph='<div style="padding:8px 0"><b style=color:#1A1C1E>Podział na partycje (OTA i dane)</b>'
+    +'<table style="width:100%;border-collapse:collapse;font:12px system-ui;color:#6C6F6A;margin-top:4px">'
+    +'<tr style=color:#9A9C96><td>nazwa</td><td>adres</td><td style=text-align:right>rozmiar</td></tr>';
    m.partitions.forEach(function(p){if(!p.present)return;
     ph+='<tr><td>'+p.name+'</td><td>0x'+(p.address||0).toString(16)+'</td><td style=text-align:right>'+kb(p.size)+'</td></tr>';});
-   ph+='</table><div style="font:11px system-ui;color:#6d8199;margin-top:4px">Dwie równe partycje app0/app1 (po '
+   ph+='</table><div style="font:11px system-ui;color:#9A9C96;margin-top:4px">Dwie równe partycje app0/app1 (po '
     +kb((m.partitions.find(function(p){return p.name=="app0"})||{}).size)+') to serce OTA: nowa wersja wgrywa się na wolną, a stara zostaje jako powrót awaryjny.</div></div>';
    h+=ph;
   }
@@ -391,7 +407,7 @@ async function mem(){
     'Każde zadanie ma swój stos '+kb(st.configured_size)+'. „Zapas” to ile nigdy nie zostało użyte — margines bezpieczeństwa przed przepełnieniem.');
   h+=memRow('ROM (bootrom układu)',m.rom_size,m.rom_size,0,null,
     'Stała pamięć producenta 384 kB, tylko do odczytu — pierwszy kod po włączeniu zasilania. Nie da się jej zająć ani zwolnić.');
-  h+='<div style="font:11px system-ui;color:#6d8199;margin-top:8px">Zrzut awaryjny obecny: '+(m.coredump_present?'tak':'nie')+'.</div>';
+  h+='<div style="font:11px system-ui;color:#9A9C96;margin-top:8px">Zrzut awaryjny obecny: '+(m.coredump_present?'tak':'nie')+'.</div>';
   o.innerHTML=h;
  }catch(e){o.innerHTML='<div class="hint err">Nie udało się odczytać pamięci.</div>';}
 }
@@ -413,7 +429,7 @@ async function bles(){
  $('bles').innerHTML=r.map((s,i)=>{
   const st = s.valid ? `${s.t.toFixed(1)}°C · ${s.h.toFixed(0)}% · bat ${s.bat}%`
        : (s.needsKey ? '<span class=err>brak klucza</span>' : 'czekam na dane');
-  const src = s.gw ? ' <span style="color:#00dcf0">· przez bramkę</span>' : '';
+  const src = s.gw ? ' <span style="color:#2563C4">· przez bramkę</span>' : '';
   return `<li style="display:block">
    <div style="display:flex;justify-content:space-between">
     <b>${s.name||s.mac}</b><span class=sig>${st} · ${s.rssi} dBm${src}</span></div>
@@ -2041,10 +2057,10 @@ void apiViCallback() {
     snprintf(msg, sizeof(msg), "Połączono z piecem. Możesz zamknąć tę kartę.");
   }
 
-  String h = "<!doctype html><meta charset=utf-8><body style=\"background:#070d18;color:#e9f0f8;"
+  String h = "<!doctype html><meta charset=utf-8><body style=\"background:#F4F4F0;color:#1A1C1E;"
              "font:16px system-ui;padding:40px;text-align:center\"><h2>";
   h += msg;
-  h += "</h2><p><a href=\"/\" style=\"color:#00dcf0\">Wróć do panelu</a></p>";
+  h += "</h2><p><a href=\"/\" style=\"color:#2563C4\">Wróć do panelu</a></p>";
   server.send(200, "text/html; charset=utf-8", h);
 }
 

@@ -26,9 +26,14 @@ namespace tv3 {
 namespace col {
 constexpr uint16_t BG      = 0xF7BE;  // #F4F4F0 tlo jasne
 constexpr uint16_t PANEL   = 0x18E3;  // #1A1C1E ciemna kolumna / tekst na jasnym
-constexpr uint16_t SECOND  = 0x6B6D;  // #6C6F6A tekst drugorzedny
-constexpr uint16_t MUTE    = 0x9CF2;  // #9A9C96 wyciszony
-constexpr uint16_t LINE    = 0xDEFA;  // #D9DCD6 linie rozdzielajace moduly
+// KONTRAST: wartosci ponizej sa CIEMNIEJSZE niz w oryginalnej specyfikacji projektu.
+// Powod: na fizycznym ST7789 w lazience jasne tlo ma niebieski odcien i myje szarosci
+// — etykiety w #6C6F6A (kontrast 4,6) na zywo znikaly. Podbite do #33362F (11,1) /
+// #5A5D54 (6,1). Estetyka odrobine mniej "papierowa", ale wlasciciel patrzy z 2 m na
+// zaparowany, tani panel: czytelnosc bije elegancje (zasada z briefu).
+constexpr uint16_t SECOND  = 0x31A5;  // #33362F etykiety (bylo #6C6F6A) — mocny kontrast
+constexpr uint16_t MUTE    = 0x5AEA;  // #5A5D54 wyciszony (bylo #9A9C96)
+constexpr uint16_t LINE    = 0xBDF6;  // #BCBFB6 linie rozdzielajace (bylo #D9DCD6) — widoczne
 constexpr uint16_t RAIN    = 0x2318;  // #2563C4 opad (najsilniejszy)
 constexpr uint16_t RAIN2   = 0x5C7A;  // #5B8DD0
 constexpr uint16_t RAIN3   = 0x9DDB;  // #9DB8DD
