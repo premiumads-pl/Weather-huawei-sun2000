@@ -15,3 +15,12 @@ previews/
 Secrets.h
 secrets.*
 tools/ne_10m_land/
+
+# robocze zrzuty weryfikacyjne V3
+docs/design-v3/live_*.png
+docs/design-v3/w_*.png
+docs/design-v3/s_*.png
+docs/design-v3/n_*.png
+docs/design-v3/f_*.png
+tools/_*.png
+docs/design-v3/_*.png
