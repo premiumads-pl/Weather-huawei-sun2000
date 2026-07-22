@@ -97,23 +97,48 @@ const char kApPass[] = "pogoda123";
 
 const char PAGE[] PROGMEM = R"HTML(<!doctype html><html lang=pl><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>Pogoda + PV</title><style>
-/* MOTYW PANELU "PASMOWY" (V3): jasne tlo, pasma rozdzielane cienka linia zamiast
-   ciemnych kart, typografia kondensowana w naglowkach, paleta ze specyfikacji
-   projektanta (docs/design-v3/SPECYFIKACJA.md). Ta sama rodzina wizualna co ekran. */
+<title>Wyświetlacz łazienkowy</title><style>
+/* MOTYW PANELU "PASMOWY" (V3): jasne tlo, ciemny pasek i kolumna nawigacji, karty biale,
+   typografia kondensowana w naglowkach, paleta ze specyfikacji projektanta. Uklad z Fazy 2:
+   pasek statusu + (komputer) nawigacja boczna / (telefon) akordeon. Ta sama rodzina co ekran. */
 *{box-sizing:border-box}
 :root{--bg:#F4F4F0;--panel:#1A1C1E;--second:#6C6F6A;--mute:#9A9C96;--line:#D9DCD6;
   --card:#FFFFFF;--accent:#2563C4;--ok:#4D9A4D;--warn:#B8901F;--warnbg:#F3E4C2;--err:#C04A3A;
   --cond:"IBM Plex Sans Condensed","Roboto Condensed","Arial Narrow",system-ui,sans-serif}
 body{margin:0;background:var(--bg);color:var(--panel);
   font:15px/1.5 -apple-system,system-ui,Segoe UI,Roboto,sans-serif}
-.w{max-width:720px;margin:0 auto;padding:0 0 60px}
-/* Pasek tytulowy — echo ciemnej kolumny kontekstu z wyswietlacza */
-.top{background:var(--panel);color:var(--bg);padding:18px 16px 15px}
-h1{font-size:21px;margin:0;font-family:var(--cond);font-weight:600;letter-spacing:.01em}
-.sub{color:var(--mute);font-size:13px;margin-top:3px}
-/* Sekcje = pasma. Bez ramek, rozdzielone linia 1 px, oddech miedzy nimi. */
-.c{padding:18px 16px;margin:0;border-bottom:1px solid var(--line);background:var(--bg)}
+a{color:var(--accent)}
+.w{padding-bottom:40px}
+/* --- PASEK GORNY: ciemny, pelna szerokosc; lewo tytul+IP, prawo pigulki statusu --- */
+.top{background:var(--panel);color:var(--bg)}
+.topin{max-width:1060px;margin:0 auto;padding:13px 18px;display:flex;flex-wrap:wrap;
+  gap:10px 16px;align-items:center;justify-content:space-between}
+.title{font-family:var(--cond);font-weight:700;font-size:19px;letter-spacing:.01em}
+.top .sub{color:var(--mute);font-size:12px;margin-top:2px}
+.stat{display:flex;flex-wrap:wrap;gap:6px}
+.pill{background:#2A2D30;color:#E7E8E3;border-radius:999px;padding:4px 11px;font-size:12px;
+  font-family:var(--cond);font-weight:600;letter-spacing:.02em;white-space:nowrap}
+.pill.pOn{color:#88CC88}
+.pill.pAp{color:#E7C67A}
+/* --- UKLAD POD PASKIEM --- */
+.layout{max-width:1060px;margin:0 auto}
+#nav{display:none}
+#content{padding:0}
+/* Sekcje jako akordeon (domyslnie = telefon) */
+section{background:var(--card);border-bottom:1px solid var(--line)}
+.sechead{width:100%;display:flex;justify-content:space-between;align-items:center;gap:10px;
+  background:var(--card);border:0;margin:0;padding:16px 18px;cursor:pointer;text-align:left;
+  font-family:var(--cond);font-weight:600;font-size:16px;color:var(--panel)}
+.hgrp{display:flex;align-items:center;gap:8px}
+.chev{color:var(--mute);font-size:13px;transition:transform .15s}
+section.open .chev{transform:rotate(90deg)}
+.sechead .nb{background:#EDEEE9;color:var(--second);border-radius:999px;padding:1px 9px;font-size:12px;
+  font-family:var(--cond);font-weight:600}
+.nb:empty{display:none}
+.secbody{display:none;padding:0 18px 6px}
+section.open .secbody{display:block}
+.blk{padding:16px 0;border-bottom:1px solid var(--line)}
+.blk:last-child{border-bottom:0}
 h2{font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--second);margin:0 0 12px;
   font-family:var(--cond);font-weight:600}
 label{display:block;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--second);
@@ -125,225 +150,354 @@ button{width:100%;margin-top:14px;padding:11px;border:0;border-radius:8px;backgr
   color:var(--bg);font-weight:600;font-size:15px;cursor:pointer}
 button:active{transform:translateY(1px)}
 button.s{background:var(--card);color:var(--panel);border:1px solid var(--line);margin-top:8px}
+.btnlink{display:block;text-align:center;text-decoration:none;padding:11px;border-radius:8px;
+  background:var(--card);color:var(--panel);border:1px solid var(--line);font-weight:600;font-size:15px}
 .row{display:flex;gap:10px}.row>*{flex:1}
 .hint{font-size:12px;color:var(--second);margin-top:8px}
-.ok{color:var(--ok)}.err{color:var(--err)}
+.ok{color:var(--ok)}.err{color:var(--err)}.warn{color:var(--warn)}
 ul{list-style:none;margin:10px 0 0;padding:0}
 li{padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;cursor:pointer;
   display:flex;justify-content:space-between;align-items:center;background:var(--card)}
 li:hover{border-color:var(--accent)}
 .sig{color:var(--mute);font-size:12px}
 .b{display:inline-block;padding:2px 7px;border-radius:5px;background:#EDEEE9;font-size:11px;color:var(--second)}
-.scr{position:relative;background:#000;border:1px solid var(--line);border-radius:10px;overflow:hidden;
-  aspect-ratio:4/3}
+.scr{position:relative;background:#000;border:1px solid var(--line);border-radius:10px;overflow:hidden;aspect-ratio:4/3}
 .scr img{display:block;width:100%;height:100%;image-rendering:pixelated}
-.tabs{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.live{font-size:11px;font-weight:600;color:var(--ok)}
+.tabs{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .tabs button{flex:1 1 auto;width:auto;margin:0;padding:8px 10px;font-size:12px;font-weight:600;
   font-family:var(--cond);letter-spacing:.02em;background:var(--card);color:var(--panel);border:1px solid var(--line)}
+.tabs.sm button{padding:6px 9px;font-size:11px}
 .tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
-.live{float:right;font-size:11px;font-weight:600;color:var(--ok);letter-spacing:0}
-/* Telefon: pelna szerokosc, wieksze cele dotykowe; komputer: wysrodkowana kolumna. */
+.intline{display:flex;justify-content:space-between;align-items:center;gap:10px;
+  padding:9px 0;border-bottom:1px solid var(--line)}
+.intline:last-child{border-bottom:0}
+.intline .il{font-family:var(--cond);font-weight:600}
+.intline button{width:auto;margin:0;padding:6px 12px;font-size:12px}
+.rgt{display:flex;gap:10px;align-items:center}
+/* Telefon: cele dotykowe pelnej szerokosci — pigulki po 40% */
 @media(max-width:520px){.tabs button{flex:1 1 40%}}
+/* --- KOMPUTER (>=780px): nawigacja boczna + jedna sekcja naraz (SPA) --- */
+@media(min-width:780px){
+ .layout{display:flex;align-items:stretch}
+ #nav{display:block;flex:0 0 182px;width:182px;background:var(--panel);padding:12px 0}
+ #content{flex:1;min-width:0;padding:6px 22px 60px}
+ .navitem{display:flex;justify-content:space-between;align-items:center;gap:8px;
+   padding:11px 18px;color:#C7C9C4;font-family:var(--cond);font-weight:600;font-size:15px;
+   cursor:pointer;border-left:3px solid transparent}
+ .navitem:hover{color:#fff;background:#26292C}
+ .navitem.on{color:#fff;background:#26292C;border-left-color:var(--accent)}
+ .navitem .nb{background:var(--accent);color:#fff;border-radius:999px;padding:1px 8px;font-size:11px;
+   font-family:var(--cond);font-weight:600}
+ .sechead{display:none}
+ section{display:none;background:transparent;border-bottom:0}
+ section.active{display:block}
+ .secbody{display:block;padding:0}
+}
 </style><div class=w>
-<div class=top>
-<h1>Pogoda Gdynia + Fotowoltaika</h1>
-<div class=sub>Firmware v<span id=fw>?</span> &middot; <span id=st>...</span></div>
-</div>
+<div class=top><div class=topin>
+ <div>
+  <div class=title>Wyświetlacz łazienkowy</div>
+  <div class=sub id=st>łączę…</div>
+ </div>
+ <div class=stat>
+  <span class="pill pOn" id=onl>● łączę…</span>
+  <span class=pill>FW <span id=fw>?</span> · <span id=stab>stabilna</span></span>
+  <span class=pill>praca <span id=up>—</span></span>
+ </div>
+</div></div>
 
-<div class=c>
-<h2>Ekran urządzenia <span class=live id=live>● na żywo</span></h2>
-<div class=scr><img id=shot alt="wczytuję ekran…"></div>
-<div class=tabs id=tabs></div>
-<div class=hint id=vmsg>Klikaj, żeby przejść na dany ekran — urządzenie też się przełączy.</div>
-<div class=tabs style=margin-top:8px>
-<button class=s style=margin:0 onclick=tap(1)>Dotyk 1× (odśwież ekran)</button>
-<button class=s style=margin:0 onclick=tap(2)>Dotyk 2× (poprzedni)</button>
-</div>
-<div class=hint>Działa jak dotknięcie płytki (pin GPIO7): 1× resetuje odliczanie, 2× cofa ekran.</div>
-</div>
+<div class=layout>
+<nav id=nav>
+ <div class="navitem on" data-sec=ekran>Ekran</div>
+ <div class=navitem data-sec=siec>Sieć</div>
+ <div class=navitem data-sec=lokal>Lokalizacja</div>
+ <div class=navitem data-sec=czuj>Czujniki <span class="nb b-sensors"></span></div>
+ <div class=navitem data-sec=integr>Integracje <span class="nb b-token"></span></div>
+ <div class=navitem data-sec=aktual>Aktualizacje</div>
+ <div class=navitem data-sec=diag>Diagnostyka</div>
+</nav>
 
-<div class=c>
-<h2>Wygląd interfejsu</h2>
-<div class=tabs>
-<button id=thv3 onclick=setTheme(3)>V3 Pasmowy</button>
-<button id=thv1 onclick=setTheme(1)>V1 klasyczny</button>
-<button id=thv2 onclick=setTheme(2)>V2 retro</button>
-</div>
-<div class=hint id=thmsg>Zmiana działa od razu, bez restartu urządzenia.</div>
-</div>
+<div id=content>
 
-<div class=c>
-<h2>Tryb nocny i jasność</h2>
-<label>Tryb nocny — ekran główny zwija się do samego zegara (godziny 0–23)</label>
-<div class=row>
-<div><label>Początek</label><input id=nstart type=number min=0 max=23 step=1></div>
-<div><label>Koniec</label><input id=nend type=number min=0 max=23 step=1></div>
-</div>
-<label>Czas jednego ekranu w rotacji [s] (3–60)</label>
-<input id=dwell type=number min=3 max=60 step=1>
-<label>Jasność podświetlenia (0–255)</label>
-<div class=row>
-<div><label>Dzień</label><input id=blday type=number min=60 max=255 step=1></div>
-<div><label>Półmrok</label><input id=bldim type=number min=30 max=255 step=1></div>
-<div><label>Noc</label><input id=blnight type=number min=15 max=255 step=1></div>
-</div>
-<button onclick=saveTune()>Zapisz ustawienia wyświetlacza</button>
-<div class=hint id=tunmsg>Zmiana działa od razu, bez restartu. Minimalna jasność jest wymuszona
-(dzień 60, półmrok 30, noc 15), żeby nie dało się zgasić ekranu na stałe — urządzenie
-wisi w łazience bez klawiatury.</div>
-</div>
+<section id=sec-ekran class="active open">
+<button class=sechead data-sec=ekran><span>Ekran</span><span class=hgrp><span class=chev>▸</span></span></button>
+<div class=secbody>
+ <div class=blk>
+  <h2>Podgląd ekranu <span class=live id=live>● na żywo</span></h2>
+  <div class=scr><img id=shot alt="wczytuję ekran…"></div>
+  <div class=hint>Zrzut ekranu urządzenia · odśwież co 5 s.</div>
+  <div class=row style=margin-top:10px>
+   <a class=btnlink href="/api/screen" download="ekran.bmp">Pobierz zrzut PNG</a>
+   <button class=s style=margin:0 onclick="$('shot').src='/api/screen?'+Date.now()">Odśwież</button>
+  </div>
+  <div class=row style=margin-top:8px>
+   <button class=s style=margin:0 onclick=tap(1)>Dotyk 1× (odśwież)</button>
+   <button class=s style=margin:0 onclick=tap(2)>Dotyk 2× (poprzedni)</button>
+  </div>
+  <div class=hint>Działa jak dotknięcie płytki (pin GPIO7): 1× resetuje odliczanie, 2× cofa ekran.</div>
+ </div>
 
-<div class=c>
-<h2>Sieć Wi-Fi</h2>
-<button class=s onclick=scan()>Wyszukaj sieci bezprzewodowe</button>
-<ul id=nets></ul>
-<label>Nazwa sieci (SSID)</label><input id=ssid autocapitalize=off autocorrect=off>
-<label>Hasło</label><input id=pass type=password autocapitalize=off autocorrect=off>
-<button onclick=saveWifi()>Zapisz i połącz</button>
-<div class=hint id=wmsg></div>
-</div>
+ <div class=blk>
+  <h2>Przypnij widok</h2>
+  <div class=tabs id=tabs></div>
+  <div class=hint id=vmsg>Klikaj, żeby przejść na dany ekran — urządzenie też się przełączy.</div>
+  <label>Ekrany diagnostyczne</label>
+  <div class="tabs sm" id=tabsd></div>
+ </div>
 
-<div class=c>
-<h2>Lokalizacja pogody</h2>
-<div class=row><input id=q placeholder="np. Gdynia"><button class=s style="flex:0 0 110px;margin:0"
- onclick=geo()>Szukaj</button></div>
-<ul id=locs></ul>
-<div class=hint>Aktualnie: <b id=cur>—</b></div>
-</div>
+ <div class=blk>
+  <h2>Jasność podświetlenia</h2>
+  <div class=tabs id=blpills>
+   <button data-bl=auto onclick="setBl('auto')">Auto (czujnik)</button>
+   <button data-bl=255 onclick="setBl(255)">100%</button>
+   <button data-bl=130 onclick="setBl(130)">51%</button>
+   <button data-bl=45 onclick="setBl(45)">18%</button>
+  </div>
+  <div class=hint>„Auto” oddaje sterowanie czujnikowi światła. Wymuszenie trzyma kilka godzin,
+   potem samo wraca do automatu. Najniższa pozycja to 18% — ekranu nie da się zgasić.</div>
+ </div>
 
-<div class=c>
-<h2>Falownik i instalacja</h2>
-<label>Adres IP falownika (Modbus TCP)</label><input id=mb placeholder="adres z aplikacji FusionSolar">
-<label>Moc szczytowa instalacji [kWp]</label><input id=peak type=number step=0.1 placeholder=6.0>
-<button onclick=saveInv()>Zapisz</button>
-<div class=hint id=imsg></div>
-</div>
+ <div class=blk>
+  <h2>Wygląd interfejsu</h2>
+  <div class=tabs>
+   <button id=thv3 onclick=setTheme(3)>V3 Pasmowy</button>
+   <button id=thv1 onclick=setTheme(1)>V1 klasyczny</button>
+   <button id=thv2 onclick=setTheme(2)>V2 retro</button>
+  </div>
+  <div class=hint id=thmsg>Zmiana działa od razu, bez restartu urządzenia.</div>
+ </div>
 
-<div class=c>
-<h2>MQTT / Home Assistant</h2>
-<label><input type=checkbox id=mqen style="width:auto;margin-right:8px"> Publikuj dane na brokera MQTT</label>
-<label>Adres brokera</label><input id=mqhost placeholder="np. 192.168.1.10 albo homeassistant.local">
-<div class=row>
-<div><label>Port</label><input id=mqport type=number placeholder=1883></div>
-<div><label>Prefiks tematów</label><input id=mqpre placeholder=pogoda-gdynia></div>
-</div>
-<label>Użytkownik (opcjonalnie)</label><input id=mquser autocapitalize=off autocorrect=off>
-<label>Hasło (opcjonalnie)</label><input id=mqpass type=password autocapitalize=off autocorrect=off
- placeholder="(bez zmian)">
-<button onclick=saveMqtt()>Zapisz</button>
-<div class=hint id=qmsg></div>
-<div class=hint>Encje pojawią się w Home Assistancie same (MQTT Discovery) jako jedno
-urządzenie. Puste hasło = bez zmian; wpisz <b>-</b>, żeby je skasować.</div>
-</div>
+ <div class=blk>
+  <h2>Tryb nocny i jasność automatu</h2>
+  <label>Tryb nocny — ekran główny zwija się do samego zegara (godziny 0–23)</label>
+  <div class=row>
+   <div><label>Początek</label><input id=nstart type=number min=0 max=23 step=1></div>
+   <div><label>Koniec</label><input id=nend type=number min=0 max=23 step=1></div>
+  </div>
+  <label>Czas jednego ekranu w rotacji [s] (3–60)</label>
+  <input id=dwell type=number min=3 max=60 step=1>
+  <label>Jasność automatu LDR (0–255)</label>
+  <div class=row>
+   <div><label>Dzień</label><input id=blday type=number min=60 max=255 step=1></div>
+   <div><label>Półmrok</label><input id=bldim type=number min=30 max=255 step=1></div>
+   <div><label>Noc</label><input id=blnight type=number min=15 max=255 step=1></div>
+  </div>
+  <button onclick=saveTune()>Zapisz ustawienia wyświetlacza</button>
+  <div class=hint id=tunmsg>Zmiana działa od razu, bez restartu. Minimalna jasność jest wymuszona
+   (dzień 60, półmrok 30, noc 15), żeby nie dało się zgasić ekranu na stałe — urządzenie
+   wisi w łazience bez klawiatury.</div>
+ </div>
 
-<div class=c>
-<h2>Czujniki Bluetooth</h2>
-<div class=hint>Xiaomi LYWSD03MMC. Fabryczny firmware szyfruje dane — wtedy potrzebny
-jest klucz (bindkey) z chmury Xiaomi. Klucz zostaje w pamięci urządzenia i nigdy
-nie opuszcza sieci domowej.</div>
-<ul id=bles></ul>
-<div class=hint id=bmsg></div>
-<label>Bramki BLE — adresy (opcjonalnie)</label>
-<div id=gws></div>
-<button class=s onclick=saveGw()>Zapisz bramki</button>
-<div class=hint id=gmsg></div>
-<div class=hint>Bluetooth nie ma sieci kratowej — czujnik musi dosięgnąć odbiornika.
-Shelly stojący bliżej przekazuje ramki przez WiFi. Klucze zostają tutaj: bramka
-widzi wyłącznie szyfrogram.</div>
+ <div class=blk>
+  <h2>Integracje — skrót</h2>
+  <div class=intline><span class=il>Falownik</span><span class=sig id=sInv>—</span></div>
+  <div class=intline><span class=il>Piec Viessmann</span><span class=rgt>
+   <span class=sig id=sVi>—</span><button class=s onclick=viLink()>Odnów</button></span></div>
+  <div class=intline><span class=il>MQTT</span><span class=sig id=sMqtt>—</span></div>
+  <div class=hint>Pełne ustawienia tych integracji są w zakładce „Integracje”.</div>
+ </div>
 </div>
+</section>
 
-<div class=c>
-<h2>Licznik gazu — kontrola pieca</h2>
-<div class=hint>Piec podaje własne zużycie, ale jego liczniki miesięczny i roczny
-są zepsute (sprawdzone: miesiąc pokazywał mniej niż ostatnie 7 dni, rok 5,3 m³ po
-czterech latach). Wiarygodna jest tylko doba — więc zbieramy ją sami, dzień po dniu.
-Wpisz stan licznika przy odczycie, a urządzenie porówna go z sumą z pieca za ten
-sam okres.</div>
-<div class=row>
-<input id=mdate type=date>
-<input id=mval type=number step=0.001 placeholder="stan licznika [m³]">
+<section id=sec-siec>
+<button class=sechead data-sec=siec><span>Sieć</span><span class=hgrp><span class=chev>▸</span></span></button>
+<div class=secbody>
+ <div class=blk>
+  <h2>Sieć Wi-Fi</h2>
+  <button class=s onclick=scan()>Wyszukaj sieci bezprzewodowe</button>
+  <ul id=nets></ul>
+  <label>Nazwa sieci (SSID)</label><input id=ssid autocapitalize=off autocorrect=off>
+  <label>Hasło</label><input id=pass type=password autocapitalize=off autocorrect=off>
+  <button onclick=saveWifi()>Zapisz i połącz</button>
+  <div class=hint id=wmsg></div>
+ </div>
 </div>
-<button class=s onclick=addMeter()>Dodaj odczyt</button>
-<div class=hint id=mmsg></div>
-<ul id=meters></ul>
-</div>
+</section>
 
-<div class=c>
-<h2>Piec Viessmann</h2>
-<div class=hint>Twój Vitodens nie wystawia niczego w sieci lokalnej (sprawdzone: zero
-otwartych portów) — jedyna droga to chmura ViCare. Client ID weź z
-<a href="https://app.developer.viessmann-climatesolutions.com" target=_blank
- style="color:#2563C4">portalu deweloperskiego</a>. Jest publiczny; token dostępu
-zostaje wyłącznie w pamięci urządzenia.</div>
-<label>Client ID</label><input id=vicid autocapitalize=off autocorrect=off
- placeholder="np. 962d...b35ce">
-<button class=s onclick=viLink()>1. Zapisz i wygeneruj link autoryzacyjny</button>
-<div class=hint id=vimsg></div>
-<div id=viauth style="display:none">
- <a id=vihref target=_blank style="color:#2563C4;font-weight:600">
-  2. Otwórz i zaloguj się do Viessmann →</a>
- <div class=hint>Po zalogowaniu przeglądarka wróci tutaj sama i zapisze dostęp.
- Kod autoryzacyjny żyje 20 sekund, więc nie zwlekaj.</div>
+<section id=sec-lokal>
+<button class=sechead data-sec=lokal><span>Lokalizacja</span><span class=hgrp><span class=chev>▸</span></span></button>
+<div class=secbody>
+ <div class=blk>
+  <h2>Lokalizacja pogody</h2>
+  <div class=row><input id=q placeholder="np. Gdynia"><button class=s style="flex:0 0 110px;margin:0"
+   onclick=geo()>Szukaj</button></div>
+  <ul id=locs></ul>
+  <div class=hint>Aktualnie: <b id=cur>—</b></div>
+ </div>
 </div>
-<div class=hint id=vistat></div>
-<button class=s onclick=viForget()>Odłącz piec</button>
-</div>
+</section>
 
-<div class=c>
-<h2>Radar opadów</h2>
-<div class=hint>Ekran radaru pojawia się w rotacji tylko wtedy, gdy realnie pada.
-Symulacja pokazuje sztuczny front — do obejrzenia, jak wygląda wizualizacja.</div>
-<div class=row>
-<button class=s style=margin:0 onclick="demo(1)">Włącz symulację</button>
-<button class=s style=margin:0 onclick="demo(0)">Wyłącz</button>
+<section id=sec-czuj>
+<button class=sechead data-sec=czuj><span>Czujniki</span><span class=hgrp><span class="nb b-sensors"></span><span class=chev>▸</span></span></button>
+<div class=secbody>
+ <div class=blk>
+  <h2>Czujniki Bluetooth</h2>
+  <div class=hint>Xiaomi LYWSD03MMC. Fabryczny firmware szyfruje dane — wtedy potrzebny
+   jest klucz (bindkey) z chmury Xiaomi. Klucz zostaje w pamięci urządzenia i nigdy
+   nie opuszcza sieci domowej.</div>
+  <ul id=bles></ul>
+  <div class=hint id=bmsg></div>
+ </div>
+ <div class=blk>
+  <h2>Bramki BLE</h2>
+  <label>Bramki BLE — adresy (opcjonalnie)</label>
+  <div id=gws></div>
+  <button class=s onclick=saveGw()>Zapisz bramki</button>
+  <div class=hint id=gmsg></div>
+  <div class=hint>Bluetooth nie ma sieci kratowej — czujnik musi dosięgnąć odbiornika.
+   Shelly stojący bliżej przekazuje ramki przez WiFi. Klucze zostają tutaj: bramka
+   widzi wyłącznie szyfrogram.</div>
+ </div>
 </div>
-<div class=hint id=dmsg></div>
-</div>
+</section>
 
-<div class=c>
-<h2>Aktualizacje</h2>
-<div class=hint>Urządzenie samo sprawdza GitHub co 15 minut.</div>
-<button class=s onclick=upd()>Sprawdź teraz</button>
-<div class=hint id=umsg></div>
+<section id=sec-integr>
+<button class=sechead data-sec=integr><span>Integracje</span><span class=hgrp><span class="nb b-token"></span><span class=chev>▸</span></span></button>
+<div class=secbody>
+ <div class=blk>
+  <h2>Falownik i instalacja</h2>
+  <label>Adres IP falownika (Modbus TCP)</label><input id=mb placeholder="adres z aplikacji FusionSolar">
+  <label>Moc szczytowa instalacji [kWp]</label><input id=peak type=number step=0.1 placeholder=6.0>
+  <button onclick=saveInv()>Zapisz</button>
+  <div class=hint id=imsg></div>
+ </div>
+ <div class=blk>
+  <h2>MQTT / Home Assistant</h2>
+  <label><input type=checkbox id=mqen style="width:auto;margin-right:8px"> Publikuj dane na brokera MQTT</label>
+  <label>Adres brokera</label><input id=mqhost placeholder="np. 192.168.1.10 albo homeassistant.local">
+  <div class=row>
+   <div><label>Port</label><input id=mqport type=number placeholder=1883></div>
+   <div><label>Prefiks tematów</label><input id=mqpre placeholder=pogoda-gdynia></div>
+  </div>
+  <label>Użytkownik (opcjonalnie)</label><input id=mquser autocapitalize=off autocorrect=off>
+  <label>Hasło (opcjonalnie)</label><input id=mqpass type=password autocapitalize=off autocorrect=off
+   placeholder="(bez zmian)">
+  <button onclick=saveMqtt()>Zapisz</button>
+  <div class=hint id=qmsg></div>
+  <div class=hint>Encje pojawią się w Home Assistancie same (MQTT Discovery) jako jedno
+   urządzenie. Puste hasło = bez zmian; wpisz <b>-</b>, żeby je skasować.</div>
+ </div>
+ <div class=blk>
+  <h2>Piec Viessmann</h2>
+  <div class=hint>Twój Vitodens nie wystawia niczego w sieci lokalnej (sprawdzone: zero
+   otwartych portów) — jedyna droga to chmura ViCare. Client ID weź z
+   <a href="https://app.developer.viessmann-climatesolutions.com" target=_blank>portalu
+   deweloperskiego</a>. Jest publiczny; token dostępu zostaje wyłącznie w pamięci urządzenia.</div>
+  <label>Client ID</label><input id=vicid autocapitalize=off autocorrect=off
+   placeholder="np. 962d...b35ce">
+  <button class=s onclick=viLink()>1. Zapisz i wygeneruj link autoryzacyjny</button>
+  <div class=hint id=vimsg></div>
+  <div id=viauth style="display:none">
+   <a id=vihref target=_blank style="font-weight:600">2. Otwórz i zaloguj się do Viessmann →</a>
+   <div class=hint>Po zalogowaniu przeglądarka wróci tutaj sama i zapisze dostęp.
+    Kod autoryzacyjny żyje 20 sekund, więc nie zwlekaj.</div>
+  </div>
+  <div class=hint id=vistat></div>
+  <button class=s onclick=viForget()>Odłącz piec</button>
+ </div>
+ <div class=blk>
+  <h2>Licznik gazu — kontrola pieca</h2>
+  <div class=hint>Piec podaje własne zużycie, ale jego liczniki miesięczny i roczny
+   są zepsute (sprawdzone: miesiąc pokazywał mniej niż ostatnie 7 dni, rok 5,3 m³ po
+   czterech latach). Wiarygodna jest tylko doba — więc zbieramy ją sami, dzień po dniu.
+   Wpisz stan licznika przy odczycie, a urządzenie porówna go z sumą z pieca za ten
+   sam okres.</div>
+  <div class=row>
+   <input id=mdate type=date>
+   <input id=mval type=number step=0.001 placeholder="stan licznika [m³]">
+  </div>
+  <button class=s onclick=addMeter()>Dodaj odczyt</button>
+  <div class=hint id=mmsg></div>
+  <ul id=meters></ul>
+ </div>
 </div>
+</section>
 
-<div class=c>
-<h2>Pamięć urządzenia</h2>
-<div class=hint>Wszystkie rodzaje pamięci: pojemność, zajętość, wolne, bufory i podział na partycje OTA.</div>
-<button class=s onclick=mem()>Odczytaj stan pamięci</button>
-<div id=memout style=margin-top:10px></div>
+<section id=sec-aktual>
+<button class=sechead data-sec=aktual><span>Aktualizacje</span><span class=hgrp><span class=chev>▸</span></span></button>
+<div class=secbody>
+ <div class=blk>
+  <h2>Aktualizacje</h2>
+  <div class=hint>Urządzenie samo sprawdza GitHub co 15 minut.</div>
+  <button class=s onclick=upd()>Sprawdź teraz</button>
+  <div class=hint id=umsg></div>
+ </div>
 </div>
+</section>
 
-<div class=c>
-<h2>Diagnostyka</h2>
-<div class=row>
-<button class=s style=margin:0 onclick=dg()>Stan urządzenia</button>
-<button class=s style=margin:0 onclick=lg()>Logi</button>
-<button class=s style=margin:0 onclick=cd()>Zrzut awaryjny</button>
+<section id=sec-diag>
+<button class=sechead data-sec=diag><span>Diagnostyka</span><span class=hgrp><span class=chev>▸</span></span></button>
+<div class=secbody>
+ <div class=blk>
+  <h2>Diagnostyka</h2>
+  <div class=row>
+   <button class=s style=margin:0 onclick=dg()>Stan urządzenia</button>
+   <button class=s style=margin:0 onclick=lg()>Logi</button>
+   <button class=s style=margin:0 onclick=cd()>Zrzut awaryjny</button>
+  </div>
+  <pre id=dbg style="white-space:pre-wrap;font:12px ui-monospace,monospace;color:#6C6F6A;
+   background:#FAFAF8;border:1px solid #D9DCD6;border-radius:8px;padding:10px;margin-top:10px;
+   max-height:300px;overflow:auto"></pre>
+  <div id=cdact style=display:none>
+   <div class="hint err">Surowy zrzut to kopia pamięci urządzenia — mogą w nim być hasła Wi-Fi
+    i MQTT, bindkeye BLE oraz token Viessmanna. Nie wklejaj go do zgłoszeń błędów ani na
+    GitHuba. Zadanie, adres upadku i backtrace widać wyżej i to jest bezpieczne do wklejenia.</div>
+   <div class=row>
+    <button class=s style=margin:0 onclick=cdget()>Pobierz surowy zrzut</button>
+    <button class=s style=margin:0 onclick=cddel()>Skasuj zrzut</button>
+   </div>
+  </div>
+ </div>
+ <div class=blk>
+  <h2>Pamięć urządzenia</h2>
+  <div class=hint>Wszystkie rodzaje pamięci: pojemność, zajętość, wolne, bufory i podział na partycje OTA.</div>
+  <button class=s onclick=mem()>Odczytaj stan pamięci</button>
+  <div id=memout style=margin-top:10px></div>
+ </div>
+ <div class=blk>
+  <h2>Radar opadów — symulacja</h2>
+  <div class=hint>Ekran radaru pojawia się w rotacji tylko wtedy, gdy realnie pada.
+   Symulacja pokazuje sztuczny front — do obejrzenia, jak wygląda wizualizacja.</div>
+  <div class=row>
+   <button class=s style=margin:0 onclick="demo(1)">Włącz symulację</button>
+   <button class=s style=margin:0 onclick="demo(0)">Wyłącz</button>
+  </div>
+  <div class=hint id=dmsg></div>
+ </div>
+ <div class=blk>
+  <h2>Urządzenie</h2>
+  <button class=s onclick=rb()>Restartuj urządzenie</button>
+  <button class=s onclick=fgt()>Zapomnij sieć Wi-Fi</button>
+ </div>
 </div>
-<pre id=dbg style="white-space:pre-wrap;font:12px ui-monospace,monospace;color:#6C6F6A;
- background:#FAFAF8;border:1px solid #D9DCD6;border-radius:8px;padding:10px;margin-top:10px;
- max-height:300px;overflow:auto"></pre>
-<div id=cdact style=display:none>
-<div class="hint err">Surowy zrzut to kopia pamięci urządzenia — mogą w nim być hasła Wi-Fi
- i MQTT, bindkeye BLE oraz token Viessmanna. Nie wklejaj go do zgłoszeń błędów ani na
- GitHuba. Zadanie, adres upadku i backtrace widać wyżej i to jest bezpieczne do wklejenia.</div>
-<div class=row>
-<button class=s style=margin:0 onclick=cdget()>Pobierz surowy zrzut</button>
-<button class=s style=margin:0 onclick=cddel()>Skasuj zrzut</button>
+</section>
+
 </div>
-</div>
-<button class=s onclick=rb()>Restartuj urządzenie</button>
-<button class=s onclick=fgt()>Zapomnij sieć Wi-Fi</button>
 </div>
 </div><script>
 const $=i=>document.getElementById(i);
-const NAMES=['Auto','Retro','Teraz','Godziny','Radar','5 dni','W domu','Piec','Fotowoltaika','Samoloty','Powietrze','Pamięć','Ruch','Statystyki'];
+// V3: jawna mapa etykieta -> indeks widoku (cfg::VIEW_*). Bez "i-1" — indeksy sa dokladnie
+// te, ktore przyjmuje pinView() (WeatherUi.cpp). RETRO=0 i HOURS=2 nie istnieja w V3, wiec
+// ich tu nie ma. Ekrany diagnostyczne to osobna, mniejsza grupa pigulek.
+const VIEWS=[['Auto',-1],['Główny',1],['Radar',3],['5 dni',4],['Prąd',7],['Pokoje',5],['Ogrzewanie',6],['Powietrze',9],['Samoloty',8]];
+const VDIAG=[['Pamięć',10],['Ruch',11],['Statystyki',12]];
 let live=true,pin=-1,theme=3;
 
+function bset(cls,txt){document.querySelectorAll('.'+cls).forEach(e=>e.textContent=txt);}
+
 function tabs(){
- $('tabs').innerHTML=NAMES.map((n,i)=>
-  `<button class="${i-1===pin?'on':''}" onclick="pickView(${i-1})">${n}</button>`).join('');
+ $('tabs').innerHTML=VIEWS.map(([n,i])=>
+  `<button class="${i===pin?'on':''}" onclick="pickView(${i})">${n}</button>`).join('');
+ $('tabsd').innerHTML=VDIAG.map(([n,i])=>
+  `<button class="${i===pin?'on':''}" onclick="pickView(${i})">${n}</button>`).join('');
+}
+async function pickView(i){
+ pin=i;tabs();
+ const nm=[...VIEWS,...VDIAG].find(v=>v[1]===i);
+ $('vmsg').textContent=i<0?'Rotacja automatyczna — dokładnie jak na urządzeniu.'
+  :('Zatrzymane na ekranie: '+(nm?nm[0]:i)+'. Kliknij „Auto”, żeby wznowić rotację.');
+ try{const r=await(await fetch('/api/view?i='+i)).json();pin=r.pin;tabs();}catch(e){}
 }
 function themeUI(){
  $('thv1').className=theme===1?'on':'';
@@ -375,13 +529,37 @@ async function saveTune(){
    :'Nie udało się zapisać.';
  }catch(e){$('tunmsg').className='hint err';$('tunmsg').textContent='Błąd połączenia';}
 }
-async function pickView(i){
- pin=i;tabs();
- $('vmsg').textContent=i<0?'Rotacja automatyczna — dokładnie jak na urządzeniu.'
-  :('Zatrzymane na ekranie: '+NAMES[i+1]+'. Kliknij „Auto”, żeby wznowić rotację.');
- try{const r=await(await fetch('/api/view?i='+i)).json();pin=r.pin;tabs();}catch(e){}
-}
 async function tap(n){try{await fetch('/api/tap?n='+n,{method:'POST'});}catch(e){}}
+// --- JASNOSC: pigulki forsowania podswietlenia (v=auto zwalnia; 255/130/45 forsuja) ---
+function highlightBl(v){document.querySelectorAll('#blpills button').forEach(b=>b.classList.toggle('on',b.dataset.bl===String(v)));}
+async function setBl(v){
+ highlightBl(v);
+ try{
+  if(v==='auto')await fetch('/api/bl?v=auto');            // zwolnij forsowanie -> automat LDR
+  else await fetch('/api/bl?v='+v+'&ms=14400000');        // ~4 h override, sam wygasa
+ }catch(e){}
+}
+// --- NAWIGACJA: komputer = pokaz jedna sekcje; telefon = rozwin/zwin akordeon ---
+function showSection(s){
+ document.querySelectorAll('section').forEach(x=>x.classList.toggle('active',x.id==='sec-'+s));
+ document.querySelectorAll('.navitem').forEach(x=>x.classList.toggle('on',x.dataset.sec===s));
+}
+function toggleSection(s){$('sec-'+s).classList.toggle('open');}
+// --- PASEK STATUSU z /api/diag: praca (uptime) + stabilnosc + skrot falownika ---
+async function diagPills(){
+ try{
+  const d=await(await fetch('/api/diag?'+Date.now())).json();
+  const u=d.uptime_s||0,dd=Math.floor(u/86400),hh=Math.floor(u%86400/3600);
+  $('up').textContent=dd+' d '+hh+' h';
+  if(d.reset)$('stab').textContent=d.reset.was_crash?'po awarii':'stabilna';
+  if(d.pv){
+   const p=d.pv;let t='❌ brak łączności',c='err';
+   if(p.asleep){t='uśpiony (noc)';c='warn';}
+   else if(p.ok_ago_s>=0&&p.ok_ago_s<1800){t='✓ połączony';c='ok';}
+   $('sInv').textContent=t;$('sInv').className='sig '+c;
+  }
+ }catch(e){}
+}
 function kb(b){if(b==null)return '—';if(b>=1048576)return (b/1048576).toFixed(2)+' MB';if(b>=1024)return (b/1024).toFixed(1)+' kB';return b+' B';}
 function memBar(used,total){var p=total>0?Math.round(used/total*100):0;
  return '<div style="height:8px;background:#EDEEE9;border-radius:4px;overflow:hidden;margin:3px 0">'
@@ -461,6 +639,7 @@ document.addEventListener('visibilitychange',()=>{
 async function bles(){
  let r;
  try{r=await(await fetch('/api/ble')).json();}catch(e){return}
+ bset('b-sensors',r.length?String(r.length):'');
  if(!r.length){$('bles').innerHTML='<li>Nie wykryto czujników (nasłuch co 45 s)</li>';return}
  $('bles').innerHTML=r.map((s,i)=>{
   const st = s.valid ? `${s.t.toFixed(1)}°C · ${s.h.toFixed(0)}% · bat ${s.bat}%`
@@ -542,7 +721,15 @@ async function viStat(){
  try{
   const r=await(await fetch('/api/vi')).json();
   $('vicid').value=r.cid||'';
-  if(!r.auth){$('vistat').textContent='Nie autoryzowano.';return;}
+  if(!r.auth){
+   $('vistat').textContent='Nie autoryzowano.';
+   bset('b-token','');
+   $('sVi').textContent='niepodłączony';$('sVi').className='sig';
+   return;
+  }
+  bset('b-token','token '+r.days+' dni');
+  $('sVi').textContent=r.ok?('✓ token '+r.days+' dni'):('token '+r.days+' dni · '+(r.err||'—'));
+  $('sVi').className='sig '+(r.ok?'ok':'warn');
   $('vistat').className='hint ok';
   $('vistat').textContent=r.ok
     ? `Połączono. CWU ${r.dhw.toFixed(1)}°C, zasilanie ${r.sup.toFixed(1)}°C. Autoryzacja ważna jeszcze ${r.days} dni.`
@@ -553,7 +740,7 @@ async function demo(on){
  $('dmsg').textContent='...';
  const r=await(await fetch('/api/radardemo?on='+on)).json();
  $('dmsg').className='hint ok';$('dmsg').textContent=r.msg;
- if(on) pickView(2);
+ if(on) pickView(3);   // VIEW_RADAR=3 (dawniej bledne pickView(2)=VIEW_HOURS, nieobecny w V3)
 }
 async function dg(){$('dbg').textContent=await(await fetch('/api/diag')).text();}
 async function lg(){$('dbg').textContent=await(await fetch('/api/log')).text();}
@@ -578,7 +765,9 @@ async function cddel(){
 async function load(){
  const r=await(await fetch('/api/state')).json();
  $('fw').textContent=r.fw;
- $('st').textContent=r.ap?'tryb konfiguracji':('połączono z '+r.ssid+' · '+r.ip);
+ $('st').textContent=r.ap?'tryb konfiguracji (AP)':(r.ssid+' · '+r.ip);
+ $('onl').textContent=r.ap?'● tryb AP':'● online';
+ $('onl').className='pill '+(r.ap?'pAp':'pOn');
  $('cur').textContent=r.city+' ('+r.lat.toFixed(4)+', '+r.lon.toFixed(4)+')';
  $('ssid').value=r.ssid||'';$('mb').value=r.mb||'';$('peak').value=(r.peak/1000).toFixed(1);
  theme=r.theme||3;themeUI();
@@ -587,6 +776,7 @@ async function load(){
  $('blday').value=r.bl_day;$('bldim').value=r.bl_dim;$('blnight').value=r.bl_night;
  $('mqen').checked=!!r.mq_en;$('mqhost').value=r.mq_host||'';$('mqport').value=r.mq_port||1883;
  $('mqpre').value=r.mq_pre||'';$('mquser').value=r.mq_user||'';$('mqpass').value='';
+ $('sMqtt').textContent=r.mq_en?'włączone':'wyłączone';$('sMqtt').className='sig '+(r.mq_en?'ok':'');
  // Pola generuje JS z tablicy, zeby ich liczba szla za firmware'em, a nie za HTML-em.
  $('gws').innerHTML=(r.blegw||[]).map((h,i)=>
   `<input id=blegw${i} value="${h}" placeholder="${i?'kolejna bramka (opcjonalnie)':'np. 192.168.0.102'}"
@@ -649,9 +839,13 @@ async function fgt(){
  if(!confirm('Usunąć zapisaną sieć Wi-Fi?'))return;
  await fetch('/api/forget',{method:'POST'});location.reload();
 }
+// Wpiecie nawigacji: pozycje sidebaru (komputer) i naglowki sekcji (telefon).
+document.querySelectorAll('.navitem').forEach(a=>a.onclick=()=>showSection(a.dataset.sec));
+document.querySelectorAll('.sechead').forEach(b=>b.onclick=()=>toggleSection(b.dataset.sec));
 (async()=>{
  try{const r=await(await fetch('/api/view')).json();pin=r.pin;}catch(e){}
- tabs();nextShot();await load();bles();viStat();meters();setInterval(bles,20000);setInterval(viStat,30000);
+ tabs();highlightBl('auto');nextShot();await load();bles();viStat();meters();diagPills();
+ setInterval(bles,20000);setInterval(viStat,30000);setInterval(diagPills,60000);
 // Data domyslnie dzisiejsza — odczyt licznika robi sie zwykle w dniu wpisywania.
 $('mdate').value=new Date().toISOString().slice(0,10);
 })();
@@ -1738,10 +1932,22 @@ void apiBacklight() {
     server.send(200, "application/json", "{\"ok\":false,\"msg\":\"brak obslugi\"}");
     return;
   }
+  // Panel V3, pigulka "Auto (czujnik)": zwolnij wymuszenie i oddaj sterowanie automatowi
+  // LDR. testBacklight() nie ma osobnego "zwolnij", wiec forsujemy na 1 ms, nastepny
+  // tickBacklight() kasuje blForceUntil_ i automat wraca (WeatherUi.cpp). Krok rampy to
+  // 6/255, wiec ten jeden takt jest niewidoczny; wartosc 128 nie ma znaczenia.
+  if (server.hasArg("v") && server.arg("v") == "auto") {
+    gBlTest(128, 1);
+    server.send(200, "application/json", "{\"ok\":true,\"v\":\"auto\"}");
+    return;
+  }
   const int v = server.hasArg("v") ? server.arg("v").toInt() : 255;
   long ms = server.hasArg("ms") ? server.arg("ms").toInt() : 5000;
   if (ms < 500) ms = 500;
-  if (ms > 30000) ms = 30000;   // gorny limit, zeby test nie zostal na noc
+  // Panel V3 forsuje jasnosc na kilka godzin: override ma TRZYMAC, dopoki uzytkownik nie
+  // kliknie "Auto". Bezpieczne: najnizsza pigulka to 18% (45/255), NIGDY 0 (ekran wisi
+  // bez klawiatury, czerni nie wolno zatrzasnac), a forsowanie i tak samo wygasa po 6 h.
+  if (ms > 21600000L) ms = 21600000L;   // 6 h sufitu (bylo 30 s, to bylo dla samego testu sprzetu)
   gBlTest(static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v)), static_cast<uint32_t>(ms));
   char buf[96];
   snprintf(buf, sizeof(buf), "{\"ok\":true,\"v\":%d,\"ms\":%ld}",
