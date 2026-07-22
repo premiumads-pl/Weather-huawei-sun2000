@@ -2252,6 +2252,55 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
   const float enterT = clampf(static_cast<float>(nowMs - enterStart_) / cfg::ENTER_ANIM_MS,
                               0.f, 1.f);
 
+  // --- V3: pomijanie przerysowania, gdy nic widocznego sie nie zmienilo -----------
+  // loop() wola render() co ~50 ms i BEZWARUNKOWO wypycha bufor na TFT. Na ciemnym
+  // tle (V1/V2) przepisanie tych samych pikseli jest niewidoczne; na JASNYM ukladzie
+  // V3, na fizycznym ST7789, kazde wypchniecie widac jako blysk odswiezenia — ekran
+  // "mrucze" bez przerwy (zgloszone przez wlasciciela: na V1 to samo bylo widac tylko
+  // przy animacji Mario). V3 czyta SUROWE modele, stale miedzy pobraniami z sieci, wiec
+  // tresc realnie zmienia sie rzadko. Liczymy sygnature tego, co widac; gdy bez zmian —
+  // nie rysujemy i nie wypychamy. Radar (dryf chmur), przejscia i alerty rysuja sie zawsze.
+  if (settings().theme == 3 && view_ != cfg::VIEW_RADAR && !transitioning_ &&
+      !alertActive_ && (nowMs - enterStart_) >= cfg::ENTER_ANIM_MS) {
+    uint32_t sig = 2166136261u;
+    auto mix = [&](uint32_t x) { sig = (sig ^ x) * 16777619u; };
+    mix(view_);
+    const time_t nt = time(nullptr);
+    mix(nt > 1700000000 ? static_cast<uint32_t>(nt / 60) : 0u);   // minuta (zegar)
+    mix(blTarget_);                                               // dzien / polmrok / noc
+    mix(static_cast<uint32_t>(pinned_ + 2));
+    // Ekrany diagnostyczne pokazuja zywe liczby (heap/temp/fps) — odswiezaj co 2 s,
+    // zeby sie aktualizowaly, ale nie 20x/s.
+    if (view_ == cfg::VIEW_MEM || view_ == cfg::VIEW_MOTION || view_ == cfg::VIEW_STATS)
+      mix(nowMs / 2000);
+    mix(static_cast<uint32_t>(static_cast<int>(w.current.tempC * 10)) ^
+        (static_cast<uint32_t>(w.current.weatherCode) << 16) ^ (w.current.isDay ? 1u : 0u));
+    mix(static_cast<uint32_t>(static_cast<int>(w.current.feelsC * 10)) ^
+        (static_cast<uint32_t>(w.current.precipProb) << 8) ^ static_cast<uint32_t>(w.current.humidity));
+    mix(static_cast<uint32_t>(pv.data.powerAcW) ^ (static_cast<uint32_t>(pv.data.gridPowerW) << 1) ^
+        static_cast<uint32_t>(pv.data.energyTodayKwh * 100) ^ (pv.online ? 0x40000000u : 0u));
+    if (air_) mix(air_->sampleEpoch ^ (static_cast<uint32_t>(air_->index) << 24) ^
+                  static_cast<uint32_t>(air_->pm25 * 10));
+    if (roomModel_) {
+      mix(static_cast<uint32_t>(roomModel_->count) | (static_cast<uint32_t>(roomModel_->sensorCount) << 8));
+      for (int i = 0; i < roomModel_->count && i < 6; ++i)
+        mix(static_cast<uint32_t>(static_cast<int>(roomModel_->rows[i].tempC * 10)) ^
+            ((roomModel_->rows[i].ageS / 60) << 16));
+    }
+    if (boiler_) mix(static_cast<uint32_t>(static_cast<int>(boiler_->dhwTempC * 10)) ^
+                     (boiler_->burnerActive ? 1u : 0u) ^
+                     (static_cast<uint32_t>(boiler_->modulationPct) << 8) ^ boiler_->okAt);
+    mix(static_cast<uint32_t>(fl.count) | (static_cast<uint32_t>(fl.total) << 8) | (fl.ready ? 0x10000u : 0u));
+    if (fl.count > 0) mix(static_cast<uint32_t>(fl.list[0].altFt) ^ (static_cast<uint32_t>(fl.list[0].gs) << 16));
+    if (sig == v3Sig_) {
+      tickBacklight();
+      return blCurrent_ != blTarget_;   // dalej tylko po to, by dokonczyc rampe jasnosci
+    }
+    v3Sig_ = sig;
+  } else if (settings().theme == 3) {
+    v3Sig_ = 0xFFFFFFFFu;   // po radarze/przejsciu/alercie wymus przerysowanie nastepnej stabilnej klatki
+  }
+
   // --- rysowanie: dwa pasy po 103 px ---
   // Każdy pas rysuje CAŁĄ klatkę (w globalnym układzie) i wypycha swój kawałek.
   // Sklejenie na y=103 wychodzi piksel w piksel, bo obie iteracje dostają to samo

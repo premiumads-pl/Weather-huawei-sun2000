@@ -255,6 +255,11 @@ class WeatherUi {
   uint32_t blSweepUntil_ = 0;
   uint32_t blSweepStart_ = 0;
 
+  // V3: sygnatura ostatnio narysowanej tresci. Gdy kolejna klatka ma te sama, render()
+  // NIE przerysowuje ekranu (patrz komentarz w render()) — inaczej jasny bufor V3 byl
+  // wypychany 20-30x/s i na ST7789 widac bylo ciagle odswiezanie. 0xFFFFFFFF = "wymus".
+  uint32_t v3Sig_ = 0xFFFFFFFFu;
+
   // temperatura rdzenia ESP32-S3 (odczyt co 2 s)
   float cpuTempC_ = 0.f;
   uint32_t cpuTempAt_ = 0;
