@@ -1045,15 +1045,20 @@ void v3Home(TFT_eSPI& s, const RoomModel* rmp, const RoomHistory* rhp, uint32_t 
     return;
   }
 
-  // ---- GORA: biezace temperatury WIELKA czcionka (f24), 2 kolumny x 2 wiersze ----
+  // ---- GORA: biezace temperatury WIELKA czcionka, 2 kolumny x 2 wiersze ----
   // Wlasciciel: dolna mini-legenda byla nieczytelna. Wartosci ida na gore duzym fontem,
   // a wykres scisniety i zepchniety w dol. Kolejnosc cel = kolejnosc czujnikow (slot):
   // lewa kolumna pierwsze dwa, prawa nastepne dwa. Kolorowa kropka przy nazwie wiaze
   // wartosc z linia na wykresie (legenda wtopiona w naglowki — osobnej juz nie ma).
+  // FONT: temperatura na f20, NIE f24 — f24 to okrojony font ZEGARA (spacja . 0-9 : °,
+  // 14 glifow, BEZ przecinka), wiec "21,2" wyszloby "212". f20 ma pelne 120 glifow.
+  // Po prawej od temperatury: wilgotnosc (gora) + zrodlo sygnalu (dol): przez bramke
+  // Shelly (r.viaGw=true) albo wprost do ESP (false) — wlasciciel chce to rozroznic.
   {
     const int colX[2]     = {grid::MARGIN, grid::W / 2 + 4};   // 7, 164
     const int nameBase[2] = {48, 90};                          // linie bazowe nazw (f13)
-    const int tempBase[2] = {72, 114};                         // linie bazowe wielkich temperatur (f24)
+    const int tempBase[2] = {72, 114};                         // linie bazowe temperatur (f20)
+    const int metaDX      = 70;                                // przesuniecie w prawo: wilgotnosc + zrodlo
     for (int i = 0; i < rm.count && i < 4; ++i) {
       const RoomRow& r = rm.rows[i];
       const int cx = colX[i / 2], row = i % 2;
@@ -1065,14 +1070,22 @@ void v3Home(TFT_eSPI& s, const RoomModel* rmp, const RoomHistory* rhp, uint32_t 
       char tvb[12];
       if (r.hasTemp) { char t[10]; fmt1(t, sizeof(t), r.tempC); snprintf(tvb, sizeof(tvb), "%s°", t); }
       else snprintf(tvb, sizeof(tvb), "-");
-      plex::str(s, plex::f24(), tvb, cx + 11, tempBase[row], (stale || !r.hasTemp) ? col::MUTE : col::PANEL);
+      plex::str(s, plex::f20(), tvb, cx + 11, tempBase[row], (stale || !r.hasTemp) ? col::MUTE : col::PANEL);
+      // Prawa strona komorki: wilgotnosc (gora) + zrodlo (dol). Jest na to miejsce obok f20.
+      if (r.hasHum) {
+        char hm[8];
+        snprintf(hm, sizeof(hm), "%.0f%%", r.humidity);
+        plex::str(s, plex::f13(), hm, cx + metaDX, tempBase[row] - 9, stale ? col::MUTE : col::SECOND);
+      }
+      if (r.hasTemp)
+        plex::str(s, plex::f11(), r.viaGw ? "Shelly" : "ESP", cx + metaDX, tempBase[row] + 2, col::MUTE);
     }
   }
 
   // ---- DOL: wykres SCISNIETY (~50% wysokosci) i zepchniety w dol pod wartosci ----
   // plotX0 zostawia z lewej ~26 px na etykiety osi Y (°C). plotY1=188 trzyma etykiety
   // godzin (y=199) jeszcze w sprite (<206). plotY0=126: obszar zaczyna sie pod blokiem
-  // temperatur (dolny wiersz f24 konczy sie ~119).
+  // temperatur (dolny wiersz f20 + zrodlo konczy sie ~119).
   const int plotX0 = grid::MARGIN + 26;   // 33
   const int plotX1 = grid::DATA_R;         // 313
   const int plotY0 = 126;                  // gora obszaru (pod blokiem wartosci)
