@@ -86,6 +86,20 @@ class WeatherUi {
   // trafiałoby w pustą kartę.
   void prevView();
 
+  // --- NAWIGACJA DOTYKIEM V3 "Pasmowy" (spec 7a) ----------------------------
+  // TYLKO dla theme==3. V1/V2 uzywaja restartHold()/prevView() powyzej bez zmian
+  // (patrz switch dotyku w pogoda-gdynia.ino i galaz theme==3 w render()).
+  // 1x stukniecie: nastepny ekran w PETLI 8 widokow (GLOWNY->RADAR->5 DNI->PRAD->
+  // POKOJE->OGRZEWANIE->POWIETRZE->SAMOLOTY->GLOWNY), z pominieciem niedostepnych
+  // (viewSkipped). Bedac w diagnostyce (STATS/MEM) przelacza miedzy nimi.
+  void touchTapV3();
+  // 2x stukniecie: wejscie/wyjscie z diagnostyki. Z dowolnego widoku -> STATS
+  // (diag 1 "zrodla"); bedac w STATS/MEM -> GLOWNY.
+  void touchDoubleV3();
+  // Znacznik SUROWEGO dotyku (przed rozroznieniem 1x/2x) — do kropki feedbacku V3.
+  // Wolane z petli, gdy touch::pressedRaw(). Samo ustawia czas; kropke rysuje drawV3.
+  void noteRawTouch() { rawTouchMs_ = millis(); }
+
   // Historia 24 h z czujnikow BLE. Wskaznik, a nie kopia — struktura ma 1,7 kB,
   // a przewlekanie jej przez render/paintFrame/drawView tylko po to, zeby doszla
   // do jednego widoku, zasmiecaloby cztery sygnatury.
@@ -231,6 +245,11 @@ class WeatherUi {
   const struct RadarViewModel* radarModel_ = nullptr;
   int8_t pinned_ = -1;  // >=0: ekran zablokowany z panelu WWW
   uint8_t prevView_ = 0;
+  // V3 "Pasmowy" (spec 7a): czas ostatniego STUKNIECIA (do powrotu na GLOWNY po
+  // 60 s ciszy) i ostatniego SUROWEGO dotyku (do kropki feedbacku). 0 = brak.
+  // Czytane WYLACZNIE przy theme==3 — V1/V2 ich nie dotykaja (patrz render()).
+  uint32_t lastTouchMs_ = 0;
+  uint32_t rawTouchMs_ = 0;
   uint32_t viewStart_ = 0;
   uint32_t enterStart_ = 0;
   uint32_t transStart_ = 0;
@@ -355,4 +374,9 @@ class WeatherUi {
   // Podtytuł (sub) niesie powód ciszy falownika — noc, nie awaria.
   void drawNoData(TFT_eSPI& spr, int ox, const char* msg, const char* sub = nullptr);
   uint32_t holdFor(uint8_t view) const;
+
+  // V3: ustaw widok NATYCHMIAST (bez slajdu — V3 tnie, patrz paintFrame), zresetuj
+  // liczniki wejscia i wymus przerysowanie. Zdejmuje pin z panelu (dotyk przejmuje
+  // sterowanie) i gasi ewentualny alert (jak prevView/pinView). Tylko sciezka V3.
+  void setViewV3(uint8_t v);
 };

@@ -59,13 +59,19 @@ constexpr uint16_t ONDARK_DIM  = 0xAD55;  // przygaszony na ciemnym
 // --- SIATKA -------------------------------------------------------------------
 namespace grid {
 constexpr int W = 320, H = 240;
-constexpr int CTX_W = 136;          // ciemna kolumna kontekstu
+// KOLUMNA KONTEKSTU zwezona ze 136 do 120 px (wlasciciel: "odrobine za szeroka",
+// przez co w kolumnie danych nachodzil tekst PV i plakietka POWIETRZE zakrywala
+// etykiete). MARGINESY sciete z 12 do 7 — na 320 px kazdy piksel jest cenny, a
+// projektowe marginesy zjadaly 2x12=24 px szerokosci. Zwezenie CTX_W dotyka TYLKO
+// ekranu glownego/nocnego i planszy alertu (reszta ekranow liczy od MARGIN, nie
+// DATA_L), wiec jest bezpieczne. Kolumna danych rosnie ze 160 do 186 px uzytecznych.
+constexpr int CTX_W = 120;          // ciemna kolumna kontekstu (bylo 136)
 constexpr int DATA_X = CTX_W;       // start jasnej kolumny danych
-constexpr int DATA_W = W - CTX_W;   // 184
-constexpr int MARGIN = 12;          // margines w kolumnie danych
-constexpr int MARGIN_CTX = 10;      // margines w kolumnie kontekstu
-constexpr int DATA_L = DATA_X + MARGIN;      // lewy tekst danych = 148
-constexpr int DATA_R = W - MARGIN;           // prawy tekst danych = 308
+constexpr int DATA_W = W - CTX_W;   // 200
+constexpr int MARGIN = 7;           // margines w kolumnie danych (bylo 12)
+constexpr int MARGIN_CTX = 8;       // margines w kolumnie kontekstu (bylo 10)
+constexpr int DATA_L = DATA_X + MARGIN;      // lewy tekst danych = 127
+constexpr int DATA_R = W - MARGIN;           // prawy tekst danych = 313
 }  // namespace grid
 
 // --- SWIEZOSC DANYCH (system trojstanowy ze specyfikacji) ---------------------

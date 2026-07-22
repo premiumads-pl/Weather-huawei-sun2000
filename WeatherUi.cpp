@@ -2218,6 +2218,21 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
         transitioning_ = false;
         viewStart_ = nowMs;
       }
+    } else if (settings().theme == 3) {
+      // V3 "Pasmowy" (spec 7a): BRAK auto-rotacji. Nawigacja recznie dotykiem
+      // (touchTapV3/touchDoubleV3). Zamiast rotacji: po 60 s BEZ dotyku kazdy widok
+      // wraca do GLOWNEGO (VIEW_NOW). Liczymy od ostatniego STUKNIECIA (lastTouchMs_)
+      // — panel-pin bez dotyku (lastTouchMs_==0) NIE wraca, zeby pin z /api/view dalej
+      // dzialal (twarde ograniczenie 4). GLOWNY sam z siebie nic nie robi.
+      if (view_ != cfg::VIEW_NOW && lastTouchMs_ != 0 &&
+          nowMs - lastTouchMs_ >= 60000UL) {
+        prevView_ = view_;
+        view_ = static_cast<uint8_t>(cfg::VIEW_NOW);
+        viewStart_ = nowMs;
+        enterStart_ = nowMs;
+        v3Sig_ = 0xFFFFFFFFu;
+        lastTouchMs_ = 0;   // juz na GLOWNYM — nie odliczaj w kolko
+      }
     } else if (pinned_ >= 0) {
       // ekran zablokowany — nic nie robimy
     } else if (nowMs - viewStart_ >= holdFor(view_)) {
@@ -2273,6 +2288,10 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
     mix(nt > 1700000000 ? static_cast<uint32_t>(nt / 60) : 0u);   // minuta (zegar)
     mix(blTarget_);                                               // dzien / polmrok / noc
     mix(static_cast<uint32_t>(pinned_ + 2));
+    // Kropka feedbacku dotyku: jej stan (zapalona/zgaszona) wchodzi w sygnature, wiec
+    // render NARYSUJE ja przy zapaleniu i SKASUJE przy zgasnieciu (~600 ms) — inaczej
+    // pominiecie przerysowania zostawiloby ja na ekranie. Rysuje ja drawV3 (WeatherUiV3).
+    mix(rawTouchMs_ != 0 && nowMs - rawTouchMs_ < 600u ? 0xD07u : 0u);
     // Ekrany diagnostyczne pokazuja zywe liczby (heap/temp/fps) — odswiezaj co 2 s,
     // zeby sie aktualizowaly, ale nie 20x/s.
     if (view_ == cfg::VIEW_MEM || view_ == cfg::VIEW_MOTION || view_ == cfg::VIEW_STATS)
@@ -4328,6 +4347,59 @@ void WeatherUi::pinView(int idx) {
   transStart_ = millis();
   enterStart_ = transStart_;
   alertActive_ = false;
+}
+
+// ------------------------------------------------------- NAWIGACJA DOTYKIEM V3 --
+// Cala trojka nizej dziala WYLACZNIE na sciezce theme==3 (wola ja switch dotyku w
+// pogoda-gdynia.ino oraz symulacja z panelu). V1/V2 nie widza tych metod — ich
+// dotyk to nadal restartHold()/prevView(), a rotacja ekranu leci auto (patrz render).
+
+void WeatherUi::setViewV3(uint8_t v) {
+  prevView_ = view_;
+  view_ = v;
+  viewStart_ = millis();
+  enterStart_ = viewStart_;
+  transitioning_ = false;   // V3 nie slajduje — rysuje wprost nowy widok
+  pinned_ = -1;             // dotyk zdejmuje przypiecie z panelu (spec 7a: to OK)
+  alertActive_ = false;     // jak prevView/pinView — jawna nawigacja gasi plansze
+  v3Sig_ = 0xFFFFFFFFu;     // wymus przerysowanie nowego ekranu (omin skip sygnatury)
+}
+
+void WeatherUi::touchTapV3() {
+  lastTouchMs_ = millis();
+  // W diagnostyce 1x przelacza STATS <-> MEM, nie rusza petli glownej (spec 7a).
+  if (view_ == cfg::VIEW_STATS || view_ == cfg::VIEW_MEM) {
+    setViewV3(view_ == cfg::VIEW_STATS ? cfg::VIEW_MEM : cfg::VIEW_STATS);
+    return;
+  }
+  // PETLA 8 WIDOKOW — kolejnosc ze specyfikacji 7a, NIE numeryczna cfg::VIEW_*.
+  // Zrodlo prawdy dla ruchu 1x w V3.
+  static constexpr uint8_t kV3Loop[] = {
+      cfg::VIEW_NOW, cfg::VIEW_RADAR, cfg::VIEW_DAYS, cfg::VIEW_PV,
+      cfg::VIEW_HOME, cfg::VIEW_BOILER, cfg::VIEW_AIR, cfg::VIEW_FLIGHTS};
+  constexpr int kN = sizeof(kV3Loop) / sizeof(kV3Loop[0]);
+  // Znajdz biezacy widok w petli; jesli go tam nie ma (np. RUCH z panelu albo stan
+  // startowy), traktuj jak pozycje GLOWNEGO, wiec pierwszy krok wejdzie za NOW.
+  int idx = 0;
+  for (int i = 0; i < kN; ++i)
+    if (kV3Loop[i] == view_) { idx = i; break; }
+  // Nastepny NIEPOMIJANY (viewSkipped: radar bez opadu, pokoje bez czujnikow, piec
+  // bez autoryzacji, powietrze bez danych — to samo pyta rotacja V1/V2). Do kN krokow;
+  // gdy wszystko inne pominiete, wracamy na biezacy (nie jest pomijany — stoimy na nim).
+  for (int step = 0; step < kN; ++step) {
+    idx = (idx + 1) % kN;
+    if (!viewSkipped(kV3Loop[idx], air_)) break;
+  }
+  setViewV3(kV3Loop[idx]);
+}
+
+void WeatherUi::touchDoubleV3() {
+  lastTouchMs_ = millis();
+  // 2x w diagnostyce wychodzi na GLOWNY; poza nia 2x wchodzi w diagnostyke (STATS).
+  if (view_ == cfg::VIEW_STATS || view_ == cfg::VIEW_MEM)
+    setViewV3(static_cast<uint8_t>(cfg::VIEW_NOW));
+  else
+    setViewV3(static_cast<uint8_t>(cfg::VIEW_STATS));
 }
 
 void WeatherUi::streamScreenshot(WiFiClient& client, const WeatherModel& w, const PvModel& pv,

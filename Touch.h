@@ -24,6 +24,13 @@ enum class Tap { NONE, SINGLE, DOUBLE };
 // nie dalo by sie odroznic go od pierwszej polowy podwojnego.
 Tap poll();
 
+// Surowy stan elektrody Z OSTATNIEGO poll(): true, gdy odczyt jest powyzej progu
+// (palec na pinie) — BEZ czekania na okno rozroznienia 1x/2x, ktore opoznia SINGLE
+// o ~550 ms. Do natychmiastowej kropki feedbacku V3: petla pyta co klatke i zapala
+// kropke, zanim jeszcze wiadomo, czy to bylo pojedyncze czy podwojne. Nie robi
+// wlasnego odczytu ADC — zwraca stan policzony w poll(), wiec MUSI byc wolane PO nim.
+bool pressedRaw();
+
 // Do diagnostyki: surowy odczyt i aktualna linia bazowa.
 uint32_t raw();
 uint32_t baseline();

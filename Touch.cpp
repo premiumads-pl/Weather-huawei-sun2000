@@ -78,6 +78,13 @@ Tap poll() {
   return out;
 }
 
+bool pressedRaw() {
+  // gDown jest aktualizowany na koncu poll() do stanu Z TEJ klatki, wiec zwracamy
+  // surowy stan progu bez ponownego odczytu ADC. Gdy dotyk wylaczony (!gReady),
+  // poll() nie rusza gDown i zostaje false — kropka feedbacku sie nie zapala.
+  return gDown;
+}
+
 uint32_t raw() {
   return gRaw;
 }

@@ -1577,8 +1577,18 @@ void setup() {
 
   portal::setViewHandler([](int i) { ui.pinView(i); },
                          [](int& cur, int& pin) { ui.viewState(cur, pin); });
-  // Panel: przycisk dotyku dziala jak pin GPIO7 (1x restart odliczania, 2x poprzedni).
-  portal::setTapHandler([](int n) { if (n >= 2) ui.prevView(); else ui.restartHold(); });
+  // Panel: przycisk dotyku dziala jak fizyczny pin GPIO7. V3 "Pasmowy" ma wlasna
+  // nawigacje (touchTapV3/touchDoubleV3, spec 7a) — kierujemy tak samo jak dotyk
+  // realny, dokladamy noteRawTouch() zeby kropka feedbacku pokazala sie tez w
+  // podgladzie na zywo. V1/V2 zostaja przy restartHold/prevView bez zmian.
+  portal::setTapHandler([](int n) {
+    if (settings().theme == 3) {
+      ui.noteRawTouch();
+      if (n >= 2) ui.touchDoubleV3(); else ui.touchTapV3();
+    } else {
+      if (n >= 2) ui.prevView(); else ui.restartHold();
+    }
+  });
   // Podswietlenie: test sprzetu + podglad wysterowania (patrz Portal.h).
   portal::setBacklightHandler(
       [](uint8_t v, uint32_t ms) { ui.testBacklight(v, ms); },
@@ -1773,18 +1783,28 @@ void loop() {
   }
 
   // --- dotyk GPIO7 ---
+  // V3 "Pasmowy" (spec 7a) ma WLASNA nawigacje: 1x = nastepny ekran w petli 8
+  // widokow, 2x = wejscie/wyjscie z diagnostyki, powrot na GLOWNY po 60 s ciszy
+  // (to ostatnie zalatwia render()). V1/V2 zostaja przy STARYM zachowaniu:
+  // restartHold (odliczanie od nowa) / prevView (poprzedni) + auto-rotacja.
+  const bool v3nav = settings().theme == 3;
   switch (touch::poll()) {
     case touch::Tap::SINGLE:
-      ui.restartHold();
-      LOG("Dotyk: odliczanie ekranu od nowa");
+      if (v3nav) { ui.touchTapV3();    LOG("Dotyk V3: nastepny ekran"); }
+      else       { ui.restartHold();   LOG("Dotyk: odliczanie ekranu od nowa"); }
       break;
     case touch::Tap::DOUBLE:
-      ui.prevView();
-      LOG("Dotyk x2: poprzedni ekran");
+      if (v3nav) { ui.touchDoubleV3(); LOG("Dotyk V3 x2: diagnostyka"); }
+      else       { ui.prevView();      LOG("Dotyk x2: poprzedni ekran"); }
       break;
     default:
       break;
   }
+  // Kropka feedbacku V3: zapal ja NATYCHMIAST po surowym dotyku elektrody, zanim
+  // minie okno 550 ms rozroznienia 1x/2x. touch::pressedRaw() zwraca stan policzony
+  // w poll() wyzej (bez dodatkowego odczytu ADC). Tylko V3 rysuje kropke, wiec tylko
+  // tu ustawiamy znacznik — rawTouchMs_ w V1/V2 zostaje martwy.
+  if (v3nav && touch::pressedRaw()) ui.noteRawTouch();
 
   // --- autotest diody RGB przy starcie (3 x 500 ms) ---
   // NIE zabiera juz ekranu. Dioda i TFT to osobny sprzet — test jednego nie ma prawa

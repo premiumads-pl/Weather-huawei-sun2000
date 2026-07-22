@@ -268,11 +268,19 @@ void precipChart(TFT_eSPI& s, const WeatherModel& w, int x, int y, int wdt, int 
       const uint16_t cc = h.precipMm >= 0.5f ? col::RAIN : (prob >= 50 ? col::RAIN2 : col::RAIN3);
       s.fillRect(bx, base - bh, bw, bh, cc);
     }
-    // Osie: co trzecia godzina (mockup "15 18 21 0 3").
-    if (i % 3 == 0 || i == n - 1) {
+  }
+  // Os czasu: 5 rownych etykiet co 3 h, od pierwszej prognozowanej godziny do +12 h
+  // (np. 10 · 13 · 16 · 19 · 22). Etykiety rozstawione po szerokosci, ostatnia na
+  // prawej krawedzi (godzina PO ostatnim slupku) — wlasciciel prosil o "o 1 h dluzej":
+  // wczesniej ostatnia etykieta = ostatni slupek (21), teraz = koniec okna (22).
+  if (w.hours[0].valid) {
+    const int firstH = w.hours[0].hourOfDay;   // +1 h wzgledem teraz (np. 10)
+    for (int k = 0; k <= 4; ++k) {
       char hb[4];
-      snprintf(hb, sizeof(hb), "%d", w.hours[i].hourOfDay);
-      plex::strCenter(s, plex::f10(), hb, bx + bw / 2, base + 11, col::MUTE);
+      snprintf(hb, sizeof(hb), "%d", (firstH + k * 3) % 24);
+      const int lx = x + (k * wdt) / 4;
+      plex::strCenter(s, plex::f10(), hb, k == 4 ? lx - 6 : (k == 0 ? lx + 6 : lx),
+                      base + 11, col::MUTE);
     }
   }
 }
@@ -344,10 +352,12 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top
     (void)imp;
   }
 
-  // Podpisy - dwa wiersze.
+  // Podpisy - jeden wiersz: "dom" po lewej (bez " kW" — jednostke niesie wielka
+  // liczba wyzej), bilans sieci po prawej. Bez " kW" przy "dom" oba napisy mieszcza
+  // sie obok siebie nawet przy dwucyfrowych wartosciach (wczesniej nachodzily).
   char l1[40];
   fmt1(today, sizeof(today), load / 1000.f);
-  snprintf(l1, sizeof(l1), "dom %s kW", today);
+  snprintf(l1, sizeof(l1), "dom %s", today);
   plex::str(s, plex::f13(), l1, lx, top + 64, col::SECOND);
 
   char l2[48];
@@ -459,10 +469,12 @@ void v3MainBottom(TFT_eSPI& tft, const AirModel* air) {
     char badge[16];
     snprintf(badge, sizeof(badge), "%s · %d", airIndexName(air->index),
              air->hasPm10 ? static_cast<int>(air->pm10 + 0.5f) : static_cast<int>(air->pm25 + 0.5f));
-    const int tw = plex::width(plex::f13(), badge);
-    const int bx = grid::DATA_R - tw - 16;
-    tft.fillRoundRect(bx, 214, tw + 16, 20, 5, bc);
-    plex::str(tft, plex::f13(), badge, bx + 8, 228, col::BG);
+    // Plakietka w f11, nie f13: "BARDZO DOBRE · 11" w f13 bylo tak szerokie, ze
+    // zachodzilo na etykiete POWIETRZE. f11 + wezsza kolumna = obie mieszcza sie obok.
+    const int tw = plex::width(plex::f11(), badge);
+    const int bx = grid::DATA_R - tw - 14;
+    tft.fillRoundRect(bx, 215, tw + 14, 19, 5, bc);
+    plex::str(tft, plex::f11(), badge, bx + 7, 228, col::BG);
   } else {
     freshDot(tft, grid::DATA_R - 3, 224, Fresh::UNKNOWN);
     plex::strRight(tft, plex::f13(), "brak danych", grid::DATA_R - 12, 228, col::MUTE);
@@ -1563,6 +1575,17 @@ void WeatherUi::drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const Weath
       if (isNightNow(blTarget_)) v3MainNight(spr, w);
       else v3Main(spr, w, pv);
       break;
+  }
+
+  // KROPKA FEEDBACKU DOTYKU (spec 7a). Natychmiast po surowym dotyku elektrody —
+  // jeszcze przed rozroznieniem 1x/2x (okno ~550 ms w touch::poll) — w prawym gornym
+  // rogu zapala sie mala kropka: "urzadzenie slyszy". rawTouchMs_ ustawia
+  // noteRawTouch(), wolane z petli gdy touch::pressedRaw(). Rysowana PO widoku, wiec
+  // lezy na wierzchu kazdego ekranu (jasnego i ciemnego radaru). Jej stan jest
+  // wliczony w sygnature V3 (render()), wiec render nie pominie ani zapalenia, ani
+  // zgasniecia. Kolor OK (zielony) — czytelny i na jasnym tle, i na ciemnym radarze.
+  if (rawTouchMs_ != 0 && nowMs - rawTouchMs_ < 600u) {
+    spr.fillCircle(tv3::grid::W - 9, 9, 4, tv3::col::OK);
   }
 }
 
