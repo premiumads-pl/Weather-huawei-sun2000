@@ -838,7 +838,10 @@ void v3Pv(TFT_eSPI& s, const PvModel& pv, const PvHistory& hist) {
   plex::strRight(s, plex::f13(), e2, grid::DATA_R, 48, col::MUTE);
   char tot[24];
   snprintf(tot, sizeof(tot), "łącznie %.0f", pv.data.energyTotalKwh);
-  plex::strRight(s, plex::f13(), tot, grid::DATA_R, 66, col::MUTE);
+  // y=84, nie 66: przy duzym poborze "z sieci −11,5 kW" (x=150) siega w prawo tak
+  // daleko, ze na wspolnym wierszu naslo by na "łącznie". Wlasny wiersz nizej —
+  // wciaz nad wykresem (cy=90).
+  plex::strRight(s, plex::f13(), tot, grid::DATA_R, 84, col::MUTE);
 
   // Wykres doby: produkcja (slupki), pobor (linia).
   const int cx = grid::MARGIN, cy = 90, cw = grid::W - 2 * grid::MARGIN, ch = 84;
@@ -894,7 +897,9 @@ void v3PvBottom(TFT_eSPI& tft, const PvModel& pv) {
   plex::str(tft, plex::f13(), "produkcja", grid::MARGIN + 14, 233, col::SECOND);
   tft.drawFastHLine(120, 230, 12, col::SELF);
   plex::str(tft, plex::f13(), "pobór domu", 136, 233, col::SECOND);
-  plex::strRight(tft, plex::f13(), "reszta doby przed nami", grid::W - grid::MARGIN, 233, col::MUTE);
+  // "reszta doby" zamiast "reszta doby przed nami" — pelny napis naslo by na
+  // "pobór domu" (trzy podpisy w jednym pasku f13 nie miesczą sie w 296 px).
+  plex::strRight(tft, plex::f13(), "reszta doby", grid::W - grid::MARGIN, 233, col::MUTE);
 }
 
 // ============================================================ POKOJE ===========
@@ -1211,10 +1216,12 @@ void v3Flights(TFT_eSPI& s, const FlightModel& fl, uint32_t nowMs) {
 void v3FlightsBottom(TFT_eSPI& tft, const FlightModel& fl) {
   tft.fillRect(0, 206, grid::W, 34, col::BG);
   tft.drawFastHLine(grid::MARGIN, 210, grid::W - 2 * grid::MARGIN, col::LINE);
-  char b[48];
+  char b[56];
   snprintf(b, sizeof(b), "w zasięgu: %d · najbliższe %d · loty do Gdańska", fl.total,
            fl.count > 3 ? 3 : fl.count);
-  plex::str(tft, plex::f13(), b, grid::MARGIN, 228, col::MUTE);
+  // f10, nie f13: pelny podpis w f13 nie miescil sie w 296 px i ucinal "Gdańska"
+  // do "Gdań". Makieta 12 ma tu maly tekst — f10 miesci calosc.
+  plex::str(tft, plex::f10(), b, grid::MARGIN, 228, col::MUTE);
 }
 
 // ============================================================ DIAGNOSTYKA 1 ====
