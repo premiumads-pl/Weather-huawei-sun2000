@@ -381,18 +381,19 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top
   // wyzej, wiec wartosci bez jednostki). produkcja (zielony) · z PV do domu (niebieski)
   // · sieC: pobor (czerwony) albo oddawanie (zielony). Font f11 (waski) — trzy zmieszcza
   // sie w kolumnie danych z zapasem.
+  // Wartosci WYROWNANE DO SEGMENTOW paska (wlasciciel: dawniej trzy liczby upchane od
+  // lewej, kolory NIE w kolejnosci segmentow — "zle poukladane"). Teraz: "z PV" (niebieski)
+  // pod LEWYM segmentem od barX; "→sieć"/"z sieci" (zielony/czerwony) do PRAWEJ krawedzi
+  // paska. Produkcji calkowitej tu nie dublujemy — jest wielka liczba wyzej ("kW produkcji").
+  // Gdy dom pobiera (prod<load): lewy = "z PV" (ile daje PV), prawy = "z sieci" (dobor).
   const bool exporting = expW > 0;
-  char va[10], vb[10], vc[10], sa[16], sb[16], sc[18];
-  fmtKw(va, sizeof(va), prod / 1000.f);
+  char vb[10], vc[10], sb[16], sc[18];
   fmtKw(vb, sizeof(vb), selfUse / 1000.f);
   fmtKw(vc, sizeof(vc), (exporting ? expW : impW) / 1000.f);
-  snprintf(sa, sizeof(sa), "prod %s", va);
   snprintf(sb, sizeof(sb), "z PV %s", vb);
   snprintf(sc, sizeof(sc), "%s %s", exporting ? "→sieć" : "z sieci", vc);
-  int vx = lx;
-  vx += plex::str(s, plex::f11(), sa, vx, top + 66, col::OK) + 8;
-  vx += plex::str(s, plex::f11(), sb, vx, top + 66, col::SELF) + 8;
-  plex::str(s, plex::f11(), sc, vx, top + 66, exporting ? col::OK : col::GRID);
+  plex::str(s, plex::f11(), sb, barX, top + 66, col::SELF);
+  plex::strRight(s, plex::f11(), sc, grid::DATA_R, top + 66, exporting ? col::OK : col::GRID);
   (void)producing;
   (void)gridW;
 }
