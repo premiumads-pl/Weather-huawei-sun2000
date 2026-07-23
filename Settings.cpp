@@ -7,6 +7,7 @@
 #include "PvData.h"
 #include "GasMeter.h"
 #include "RoomHistory.h"
+#include "AirHistory.h"
 
 namespace {
 Settings gSettings;
@@ -612,6 +613,42 @@ void roomHistorySave(const RoomHistory& h) {
     return;
   }
   prefs.putBytes("rh2", &h, sizeof(RoomHistory));
+  prefs.end();
+}
+
+// -------------------------------------- historia jakosci powietrza (7 dni) ----
+// Ten sam wzorzec, co RoomHistory: caly bufor (52 B) do NVS pod wlasnym kluczem
+// "airh", w tej samej przestrzeni "pvday". 52 B raz na 10 min to koszt pomijalny.
+// Rozmiar jest jedynym zabezpieczeniem przed wczytaniem cudzego/starego blobu, wiec
+// asercja pilnuje ukladu: gdy AirHistory sie zmieni, kompilacja padnie z instrukcja
+// podbicia klucza — zamiast po cichu wczytac blob o innym znaczeniu.
+static_assert(sizeof(AirHistory) == 52,
+              "zmienil sie uklad AirHistory - podbij klucz NVS na \"airh2\" "
+              "(kontrola dlugoscia getBytesLength nie rozrozni blobow tej samej dlugosci)");
+
+void airHistoryLoad(AirHistory& h) {
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, true)) {
+    h.reset();
+    return;
+  }
+  const size_t need = sizeof(AirHistory);
+  if (prefs.getBytesLength("airh") == need) {
+    prefs.getBytes("airh", &h, need);
+    Serial.printf("Powietrze: wczytano historie 7 dni (dzien %lu)\n",
+                  static_cast<unsigned long>(h.lastDay));
+  } else {
+    h.reset();
+  }
+  prefs.end();
+}
+
+void airHistorySave(const AirHistory& h) {
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, false)) {
+    return;
+  }
+  prefs.putBytes("airh", &h, sizeof(AirHistory));
   prefs.end();
 }
 

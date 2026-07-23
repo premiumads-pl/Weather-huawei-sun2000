@@ -72,6 +72,28 @@ using tv3::scale5;
 
 float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
+// Pogoda "swieza": pobrana i nie starsza niz 2 cykle odswiezania (2 x WEATHER_REFRESH_MS
+// = 30 min). Po zaniku sieci netTask NIE nadpisuje gWeather — ostatnia prognoza zostaje z
+// ready==true, wiec sam `ready` NIE odroznia swiezej prognozy od godzinami nieaktualnej.
+// Trzeba spojrzec na wiek ostatniego udanego pobrania: diag().weatherOkAt (millis) pisze
+// netTask, odczyt uint32 jest atomowy, a ageMs liczymy ZE ZNAKIEM (idiom ago() z
+// Portal.cpp — po ~49 dniach uint32 sie przekreca, ujemny wiek traktujemy jak "swiezy").
+// TEN SAM wzor, co interpolacja chmur radaru w pogoda-gdynia.ino. Gdy nieswieza, ekrany
+// rysuja "—"/placeholder (makieta 21) zamiast starych liczb — spojnie z Fresh::STALE.
+bool wxFresh() {
+  const uint32_t okAt = diag().weatherOkAt;
+  const int32_t ageMs = static_cast<int32_t>(millis() - okAt);
+  return okAt != 0 && ageMs < static_cast<int32_t>(2 * cfg::WEATHER_REFRESH_MS);
+}
+
+// Stan swiezosci pogody dla kropki freshDot: UNKNOWN gdy nigdy nie pobrano, OK gdy
+// swieza, STALE gdy pobrana ale juz nieaktualna. Jedno zrodlo prawdy dla wszystkich
+// naglowkow pogodowych V3.
+Fresh wxFreshState(const WeatherModel& w) {
+  if (!w.ready) return Fresh::UNKNOWN;
+  return wxFresh() ? Fresh::OK : Fresh::STALE;
+}
+
 // "%.1f" z polskim przecinkiem dziesietnym (mockupy: "3,2 kW", "22,4 st").
 void fmt1(char* b, size_t n, float v) {
   snprintf(b, n, "%.1f", v);
@@ -332,9 +354,13 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top
     return;
   }
 
-  // Falownik ONLINE.
-  const int prod = pv.data.powerAcW;
-  const int load = pv.data.houseLoadW;
+  // Falownik ONLINE. Zaciskamy prod/load do >=0: falownik potrafi na chwile podac
+  // NIESPOJNE dane (np. eksport > produkcja => "zuzycie domu" wychodzi UJEMNE). Wtedy
+  // szerokosc segmentu paska (selfUse/span) stawala sie ujemna i fillRect przelewal pasek
+  // na cala szerokosc — wjazd w lewa, ciemna kolumne (zgloszone przez wlasciciela). Ujemne
+  // przeplywy nie maja sensu fizycznego, wiec tniemy je do 0 u zrodla.
+  const int prod = pv.data.powerAcW < 0 ? 0 : pv.data.powerAcW;
+  const int load = pv.data.houseLoadW < 0 ? 0 : pv.data.houseLoadW;
   const int gridW = pv.data.gridPowerW;   // >0 oddajemy, <0 pobor
   const bool producing = prod >= load && prod > 120;
 
@@ -344,11 +370,21 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top
   snprintf(todayL, sizeof(todayL), "dziś %s kWh", today);
   plex::strRight(s, plex::f13(), todayL, grid::DATA_R, top, col::MUTE);
 
+  // Wielka liczba = przeplyw DOMINUJACY (produkcja gdy produkujemy, inaczej pobor domu).
   char big[16];
   fmt1(big, sizeof(big), (producing ? prod : load) / 1000.f);
   const int bwv = plex::str(s, plex::f20(), big, lx, top + 34, col::PANEL);
   plex::str(s, plex::f13(), producing ? " kW produkcji" : " kW pobór domu",
             lx + bwv, top + 34, col::SECOND);
+  // DRUGA metryka (prawy gorny wiersz): ten drugi przeplyw, zeby ZAWSZE bylo widac i
+  // produkcje, i biezace ZUZYCIE domu (wlasciciel: brakowalo "ile zuzywamy"). Gdy
+  // produkujemy -> "dom {pobor}"; gdy pobieramy -> "PV {produkcja}".
+  {
+    char sv[10], sl[18];
+    fmt1(sv, sizeof(sv), (producing ? load : prod) / 1000.f);
+    snprintf(sl, sizeof(sl), producing ? "dom %s kW" : "PV %s kW", sv);
+    plex::strRight(s, plex::f13(), sl, grid::DATA_R, top + 34, col::MUTE);
+  }
 
   // --- PASEK PRZEPLYWU ENERGII (dynamiczny, wszystkie przypadki) ----------------
   // Rozklad mocy na trzy skladniki:
@@ -368,7 +404,8 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top
   const int barX = lx, barY = top + 44, barW = grid::DATA_R - grid::DATA_L, barH = 8;
   s.fillRect(barX, barY, barW, barH, col::LINE);   // tor (gdy prod=load=0)
   if (span > 0) {
-    const int sw = static_cast<int>(barW * (selfUse / static_cast<float>(span)) + 0.5f);
+    int sw = static_cast<int>(barW * (selfUse / static_cast<float>(span)) + 0.5f);
+    if (sw < 0) sw = 0; else if (sw > barW) sw = barW;   // twardy clamp — pasek nigdy poza tor
     if (sw > 0) s.fillRect(barX, barY, sw, barH, col::SELF);
     if (expW > 0) {
       s.fillRect(barX + sw, barY, barW - sw, barH, col::OK);
@@ -414,7 +451,10 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
     }
   }
 
-  const bool haveWx = w.ready && w.current.valid;
+  // haveWx wymaga TAKZE swiezosci (wxFresh): po zaniku sieci gWeather.ready zostaje
+  // true ze starymi liczbami — bez wxFresh ekran pokazywalby nieaktualna temperature
+  // jako biezaca. Nieswieza/niepobrana -> galaz placeholdera (makieta 21), nie liczby.
+  const bool haveWx = w.ready && w.current.valid && wxFresh();
   if (haveWx) {
     const auto& c = w.current;
 
@@ -457,12 +497,19 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
     // i przezroczyscie, jak chcial wlasciciel.
     wx::glyph(s, c.weatherCode, !c.isDay, 62, 84, 24, false);
   } else {
-    // Mockup 21: pogoda nie pobrana - placeholder zamiast glifu i temperatury.
+    // Mockup 21: pogoda nie pobrana / nieaktualna - placeholder zamiast glifu i temperatury.
     s.drawRect(grid::MARGIN_CTX, 66, 60, 46, col::ONDARK_DIM);
     s.drawFastHLine(grid::MARGIN_CTX + 8, 130, 40, col::ONDARK_DIM);
     s.fillCircle(grid::MARGIN_CTX + 48, 130, 4, col::ONDARK_DIM);
-    plex::str(s, plex::f13(), "czekam na prognozę", grid::MARGIN_CTX, 176, col::ONDARK_DIM);
-    plex::str(s, plex::f13(), "brak internetu", grid::MARGIN_CTX, 194, col::MUTE);
+    // Rozroznienie stanu: mielismy prognoze i sie zestarzala (STALE) vs nigdy nie doszla
+    // (UNKNOWN). "brak internetu" bylby klamstwem, gdy siec dziala, a milczy tylko API.
+    if (w.ready) {
+      plex::str(s, plex::f13(), "prognoza", grid::MARGIN_CTX, 176, col::ONDARK_DIM);
+      plex::str(s, plex::f13(), "nieaktualna", grid::MARGIN_CTX, 194, col::MUTE);
+    } else {
+      plex::str(s, plex::f13(), "czekam na prognozę", grid::MARGIN_CTX, 176, col::ONDARK_DIM);
+      plex::str(s, plex::f13(), "brak internetu", grid::MARGIN_CTX, 194, col::MUTE);
+    }
   }
 
   // --- kolumna danych (jasna): OPAD 12 H ---
@@ -481,11 +528,12 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
       }
     char hint[24];
     if (!w.ready) snprintf(hint, sizeof(hint), "jeszcze nie pobrany");
+    else if (!wxFresh()) snprintf(hint, sizeof(hint), "nieaktualna");
     else if (bestProb >= 20 && bestHour >= 0)
       snprintf(hint, sizeof(hint), "~%d:00 · %d%%", bestHour, bestProb);
     else snprintf(hint, sizeof(hint), "sucho");
     int rx = grid::DATA_R;
-    freshDot(s, rx - 3, 22, w.ready ? Fresh::OK : Fresh::UNKNOWN);
+    freshDot(s, rx - 3, 22, wxFreshState(w));
     rx -= 12;
     plex::strRight(s, plex::f13(), hint, rx, 26, col::MUTE);
   }
@@ -547,15 +595,16 @@ void v3MainNight(TFT_eSPI& s, const WeatherModel& w) {
     }
   }
 
-  // Temperatura na zewnatrz (makieta: "12° na zewnatrz").
-  if (w.ready && w.current.valid) {
+  // Temperatura na zewnatrz (makieta: "12° na zewnatrz"). wxFresh: nieaktualnej pogody
+  // NIE pokazujemy nawet nocnym minimalizmem — lepiej sam zegar niz stara liczba.
+  if (w.ready && w.current.valid && wxFresh()) {
     char tline[24];
     snprintf(tline, sizeof(tline), "%.0f° na zewnątrz", w.current.tempC);
     plex::strCenter(s, plex::f20(), tline, grid::W / 2, 152, col::BG);
   }
 
   // Spodziewany opad: najblizsza godzina z realnym prawdopodobienstwem/iloscia opadu.
-  if (w.ready) {
+  if (w.ready && wxFresh()) {
     int rainHour = -1;
     for (int i = 0; i < WX_HOURS; ++i) {
       const HourSlot& h = w.hours[i];
@@ -759,9 +808,14 @@ void v3RadarBottom(TFT_eSPI& tft, const RadarViewModel* rmp) {
 
 void v3Days(TFT_eSPI& s, const WeatherModel& w) {
   s.fillRect(0, 0, grid::W, 206, col::BG);
+  // Prognoza NIEAKTUALNA (>30 min bez udanego pobrania) liczy sie jak brak: wiersze
+  // pokazuja nazwy dni, ale wartosci -> "-" (font nie ma dlugiego myslnika U+2014, wiec
+  // uzywamy tego samego znaku, co placeholder braku opadu nizej), a kropka naglowka STALE.
+  // Nie dotyczy to przypadku "nigdy nie pobrano" (n==0 nizej -> "Pobieram prognozę...").
+  const bool fresh = w.ready && wxFresh();
   char hr[24] = "";
   if (w.updatedAt[0]) snprintf(hr, sizeof(hr), "prognoza z %.5s", w.updatedAt + 11);
-  lightHeader(s, "5 DNI", w.ready ? hr : nullptr, w.ready ? Fresh::OK : Fresh::UNKNOWN);
+  lightHeader(s, "5 DNI", fresh ? hr : nullptr, wxFreshState(w));
 
   int n = 0;
   float wkMin = 1e9f, wkMax = -1e9f;
@@ -801,7 +855,9 @@ void v3Days(TFT_eSPI& s, const WeatherModel& w) {
     }
     plex::str(s, plex::f20(), dow, grid::MARGIN, y + 8, col::PANEL);
 
-    wx::glyph(s, d.weatherCode, false, 78, y + 4, 9, true);
+    // Glif i KOLOROWY pasek tylko dla swiezej prognozy — nieaktualna zostawia sam
+    // wyszarzony tor (bez sugerowania konkretnej, starej temperatury).
+    if (fresh) wx::glyph(s, d.weatherCode, false, 78, y + 4, 9, true);
 
     // Pasek temperatury na wspolnej skali (plaski kolor wg tempMax). Zwezony ze 96 do 84,
     // zeby oddac szerokosc kolumnom liczb po prawej (temp + opad nie kolidowaly).
@@ -809,7 +865,7 @@ void v3Days(TFT_eSPI& s, const WeatherModel& w) {
     const int xa = barX + static_cast<int>((d.tempMin - wkMin) / (wkMax - wkMin) * barW);
     const int xb = barX + static_cast<int>((d.tempMax - wkMin) / (wkMax - wkMin) * barW);
     s.fillRect(barX, y + 1, barW, 6, col::LINE);
-    s.fillRoundRect(xa, y, (xb - xa > 4 ? xb - xa : 4), 8, 3, tempCol(d.tempMax));
+    if (fresh) s.fillRoundRect(xa, y, (xb - xa > 4 ? xb - xa : 4), 8, 3, tempCol(d.tempMax));
 
     // UKLAD PRAWEJ STRONY (naprawa: "11 mm" nachodzilo na temperature). Dwie ROZLACZNE
     // kolumny wyrownane do prawej:
@@ -819,18 +875,24 @@ void v3Days(TFT_eSPI& s, const WeatherModel& w) {
     // ogole jest. Temperatura wyrownana do prawej do precipL - odstep, rosnie w LEWO (ku
     // paskowi), NIGDY w kolumne opadu. Wszystkie granice liczone z plex::width na zywo.
     char pm[10];
-    const bool hasP = d.precipMm >= 0.1f;
-    if (hasP) snprintf(pm, sizeof(pm), "%.0f mm", d.precipMm);
-    else      snprintf(pm, sizeof(pm), "-");
+    const bool hasP = fresh && d.precipMm >= 0.1f;
+    if (!fresh)    snprintf(pm, sizeof(pm), "-");   // prognoza nieaktualna -> myslnik
+    else if (hasP) snprintf(pm, sizeof(pm), "%.0f mm", d.precipMm);
+    else           snprintf(pm, sizeof(pm), "-");
     plex::strRight(s, plex::f13(), pm, grid::DATA_R, y + 8, hasP ? col::RAIN : col::MUTE);
     const int precipL = grid::DATA_R - plex::width(plex::f13(), "88 mm");
 
     char hi[8], lo[8];
-    snprintf(hi, sizeof(hi), "%.0f°", d.tempMax);
-    snprintf(lo, sizeof(lo), "%.0f°", d.tempMin);
+    if (fresh) {
+      snprintf(hi, sizeof(hi), "%.0f°", d.tempMax);
+      snprintf(lo, sizeof(lo), "%.0f°", d.tempMin);
+    } else {
+      snprintf(hi, sizeof(hi), "-");
+      snprintf(lo, sizeof(lo), "-");
+    }
     const int loX = precipL - 12 - plex::width(plex::f13(), lo);
     plex::str(s, plex::f13(), lo, loX, y + 8, col::MUTE);
-    plex::str(s, plex::f20(), hi, loX - 6 - plex::width(plex::f20(), hi), y + 8, col::PANEL);
+    plex::str(s, plex::f20(), hi, loX - 6 - plex::width(plex::f20(), hi), y + 8, fresh ? col::PANEL : col::MUTE);
     ++r;
   }
 }
@@ -846,7 +908,8 @@ void v3DaysBottom(TFT_eSPI& tft, const WeatherModel& w) {
       if (w.days[i].tempMax > wkMax) wkMax = w.days[i].tempMax;
     }
   tft.drawFastHLine(grid::MARGIN, 210, grid::W - 2 * grid::MARGIN, col::LINE);
-  if (!any) return;
+  // Nieaktualna prognoza -> pusta stopka (bez starej skali min/max), spojnie z "-" w wierszach.
+  if (!any || !(w.ready && wxFresh())) return;
   char lo[8], hi[8];
   snprintf(lo, sizeof(lo), "%.0f°", wkMin);
   snprintf(hi, sizeof(hi), "%.0f°", wkMax);

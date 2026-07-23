@@ -29,6 +29,7 @@
 #include <esp_ota_ops.h>
 
 #include "AirClient.h"
+#include "AirHistory.h"   // gAirHistory.toJson() -> /api/diag.air_hist (sekcja "Powietrze 7 dni")
 #include "Config.h"
 #include "Log.h"
 #include "MqttClient.h"
@@ -252,6 +253,8 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
  <div class=navitem data-sec=siec>Sieć</div>
  <div class=navitem data-sec=lokal>Lokalizacja</div>
  <div class=navitem data-sec=czuj>Czujniki <span class="nb b-sensors"></span></div>
+ <div class=navitem data-sec=klimat>Klimat pokoi</div>
+ <div class=navitem data-sec=air7>Powietrze — 7 dni</div>
  <div class=navitem data-sec=obec>Obecność</div>
  <div class=navitem data-sec=integr>Integracje <span class="nb b-token"></span></div>
  <div class=navitem data-sec=aktual>Aktualizacje</div>
@@ -410,6 +413,42 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
   <div class=hint>Bluetooth nie ma sieci kratowej — czujnik musi dosięgnąć odbiornika.
    Shelly stojący bliżej przekazuje ramki przez WiFi. Klucze zostają tutaj: bramka
    widzi wyłącznie szyfrogram.</div>
+ </div>
+</div>
+</section>
+
+<section id=sec-klimat>
+<button class=sechead data-sec=klimat><span>Klimat pokoi</span><span class=hgrp><span class=chev>▸</span></span></button>
+<div class=secbody>
+ <div class=blk>
+  <h2>Klimat pokoi — ryzyko pleśni <span class=live id=klimatDot></span></h2>
+  <div class=hint>Te same czujniki Bluetooth co w „Czujnikach" i „Na żywo". Dla każdego pokoju
+   liczymy punkt rosy i ryzyko kondensacji/pleśni z <b>bieżących</b> temperatury i wilgotności.
+   <b>To ocena chwilowa (snapshot), nie trend</b> — czy wilgotność rośnie, czy pomieszczenie
+   schnie, tego nie wiemy, bo trend wymagałby historii, której na razie nie zbieramy.</div>
+  <div id=klimatCards></div>
+  <button class=s onclick=klimat()>Odśwież</button>
+  <div class=gnote id=klimatFoot></div>
+ </div>
+</div>
+</section>
+
+<section id=sec-air7>
+<button class=sechead data-sec=air7><span>Powietrze — 7 dni</span><span class=hgrp><span class=chev>▸</span></span></button>
+<div class=secbody>
+ <div class=blk>
+  <h2>Powietrze — 7 dni <span class=live id=air7Dot></span></h2>
+  <div class=hint>Dobowe wartości pyłu z ostatniego tygodnia — z tej samej stacji, co ekran
+   POWIETRZE. Powietrze zmienia się wolno (napływ mas powietrza trwa dobami), dlatego okno
+   7-dniowe pokazuje kierunek lepiej niż pojedynczy odczyt.</div>
+  <div class="tabs sm" id=air7Tabs>
+   <button id=air7bpm25 class=on onclick="air7Metric('pm25')">PM2.5</button>
+   <button id=air7bpm10 onclick="air7Metric('pm10')">PM10</button>
+  </div>
+  <div class=svgwrap id=air7Chart></div>
+  <div id=air7Now style=margin-top:10px></div>
+  <button class=s onclick=air7()>Odśwież</button>
+  <div class=gnote id=air7Foot></div>
  </div>
 </div>
 </section>
@@ -682,12 +721,14 @@ function toggleSection(s){
 function esc(t){return String(t==null?'':t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 // Lazy: ciezsze sekcje (Obecnosc, Zdrowie) laduja sie przy PIERWSZYM pokazaniu, nie na
 // starcie — zeby nie odpalac kilku /api/diag naraz przy wejsciu na panel.
-let obecLoaded=false,healthLoaded=false;
+let obecLoaded=false,healthLoaded=false,klimatLoaded=false,air7Loaded=false;
 function onShown(s){
  liveSync();
  if(typeof shotDot==='function')shotDot();   // podglad wznawia/pauzuje z widocznoscia sekcji Ekran
  if(s==='obec'&&!obecLoaded){obecLoaded=true;obec();}
  if(s==='zdrowie'&&!healthLoaded){healthLoaded=true;health();}
+ if(s==='klimat'&&!klimatLoaded){klimatLoaded=true;klimat();}
+ if(s==='air7'&&!air7Loaded){air7Loaded=true;air7();}
 }
 // --- CIEMNY MOTYW: klasa .dark na <html>, wybor w localStorage (wczesny skrypt u gory
 // juz go zastosowal — tu tylko napis przycisku i przelaczanie na klik). ---
@@ -839,6 +880,102 @@ async function health(){
    +(w.channel?(' · kanał '+w.channel):''),
   (w.rssi!=null&&w.rssi>-75)?'ok':'warn');
  o.innerHTML=h;
+}
+// --- KLIMAT POKOI (task #70): ryzyko plesni liczone z BIEZACYCH temp+RH (snapshot, NIE
+// trend — historii wilgotnosci na razie nie zbieramy). Dane z /api/ble (te same czujniki,
+// co "Czujniki"/"Na zywo"). Punkt rosy wzorem Magnusa. Paski INLINE, zero CDN. Kolory
+// ryzyka to STALE akcenty (czytelne w obu motywach); tlo/tekst/linie uzywaja zmiennych
+// motywu (--bg/--panel/--second/--line/--track), wiec sekcja dziala tez po ciemku. ---
+const KOK='#4D9A4D',KAMBER='#B8901F',KRED='#C04A3A';
+// Punkt rosy — wzor Magnusa: g = ln(RH/100) + a*T/(b+T); Td = b*g/(a-g). a=17.62, b=243.12.
+function dewPoint(t,rh){const a=17.62,b=243.12,g=Math.log(Math.max(rh,1)/100)+a*t/(b+t);return b*g/(a-g);}
+// Poziom 0..3 z RH: <60 spokoj, 60-70 obserwuj, >70 ryzyko; +1 gdy zimno (<18 C) przy
+// wysokim RH (>=60) — zimna sciana skrapla wilgoc. Kolor mapowany z 3 akcentow (KOK/KAMBER/KRED).
+function moldRisk(t,rh){let lvl=rh<60?0:(rh<=70?1:2);if(t!=null&&t<18&&rh>=60)lvl++;return Math.min(lvl,3);}
+async function klimat(){
+ const box=$('klimatCards');box.innerHTML='<div class=hint>Odczytuję…</div>';
+ let b=[];
+ try{b=await(await fetch('/api/ble')).json();}catch(e){box.innerHTML='<div class="hint err">Nie udało się pobrać czujników.</div>';$('klimatFoot').textContent='';return;}
+ const rooms=(b||[]).filter(x=>x.name&&x.valid);
+ if(!rooms.length){
+  box.innerHTML='<div class=gnote>Brak nazwanych czujników z aktualnym odczytem temperatury i wilgotności. Nadaj nazwy w zakładce „Czujniki" — pokoje pojawią się tutaj same.</div>';
+  $('klimatFoot').textContent='';if($('klimatDot'))$('klimatDot').textContent='';return;
+ }
+ rooms.sort((a,c)=>moldRisk(c.t,c.h)-moldRisk(a.t,a.h)||c.h-a.h);   // najgorsze pokoje na gorze
+ const RL=[['spokojnie',KOK],['obserwuj',KAMBER],['ryzyko',KRED],['⚠ wysokie ryzyko',KRED]];
+ box.innerHTML=rooms.map(x=>{
+  const t=x.t,rh=x.h,td=dewPoint(t,rh),lvl=moldRisk(t,rh),cold=t<18&&rh>=60;
+  const rname=RL[lvl][0],rcol=RL[lvl][1],gap=isFinite(td)?(t-td):null,fill=Math.max(3,Math.min(100,rh));
+  let why;
+  if(lvl===0)why='Wilgotność w normie — bez sygnału pleśni. Utrzymuj wietrzenie jak dotąd.';
+  else if(lvl===1)why='Wilgotność podwyższona — obserwuj. '+(cold?'Chłodna ściana sprzyja skraplaniu; ':'')+'wietrz krótko po prysznicu i gotowaniu.';
+  else why='Wysoka wilgotność'+(cold?' przy chłodnej ścianie sprzyja kondensacji na zimnych powierzchniach i ':' sprzyja ')+'pleśni. Wietrz krótko a intensywnie (zwłaszcza po prysznicu); rozważ dogrzanie pomieszczenia, by podnieść temperaturę ścian.';
+  return `<div class=gbox style="margin-top:10px">
+   <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
+    <b style="font-family:var(--cond);font-size:15px;color:var(--panel)">${esc(x.name)}</b>
+    <span style="font-family:var(--cond);font-weight:700;font-size:12px;letter-spacing:.03em;color:${rcol}">${rname.toUpperCase()}</span></div>
+   <div style="color:var(--second);font-size:13px;margin:5px 0 8px">${t.toFixed(1)}°C · wilgotność <b style="color:var(--panel)">${rh.toFixed(0)}%</b> · punkt rosy ${isFinite(td)?td.toFixed(1)+'°C':'—'}${gap!=null?` <span style="color:var(--mute)">· do skroplenia ${gap.toFixed(1)}°C</span>`:''}</div>
+   <div style="height:12px;background:var(--track);border-radius:7px;overflow:hidden"><span style="display:block;height:100%;width:${fill.toFixed(0)}%;background:${rcol};border-radius:7px"></span></div>
+   <div class=gnote style="margin-top:7px">${why}</div>
+  </div>`;
+ }).join('');
+ $('klimatFoot').innerHTML='<b>To ocena bieżąca (snapshot), nie trend.</b> Pokazujemy stan z ostatnich ramek czujników, a nie zmianę w czasie. Punkt rosy liczymy wzorem Magnusa z bieżącej temperatury i wilgotności; „do skroplenia" to zapas między temperaturą powietrza a punktem rosy — im mniejszy, tym łatwiej o rosę na chłodnej ścianie.';
+ if($('klimatDot'))$('klimatDot').textContent='● '+new Date().toLocaleTimeString('pl-PL');
+}
+// --- POWIETRZE — 7 DNI (task #72): dobowy slupkowy wykres PM2.5/PM10 z /api/diag.air_hist.
+// Ksztalt (kontrakt z drugim agentem): air_hist={pm25:[d6..d0],pm10:[..7..],idx:[..7..]},
+// indeks 0 = 6 dni temu, ostatni = dzis; brak dnia = null. Slupki kolorowane wg ARMAAG idx.
+// air_hist DOKLADA drugi agent (logika bufora) — TU tylko KONSUMUJEMY. Gdy go jeszcze NIE MA
+// (d.air_hist undefined) albo wszystkie dni null -> "zbieram dane", panel NIE wywala sie.
+// "Dzis teraz" bierzemy z d.air (biezacy odczyt). Inline SVG, zero CDN. ---
+// ARMAAG 1..6 -> kolor slupka (te same klasy, co ekran POWIETRZE). 0/brak -> wyciszony.
+function airColor(i){return i>=6?'#9A2C22':i===5?KRED:i===4?KAMBER:i===3?'#E0A92E':i===2?'#6FAF3B':i===1?KOK:'var(--mute)';}
+let air7Sel='pm25',air7Cache=null;
+function air7Metric(m){air7Sel=m;$('air7bpm25').className=m==='pm25'?'on':'';$('air7bpm10').className=m==='pm10'?'on':'';if(air7Cache)air7Draw(air7Cache);}
+async function air7(){
+ const c=$('air7Chart');c.innerHTML='<div class=hint>Odczytuję…</div>';
+ let d;
+ try{d=await(await fetch('/api/diag?'+Date.now())).json();}catch(e){c.innerHTML='<div class="hint err">Nie udało się pobrać danych.</div>';return;}
+ air7Cache=d;air7Draw(d);
+ if($('air7Dot'))$('air7Dot').textContent='● '+new Date().toLocaleTimeString('pl-PL');
+}
+function air7Draw(d){
+ const c=$('air7Chart'),h=d.air_hist,nm=air7Sel==='pm25'?'PM2.5':'PM10';
+ // air_hist jeszcze NIE ma w firmware (dokłada drugi agent) -> lagodny stan, nie blad.
+ if(!h||(!Array.isArray(h.pm25)&&!Array.isArray(h.pm10))){
+  c.innerHTML='<div class=gbox>Zbieram dane — wykres zapełni się w ciągu tygodnia. Codziennie dochodzi jeden słupek, aż uzbiera się pełne okno 7 dni.</div>';
+  air7NowLine(d);$('air7Foot').textContent='';return;
+ }
+ const arr=(air7Sel==='pm25'?h.pm25:h.pm10)||[],idx=h.idx||[];
+ const vals=arr.map(v=>(v==null?null:+v)),present=vals.filter(v=>v!=null&&isFinite(v));
+ if(!present.length){
+  c.innerHTML='<div class=gbox>Zbieram dane — wykres zapełni się w ciągu tygodnia. Dla '+nm+' nie ma jeszcze żadnego pełnego dnia.</div>';
+  air7NowLine(d);$('air7Foot').textContent='';return;
+ }
+ const n=vals.length,W=820,H=210,padL=32,padR=8,padB=28,padT=12,gw=(W-padL-padR)/n;
+ const maxv=Math.max(30,...present),yOf=v=>H-padB-(H-padB-padT)*(v/maxv);
+ let bars='',ax='';
+ vals.forEach((v,i)=>{
+  const x=padL+i*gw,bw=gw*0.6,bx=x+(gw-bw)/2,back=n-1-i,lbl=back===0?'dziś':'−'+back;
+  ax+=`<text x="${(x+gw/2).toFixed(1)}" y="${H-9}" font-size="11" fill="var(--mute)" text-anchor="middle">${lbl}</text>`;
+  if(v==null||!isFinite(v)){
+   bars+=`<rect x="${bx.toFixed(1)}" y="${(H-padB-5).toFixed(1)}" width="${bw.toFixed(1)}" height="5" rx="2" fill="var(--line)"/><text x="${(x+gw/2).toFixed(1)}" y="${(H-padB-9).toFixed(1)}" font-size="12" fill="var(--mute)" text-anchor="middle">—</text>`;
+   return;
+  }
+  const y=yOf(v),bh=Math.max(2,H-padB-y),col=airColor(idx[i]);
+  bars+=`<rect x="${bx.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="3" fill="${col}"><title>${lbl}: ${v.toFixed(0)} µg/m³</title></rect><text x="${(x+gw/2).toFixed(1)}" y="${(y-4).toFixed(1)}" font-size="11" fill="var(--second)" text-anchor="middle">${v.toFixed(0)}</text>`;
+ });
+ let grid='';[0,maxv].forEach(gv=>{const yy=yOf(gv);grid+=`<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W-padR}" y2="${yy.toFixed(1)}" stroke="var(--line)"${gv===0?'':' stroke-dasharray="3 3"'}/><text x="${padL-5}" y="${(yy+4).toFixed(1)}" font-size="10" fill="var(--mute)" text-anchor="end">${gv.toFixed(0)}</text>`;});
+ c.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role=img aria-label="Pył ${nm} — 7 dni">${grid}${bars}${ax}</svg><div class=gnote>oś X: dzień (−6 … dziś) · oś Y: µg/m³ · kolor słupka = klasa jakości (ARMAAG) danego dnia · „—" = brak dnia</div>`;
+ air7NowLine(d);
+ $('air7Foot').innerHTML='Słupki to <b>średnie dobowe</b> (jeden dzień = jeden słupek). Powietrze zmienia się wolno, więc kierunek z 7 dni mówi więcej niż pojedynczy pomiar. Dane z tej samej stacji, co ekran POWIETRZE.';
+}
+// "Dzis teraz" — biezacy odczyt z d.air (nie z bufora dobowego); kolor wg indeksu ogolnego.
+function air7NowLine(d){
+ const a=d.air||{},nm=air7Sel==='pm25'?'PM2.5':'PM10',v=(air7Sel==='pm25'?a.pm25:a.pm10);
+ if(v==null){$('air7Now').innerHTML=`<div class=frow><span class=fk>Dziś teraz (${nm})</span><span style="color:var(--mute)">brak bieżącego odczytu</span></div>`;return;}
+ const col=airColor(a.index);
+ $('air7Now').innerHTML=`<div class=frow><span class=fk>Dziś teraz (${nm})</span><span><b style="color:${col}">${(+v).toFixed(0)}</b> µg/m³ <span style="color:var(--mute)">· ${esc(a.station||'stacja')}${a.index_name?' · '+esc(String(a.index_name).toLowerCase()):''}</span></span></div>`;
 }
 // --- PASEK STATUSU z /api/diag: praca (uptime) + stabilnosc + skrot falownika ---
 async function diagPills(){
@@ -1886,6 +2023,16 @@ void apiDiag() {
   } else {
     air["sample_epoch"] = nullptr;
     air["sample_age_s"] = nullptr;
+  }
+
+  // Historia 7-dniowa jakosci powietrza (AirHistory) -> sekcja "Powietrze 7 dni" w panelu.
+  // toJson() daje gotowy {"pm25":[...7...],"pm10":[...],"idx":[...]}; wstrzykujemy jako surowy
+  // JSON. Odczyt bez gLock: bufor to POD (int16/uint8), najgorszy przypadek to chwilowo
+  // niespojna pojedyncza wartosc w wykresie — bez ryzyka crasha (patrz raport AirHistory).
+  {
+    char airHistBuf[200];
+    gAirHistory.toJson(airHistBuf, sizeof(airHistBuf));
+    j["air_hist"] = serialized(airHistBuf);
   }
 
   JsonObject mem = j["mem"].to<JsonObject>();

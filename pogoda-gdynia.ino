@@ -39,6 +39,7 @@
 #include "GasMeter.h"
 #include "Viessmann.h"
 #include "RoomHistory.h"
+#include "AirHistory.h"
 #include "Touch.h"
 
 #include <esp_wifi.h>
@@ -67,6 +68,7 @@ WeatherModel gWeather{};
 PvModel gPv{};
 PvHistory gHist{};
 RoomHistory gRooms{};
+AirHistory gAirHistory{};   // 7-dniowa historia jakosci powietrza (srednie dobowe) — patrz AirHistory.h
 vi::Model gVi{};
 vi::Model uiVi{};
 BurnerHistory gBurner{};
@@ -923,6 +925,17 @@ static void netTask(void*) {
         if (airClient.fetch(tmp)) {
           xSemaphoreTake(gLock, portMAX_DELAY);
           gAir = tmp;
+          // 7-dniowa historia jakosci powietrza (AirHistory). advance() przewija okno
+          // dni (zeruje przespane, zamraza srednia wczoraj), push() dokłada probke do
+          // sredniej DZIS. ntpNow to epoch (nie millis!), sprawdzony > 1700000000 wyzej.
+          // Pod tym samym mutexem co gAir — bufor snapshotuje do NVS blok BLE (nizej),
+          // a panel (Portal.cpp) czyta go z webTaska. push TYLKO gdy mamy OBIE wartosci
+          // PM: accN jest wspolny, wiec 0 z braku danej zanizyloby srednia — uczciwa
+          // dziura (NO_V) jest lepsza niz falszywie niska liczba.
+          gAirHistory.advance(static_cast<uint32_t>(ntpNow));
+          if (tmp.hasPm25 && tmp.hasPm10) {
+            gAirHistory.push(tmp.pm25, tmp.pm10, tmp.index);
+          }
           xSemaphoreGive(gLock);
           nextAirAt = millis() + cfg::AIR_REFRESH_MS;
           diag().airOkAt = millis();
@@ -1180,8 +1193,10 @@ static void netTask(void*) {
         }
         if (static_cast<int32_t>(millis() - nextRoomSaveAt) >= 0) {
           RoomHistory snap = gRooms;
+          AirHistory airSnap = gAirHistory;   // ta sama kadencja 10 min, jeden mutex, snapshot
           xSemaphoreGive(gLock);
           roomHistorySave(snap);          // NVS poza mutexem — zapis trwa
+          airHistorySave(airSnap);        // 7-dniowa historia powietrza (klucz "airh", ~52 B)
           nextRoomSaveAt = millis() + 600000;
           xSemaphoreTake(gLock, portMAX_DELAY);
         }
@@ -1526,6 +1541,7 @@ void setup() {
 
   pvHistoryLoad(gHist);
   roomHistoryLoad(gRooms);
+  airHistoryLoad(gAirHistory);   // 7-dniowa historia jakosci powietrza (klucz "airh")
   uiRooms = gRooms;
   ui.setRoomHistory(&uiRooms);
   gasHistoryLoad(gGas);   // 120 dni logu gazu — bez tego weryfikacja licznika nie ma z czym porownywac

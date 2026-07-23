@@ -220,6 +220,11 @@ void pvHistoryClear();
 void roomHistoryLoad(struct RoomHistory& h);
 void roomHistorySave(const struct RoomHistory& h);
 
+// --- historia jakosci powietrza (7 dni, srednie dobowe; przezywa zanik zasilania) ---
+// Ten sam wzorzec co RoomHistory: caly bufor do NVS pod wlasnym, krotkim kluczem "airh".
+void airHistoryLoad(struct AirHistory& h);
+void airHistorySave(const struct AirHistory& h);
+
 // Dzienny log gazu. Bez utrwalania cala weryfikacja licznika byla martwa: dane
 // zbierane co 3 min ginely przy kazdym restarcie, a porownanie z rachunkiem
 // wymaga tygodni.
