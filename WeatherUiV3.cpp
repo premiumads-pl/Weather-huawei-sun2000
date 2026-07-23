@@ -186,30 +186,10 @@ void wrap2(const pltxt::FontSet& f, const char* src, int w, char* l1, char* l2) 
   snprintf(l2, 48, "%s", src + cut + 1);
 }
 
-// Czy jest noc "do zwiniecia ekranu": ciemno w pokoju (blTarget na poziomie nocnym)
-// ORAZ pora nocna wg zegara (okno edytowalne z panelu, domyslnie 22..6). Bez NTP nie
-// zgadujemy pory — zwracamy false, wiec przy braku czasu zostaje zwykly, dwukolumnowy
-// ekran glowny. Czysty odczyt (time()/blTarget przekazane z metody) — bezpieczny
-// takze w watku zrzutu.
-bool isNightNow(uint8_t blTarget) {
-  // Poziom nocny jest edytowalny z panelu (settings().blNight), wiec gate porownuje z
-  // NIM, nie ze stala cfg::BL_NIGHT — inaczej podbicie jasnosci nocnej w panelu
-  // rozspoiloby "ciemno w pokoju" z decyzja o zwinieciu ekranu do zegara.
-  if (blTarget != settings().blNight) return false;
-  const time_t now = time(nullptr);
-  if (now < 1700000000) return false;
-  struct tm tmv{};
-  localtime_r(&now, &tmv);
-  // Okno nocne z settings (domyslnie 22..6). Trzy przypadki: start>end => okno przez
-  // polnoc (godz. >= start LUB < end); start<end => okno w obrebie doby; start==end =>
-  // okno zdegenerowane, traktujemy jako BRAK nocy (nie "cala doba"), zeby literowka w
-  // panelu nie zwinela ekranu na zawsze.
-  const int h = tmv.tm_hour;
-  const uint8_t s = settings().nightStartH, e = settings().nightEndH;
-  if (s == e) return false;
-  if (s < e) return h >= s && h < e;
-  return h >= s || h < e;
-}
+// isNightNow() przeniesione z tego anonimowego namespace do METODY WeatherUi (definicja
+// tuz przed DISPATCHERAMI nizej). Powod: potrzebuje jej takze render() w WeatherUi.cpp
+// (tryb nocny "dotyk budzi ekran"), a file-static z tego pliku nie da sie stamtad wolac.
+// Logika bez zmian — call-site w drawV3/drawV3Bottom zostaje `isNightNow(blTarget_)`.
 
 // Kolor temperatury - plaskie odcienie z palety (spec: zero gradientow).
 uint16_t tempCol(float c) {
@@ -1635,6 +1615,28 @@ void v3Diag2(TFT_eSPI& s, uint32_t heapNow, float cpuTempC) {
   }
   y += 26;
 
+  // RTC SLOW — pamiec .rtc_noinit przezywajaca restart programowy/OTA (trzyma dlugoterminowe
+  // statystyki PIR/LDR: gPir/gLdr). NIE MA API runtime na jej zajetosc (jak getFreeHeap/
+  // getFreePsram dla RAM/PSRAM), wiec liczymy ja z sizeof znanych struktur, a pojemnosc to
+  // REALNY rozmiar sekcji (7680 B). DOKLADNIE te same liczby, co ekran PAMIEC w V1/V2
+  // (WeatherUi.cpp drawViewMem: used = sizeof(PirRtc)+sizeof(LdrRtc), usable 7680) oraz panel
+  // /api/memfull (Portal.cpp) — zeby TRZY miejsca pokazujace RTC SLOW mowily to samo. UWAGA:
+  // gPvRtc (+40 B, dodane w v113) jest TU i TAM pomijane; policzenie kompletu wymagaloby
+  // ZGODNEJ poprawki we wszystkich trzech miejscach. Pasek jak RAM wyzej i jak RTC w
+  // drawViewMem: udzial WOLNEGO miejsca, zielony (col::OK) — mocno wypelniony == duzo zapasu.
+  plex::str(s, plex::f13(), "RTC SLOW", lx, y, col::PANEL);
+  {
+    const uint32_t used = sizeof(PirRtc) + sizeof(LdrRtc);   // gPir + gLdr (jak drawViewMem/Portal)
+    constexpr uint32_t usable = 7680;   // realny rozmiar .rtc_noinit — stala jak w Portal.cpp
+    char v[40];
+    snprintf(v, sizeof(v), "%lu / %lu B · przeżywa restart",
+             static_cast<unsigned long>(used), static_cast<unsigned long>(usable));
+    plex::strRight(s, plex::f13(), v, rx, y, col::SECOND);
+    tv3::bar(s, lx, y + 4, bw, 7, clampf(1.f - used / static_cast<float>(usable), 0.f, 1.f),
+             col::OK, col::LINE);
+  }
+  y += 26;
+
   // Rysowanie klatki.
   plex::str(s, plex::f13(), "rysowanie klatki", lx, y, col::PANEL);
   {
@@ -1781,6 +1783,32 @@ void v3MotionBottom(TFT_eSPI& tft) {
 }
 
 }  // namespace
+
+// Czy jest teraz noc "do zwiniecia ekranu": ciemno w pokoju (blTarget na poziomie nocnym)
+// ORAZ pora nocna wg zegara (okno edytowalne z panelu, domyslnie 22..6). Bez NTP nie
+// zgadujemy pory — zwracamy false, wiec przy braku czasu zostaje zwykly, dwukolumnowy ekran
+// glowny. Czysty odczyt (time()/blTarget) — bezpieczny takze w watku zrzutu. METODA (nie
+// file-static), bo wolaja ja i drawV3/drawV3Bottom (zegar nocny), i render() (wybudzanie
+// dotykiem w nocy, WeatherUi.cpp). const — nic nie zmienia.
+bool WeatherUi::isNightNow(uint8_t blTarget) const {
+  // Poziom nocny jest edytowalny z panelu (settings().blNight), wiec gate porownuje z NIM,
+  // nie ze stala cfg::BL_NIGHT — inaczej podbicie jasnosci nocnej w panelu rozspoiloby
+  // "ciemno w pokoju" z decyzja o zwinieciu ekranu do zegara.
+  if (blTarget != settings().blNight) return false;
+  const time_t now = time(nullptr);
+  if (now < 1700000000) return false;
+  struct tm tmv{};
+  localtime_r(&now, &tmv);
+  // Okno nocne z settings (domyslnie 22..6). start>end => okno przez polnoc (godz. >= start
+  // LUB < end); start<end => okno w obrebie doby; start==end => okno zdegenerowane =>
+  // traktujemy jako BRAK nocy (nie "cala doba"), zeby literowka w panelu nie zwinela ekranu
+  // na zawsze.
+  const int h = tmv.tm_hour;
+  const uint8_t s = settings().nightStartH, e = settings().nightEndH;
+  if (s == e) return false;
+  if (s < e) return h >= s && h < e;
+  return h >= s || h < e;
+}
 
 // ============================================================ DISPATCHERY ======
 

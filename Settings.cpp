@@ -105,6 +105,7 @@ void Settings::load() {
   String vi = prefs.getString("viinst", "");
   String vg = prefs.getString("vigw", "");
   viAuthAt = prefs.getUInt("viat", 0);
+  viRefreshAt = prefs.getUInt("virt", 0);   // ostatnie udane odswiezenie — patrz Settings.h
   // Bramka 1 czyta sie z tego samego klucza co zawsze - to CALA "migracja" z
   // pojedynczego hosta na liste. Sloty 2..N to nowe klucze; na urzadzeniu sprzed
   // OTA ich nie ma, wiec zostaja puste i lista ma dokladnie jedna, dzialajaca
@@ -322,6 +323,7 @@ void Settings::viSave() {
   prefs.putString("viinst", viInstallation);
   prefs.putString("vigw", viGateway);
   prefs.putUInt("viat", viAuthAt);
+  prefs.putUInt("virt", viRefreshAt);   // ostatnie udane odswiezenie — patrz Settings.h
   prefs.putBool("vien", viEnabled);
   prefs.end();
 }

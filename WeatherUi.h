@@ -252,6 +252,11 @@ class WeatherUi {
   // Czytane WYLACZNIE przy theme==3 — V1/V2 ich nie dotykaja (patrz render()).
   uint32_t lastTouchMs_ = 0;
   uint32_t rawTouchMs_ = 0;
+  // TRYB NOCNY "dotyk budzi ekran" (runtime, NIE zmienia nightStartH/EndH/blNight): true, gdy
+  // render() rysuje TERAZ przygaszony zegar nocny i czeka na wybudzenie. Ustawia je render()
+  // co klatke; czyta touchTapV3/touchDoubleV3 — pierwszy dotyk w nocy ma WYBUDZIC na Glowny
+  // (jasnosc kNightWakeBl), a nie przeskoczyc ekranu. Patrz render()/isNightNow().
+  bool nightAsleep_ = false;
   uint32_t viewStart_ = 0;
   uint32_t enterStart_ = 0;
   uint32_t transStart_ = 0;
@@ -361,6 +366,11 @@ class WeatherUi {
               uint32_t nowMs, uint32_t heapNow);
   void drawV3Bottom(TFT_eSPI& tft, uint8_t view, const WeatherModel& w, const PvModel& pv,
                     const FlightModel& fl, uint32_t nowMs, uint32_t heapNow);
+  // Czy teraz noc "do zwiniecia ekranu" (ciemno == blTarget na poziomie blNight + pora nocna
+  // z okna nightStartH/EndH). Definicja w WeatherUiV3.cpp. Metoda, a nie file-static tamtego
+  // pliku, bo wolaja ja ZAROWNO drawV3/drawV3Bottom (zegar nocny) jak i render() (tryb nocny
+  // "dotyk budzi ekran"). const — czysty odczyt time()/settings().
+  bool isNightNow(uint8_t blTarget) const;
   // Pozycja biezacego widoku w petli V3 (kV3Loop) wsrod niepomijanych — zrodlo dla
   // paska postepu (2 px) rysowanego na gorze drawV3(). false = widok spoza petli
   // (diagnostyka) => paska nie rysujemy. Definicja w WeatherUi.cpp, gdzie zyje kV3Loop.

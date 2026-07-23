@@ -102,15 +102,24 @@ const char PAGE[] PROGMEM = R"HTML(<!doctype html><html lang=pl><meta charset=ut
    typografia kondensowana w naglowkach, paleta ze specyfikacji projektanta. Uklad z Fazy 2:
    pasek statusu + (komputer) nawigacja boczna / (telefon) akordeon. Ta sama rodzina co ekran. */
 *{box-sizing:border-box}
+/* MOTYW: jasny domyslnie. Ciemny wariant = klasa .dark na <html> (przelacznik w pasku
+   statusu, wybor zapisany w localStorage). Zmienne kolorow flipuja sie w bloku .dark
+   nizej. Uwaga na podzial: --panel to KOLOR TEKSTU (ciemny w jasnym, jasny w ciemnym),
+   a pasek gorny i nawigacja stoja na osobnym --chrome, ktory ZOSTAJE ciemny w obu
+   trybach (dlatego przycisk primary ma wlasne --btnbg/--btnfg, a nie var(--panel)). */
 :root{--bg:#F4F4F0;--panel:#1A1C1E;--second:#6C6F6A;--mute:#9A9C96;--line:#D9DCD6;
   --card:#FFFFFF;--accent:#2563C4;--ok:#4D9A4D;--warn:#B8901F;--warnbg:#F3E4C2;--err:#C04A3A;
+  --chrome:#1A1C1E;--chrometxt:#F4F4F0;--btnbg:#1A1C1E;--btnfg:#F4F4F0;--track:#EDEEE9;--code:#FAFAF8;
   --cond:"IBM Plex Sans Condensed","Roboto Condensed","Arial Narrow",system-ui,sans-serif}
+.dark{--bg:#14161A;--panel:#E8E8E4;--second:#B7BAB3;--mute:#8C8F89;--line:#2C3038;
+  --card:#1E2126;--accent:#5B8DEF;--ok:#63B863;--warn:#D6A93A;--warnbg:#33290F;--err:#E06657;
+  --chrome:#0E1013;--chrometxt:#F1F1ED;--btnbg:#E8E8E4;--btnfg:#16181C;--track:#2A2E35;--code:#0E1013}
 body{margin:0;background:var(--bg);color:var(--panel);
   font:15px/1.5 -apple-system,system-ui,Segoe UI,Roboto,sans-serif}
 a{color:var(--accent)}
 .w{padding-bottom:40px}
 /* --- PASEK GORNY: ciemny, pelna szerokosc; lewo tytul+IP, prawo pigulki statusu --- */
-.top{background:var(--panel);color:var(--bg)}
+.top{background:var(--chrome);color:var(--chrometxt)}
 .topin{max-width:1060px;margin:0 auto;padding:13px 18px;display:flex;flex-wrap:wrap;
   gap:10px 16px;align-items:center;justify-content:space-between}
 .title{font-family:var(--cond);font-weight:700;font-size:19px;letter-spacing:.01em}
@@ -132,7 +141,7 @@ section{background:var(--card);border-bottom:1px solid var(--line)}
 .hgrp{display:flex;align-items:center;gap:8px}
 .chev{color:var(--mute);font-size:13px;transition:transform .15s}
 section.open .chev{transform:rotate(90deg)}
-.sechead .nb{background:#EDEEE9;color:var(--second);border-radius:999px;padding:1px 9px;font-size:12px;
+.sechead .nb{background:var(--track);color:var(--second);border-radius:999px;padding:1px 9px;font-size:12px;
   font-family:var(--cond);font-weight:600}
 .nb:empty{display:none}
 .secbody{display:none;padding:0 18px 6px}
@@ -146,8 +155,8 @@ label{display:block;font-size:11px;letter-spacing:.05em;text-transform:uppercase
 input,select{width:100%;padding:10px 12px;background:var(--card);border:1px solid var(--line);
   border-radius:8px;color:var(--panel);font-size:15px}
 input:focus,select:focus{outline:none;border-color:var(--accent)}
-button{width:100%;margin-top:14px;padding:11px;border:0;border-radius:8px;background:var(--panel);
-  color:var(--bg);font-weight:600;font-size:15px;cursor:pointer}
+button{width:100%;margin-top:14px;padding:11px;border:0;border-radius:8px;background:var(--btnbg);
+  color:var(--btnfg);font-weight:600;font-size:15px;cursor:pointer}
 button:active{transform:translateY(1px)}
 button.s{background:var(--card);color:var(--panel);border:1px solid var(--line);margin-top:8px}
 .btnlink{display:block;text-align:center;text-decoration:none;padding:11px;border-radius:8px;
@@ -160,7 +169,7 @@ li{padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-botto
   display:flex;justify-content:space-between;align-items:center;background:var(--card)}
 li:hover{border-color:var(--accent)}
 .sig{color:var(--mute);font-size:12px}
-.b{display:inline-block;padding:2px 7px;border-radius:5px;background:#EDEEE9;font-size:11px;color:var(--second)}
+.b{display:inline-block;padding:2px 7px;border-radius:5px;background:var(--track);font-size:11px;color:var(--second)}
 .scr{position:relative;background:#000;border:1px solid var(--line);border-radius:10px;overflow:hidden;aspect-ratio:4/3}
 .scr img{display:block;width:100%;height:100%;image-rendering:pixelated}
 .live{font-size:11px;font-weight:600;color:var(--ok)}
@@ -180,7 +189,7 @@ li:hover{border-color:var(--accent)}
 /* --- KOMPUTER (>=780px): nawigacja boczna + jedna sekcja naraz (SPA) --- */
 @media(min-width:780px){
  .layout{display:flex;align-items:stretch}
- #nav{display:block;flex:0 0 182px;width:182px;background:var(--panel);padding:12px 0}
+ #nav{display:block;flex:0 0 182px;width:182px;background:var(--chrome);padding:12px 0}
  #content{flex:1;min-width:0;padding:6px 22px 60px}
  .navitem{display:flex;justify-content:space-between;align-items:center;gap:8px;
    padding:11px 18px;color:#C7C9C4;font-family:var(--cond);font-weight:600;font-size:15px;
@@ -194,7 +203,35 @@ li:hover{border-color:var(--accent)}
  section.active{display:block}
  .secbody{display:block;padding:0}
 }
-</style><div class=w>
+/* --- Wspolne prymitywy nowych sekcji (Na zywo / Obecnosc / Zdrowie). Wykresy sa
+   INLINE (svg + divy), bez zadnych bibliotek z CDN — urzadzenie bywa offline. --- */
+.pill.tog{cursor:pointer;user-select:none}
+.pill.tog:hover{color:#fff}
+.gcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:10px;margin:6px 0}
+.gcard{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+.gcard .lbl{color:var(--second);font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-family:var(--cond);font-weight:600}
+.gcard .val{font-size:23px;font-weight:600;margin-top:3px;font-family:var(--cond);line-height:1.15}
+.gcard .val small{font-size:13px;color:var(--mute);font-weight:400}
+.gcard.hot .val{color:var(--warn)}
+.gcard.bad .val{color:var(--err)}
+.brow{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:13px}
+.brow .k{width:74px;color:var(--second);font-family:var(--cond)}
+.brow .track{flex:1;height:13px;background:var(--track);border-radius:7px;overflow:hidden}
+.brow .fill{height:100%;border-radius:7px}
+.brow .v{width:66px;text-align:right;color:var(--mute)}
+.gbox{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.5;margin-top:10px}
+.gbox.warn{background:var(--warnbg);border-color:var(--warn);color:var(--panel)}
+.gbox.okb{border-color:var(--ok)}
+.gbox b{font-weight:600}
+.svgwrap svg{display:block;width:100%}
+.gnote{color:var(--mute);font-size:12px;margin-top:6px;line-height:1.5}
+.frow{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:13px}
+.frow:last-child{border-bottom:0}
+.frow .fk{color:var(--second);font-family:var(--cond)}
+</style>
+<script>/* wczesny odczyt motywu — zanim narysuje sie strona, zeby nie mrugalo jasnym */
+try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.classList.add('dark')}catch(e){}</script>
+<div class=w>
 <div class=top><div class=topin>
  <div>
   <div class=title>Wyświetlacz łazienkowy</div>
@@ -204,18 +241,22 @@ li:hover{border-color:var(--accent)}
   <span class="pill pOn" id=onl>● łączę…</span>
   <span class=pill>FW <span id=fw>?</span> · <span id=stab>stabilna</span></span>
   <span class=pill>praca <span id=up>—</span></span>
+  <span class="pill tog" id=thbtn onclick=toggleDark() title="Przełącz jasny/ciemny motyw">◐ Ciemny</span>
  </div>
 </div></div>
 
 <div class=layout>
 <nav id=nav>
  <div class="navitem on" data-sec=ekran>Ekran</div>
+ <div class=navitem data-sec=live>Na żywo</div>
  <div class=navitem data-sec=siec>Sieć</div>
  <div class=navitem data-sec=lokal>Lokalizacja</div>
  <div class=navitem data-sec=czuj>Czujniki <span class="nb b-sensors"></span></div>
+ <div class=navitem data-sec=obec>Obecność</div>
  <div class=navitem data-sec=integr>Integracje <span class="nb b-token"></span></div>
  <div class=navitem data-sec=aktual>Aktualizacje</div>
  <div class=navitem data-sec=diag>Diagnostyka</div>
+ <div class=navitem data-sec=zdrowie>Zdrowie</div>
 </nav>
 
 <div id=content>
@@ -226,7 +267,9 @@ li:hover{border-color:var(--accent)}
  <div class=blk>
   <h2>Podgląd ekranu <span class=live id=live>● na żywo</span></h2>
   <div class=scr><img id=shot alt="wczytuję ekran…"></div>
-  <div class=hint>Zrzut ekranu urządzenia · odśwież co 5 s.</div>
+  <div class=hint><label style="display:inline;text-transform:none;letter-spacing:0;font-family:inherit;color:var(--panel);margin:0">
+   <input type=checkbox id=autoshot checked style="width:auto;margin-right:6px">Auto — odśwież co ~4 s</label>.
+   Następna klatka pobiera się dopiero po załadowaniu poprzedniej (nie równolegle), żeby nie zalewać urządzenia.</div>
   <div class=row style=margin-top:10px>
    <a class=btnlink href="/api/screen" download="ekran.jpg">Pobierz zrzut JPEG</a>
    <button class=s style=margin:0 onclick="$('shot').src='/api/screen?'+Date.now()">Odśwież</button>
@@ -302,6 +345,23 @@ li:hover{border-color:var(--accent)}
 </div>
 </section>
 
+<section id=sec-live>
+<button class=sechead data-sec=live><span>Na żywo</span><span class=hgrp><span class=chev>▸</span></span></button>
+<div class=secbody>
+ <div class=blk>
+  <h2>Na żywo <span class=live id=liveDot>● odświeża co 5 s</span></h2>
+  <div class=hint>Bieżące odczyty prosto z urządzenia. Auto-odświeżanie chodzi TYLKO gdy ta
+   zakładka jest otwarta i karta przeglądarki widoczna — inaczej interwał się zatrzymuje,
+   żeby nie zalewać urządzenia zapytaniami w tle.</div>
+  <div class=gcards id=liveGrid></div>
+  <h2 style=margin-top:14px>Pokoje (czujniki Bluetooth)</h2>
+  <div id=liveRooms></div>
+  <h2 style=margin-top:14px>Świeżość danych</h2>
+  <div id=liveFresh></div>
+ </div>
+</div>
+</section>
+
 <section id=sec-siec>
 <button class=sechead data-sec=siec><span>Sieć</span><span class=hgrp><span class=chev>▸</span></span></button>
 <div class=secbody>
@@ -350,6 +410,38 @@ li:hover{border-color:var(--accent)}
   <div class=hint>Bluetooth nie ma sieci kratowej — czujnik musi dosięgnąć odbiornika.
    Shelly stojący bliżej przekazuje ramki przez WiFi. Klucze zostają tutaj: bramka
    widzi wyłącznie szyfrogram.</div>
+ </div>
+</div>
+</section>
+
+<section id=sec-obec>
+<button class=sechead data-sec=obec><span>Obecność · Światło · Ruch</span><span class=hgrp><span class=chev>▸</span></span></button>
+<div class=secbody>
+ <div class=blk>
+  <h2>Obecność · Światło · Ruch</h2>
+  <div class=hint id=obecSub>łazienka · dane z czujnika ruchu (PIR) i światła (LDR)</div>
+  <div class=gcards id=obecCards></div>
+  <button class=s onclick=obec()>Odśwież dane</button>
+ </div>
+ <div class=blk>
+  <h2>Kiedy najczęściej ktoś jest w łazience</h2>
+  <div class=svgwrap id=obecHourly></div>
+ </div>
+ <div class=blk>
+  <h2>Możliwe zostawione światło</h2>
+  <div id=obecLeft></div>
+ </div>
+ <div class=blk>
+  <h2>Światło — jasno vs ciemno</h2>
+  <div id=obecLight></div>
+ </div>
+ <div class=blk>
+  <h2>Jak długo trwa ruch</h2>
+  <div id=obecDur></div>
+ </div>
+ <div class=blk>
+  <div class=gbox id=obecInsight></div>
+  <div class=gnote id=obecFoot></div>
  </div>
 </div>
 </section>
@@ -445,8 +537,8 @@ li:hover{border-color:var(--accent)}
    <button class=s style=margin:0 onclick=lg()>Logi</button>
    <button class=s style=margin:0 onclick=cd()>Zrzut awaryjny</button>
   </div>
-  <pre id=dbg style="white-space:pre-wrap;font:12px ui-monospace,monospace;color:#6C6F6A;
-   background:#FAFAF8;border:1px solid #D9DCD6;border-radius:8px;padding:10px;margin-top:10px;
+  <pre id=dbg style="white-space:pre-wrap;font:12px ui-monospace,monospace;color:var(--second);
+   background:var(--code);border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:10px;
    max-height:300px;overflow:auto"></pre>
   <div id=cdact style=display:none>
    <div class="hint err">Surowy zrzut to kopia pamięci urządzenia — mogą w nim być hasła Wi-Fi
@@ -478,6 +570,19 @@ li:hover{border-color:var(--accent)}
   <h2>Urządzenie</h2>
   <button class=s onclick=rb()>Restartuj urządzenie</button>
   <button class=s onclick=fgt()>Zapomnij sieć Wi-Fi</button>
+ </div>
+</div>
+</section>
+
+<section id=sec-zdrowie>
+<button class=sechead data-sec=zdrowie><span>Zdrowie urządzenia</span><span class=hgrp><span class=chev>▸</span></span></button>
+<div class=secbody>
+ <div class=blk>
+  <h2>Zdrowie urządzenia</h2>
+  <div class=hint>Stabilność, pamięć i łączność — na podstawie /api/diag. Odczyt „na klik”,
+   bez odpytywania w tle.</div>
+  <button class=s onclick=health()>Odczytaj stan</button>
+  <div id=healthOut style=margin-top:10px></div>
  </div>
 </div>
 </section>
@@ -568,8 +673,173 @@ async function setBl(v){
 function showSection(s){
  document.querySelectorAll('section').forEach(x=>x.classList.toggle('active',x.id==='sec-'+s));
  document.querySelectorAll('.navitem').forEach(x=>x.classList.toggle('on',x.dataset.sec===s));
+ onShown(s);
 }
-function toggleSection(s){$('sec-'+s).classList.toggle('open');}
+function toggleSection(s){
+ const open=$('sec-'+s).classList.toggle('open');
+ if(open)onShown(s); else liveSync();
+}
+function esc(t){return String(t==null?'':t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+// Lazy: ciezsze sekcje (Obecnosc, Zdrowie) laduja sie przy PIERWSZYM pokazaniu, nie na
+// starcie — zeby nie odpalac kilku /api/diag naraz przy wejsciu na panel.
+let obecLoaded=false,healthLoaded=false;
+function onShown(s){
+ liveSync();
+ if(typeof shotDot==='function')shotDot();   // podglad wznawia/pauzuje z widocznoscia sekcji Ekran
+ if(s==='obec'&&!obecLoaded){obecLoaded=true;obec();}
+ if(s==='zdrowie'&&!healthLoaded){healthLoaded=true;health();}
+}
+// --- CIEMNY MOTYW: klasa .dark na <html>, wybor w localStorage (wczesny skrypt u gory
+// juz go zastosowal — tu tylko napis przycisku i przelaczanie na klik). ---
+function applyDark(on){
+ document.documentElement.classList.toggle('dark',on);
+ if($('thbtn'))$('thbtn').textContent=on?'○ Jasny':'◐ Ciemny';
+}
+function toggleDark(){
+ const on=!document.documentElement.classList.contains('dark');
+ applyDark(on);
+ try{localStorage.setItem('panelTheme',on?'dark':'light');}catch(e){}
+}
+// --- NA ZYWO: auto-odswiezanie co 5 s, ale TYLKO gdy sekcja widoczna (komputer: .active,
+// telefon: .open) i karta na wierzchu. Interwal startuje/gasnie w liveSync() — wzorem
+// screenshotu i diagPills, zeby NIE zalewac urzadzenia zapytaniami w tle. ---
+let liveTimer=null;
+function liveVisible(){
+ const el=$('sec-live');
+ return el&&!document.hidden&&(el.classList.contains('active')||el.classList.contains('open'));
+}
+function liveSync(){
+ if(liveVisible()){if(!liveTimer){liveTick();liveTimer=setInterval(liveTick,5000);}}
+ else if(liveTimer){clearInterval(liveTimer);liveTimer=null;}
+}
+function lightWord(mv){return mv==null?'—':(mv<256?'ciemno':(mv<640?'zmierzch':'jasno'));}
+async function liveTick(){
+ let d,b=[];
+ try{d=await(await fetch('/api/diag?'+Date.now())).json();}catch(e){return;}
+ try{b=await(await fetch('/api/ble')).json();}catch(e){}
+ const s=d.sensors||{},pv=d.pv||{};
+ const motion=s.pir?'● TERAZ':agoTxt(s.pir_last_s);
+ let inv='—',invC='';
+ if(pv.asleep){inv='uśpiony (noc)';invC='hot';}
+ else if(pv.ok_ago_s>=0&&pv.ok_ago_s<1800){inv='połączony';}
+ else{inv='brak łączności';invC='bad';}
+ // "Prad" (moc chwilowa) NIE jest w /api/diag — pokazujemy stan lacznosci falownika.
+ const cards=[
+  ['Ruch teraz',motion,'',s.pir?'hot':''],
+  ['Światło teraz',(s.ldr_mv!=null?s.ldr_mv:'—'),' mV · '+lightWord(s.ldr_mv),''],
+  ['Falownik',inv,'',invC],
+  ['Praca (uptime)',fmtUptime(d.uptime_s||0),'','']
+ ];
+ $('liveGrid').innerHTML=cards.map(c=>`<div class="gcard ${c[3]}"><div class=lbl>${c[0]}</div><div class=val>${c[1]}<small>${c[2]}</small></div></div>`).join('');
+ const named=(b||[]).filter(x=>x.name);
+ $('liveRooms').innerHTML=named.length?named.map(x=>{
+  const stt=x.valid?`${x.t.toFixed(1)}°C · ${x.h.toFixed(0)}%`:(x.needsKey?'brak klucza':'czekam');
+  const gw=x.gw?' · przez bramkę':'';
+  return `<div class=frow><span class=fk>${esc(x.name)}</span><span>${stt} <span style="color:var(--mute)">(${agoTxt(x.age_s)}${gw})</span></span></div>`;
+ }).join(''):'<div class=gnote>Brak nazwanych czujników (nadaj nazwy w zakładce „Czujniki”).</div>';
+ const fresh=[['Pogoda',d.weather&&d.weather.ok_ago_s],['Falownik',pv.ok_ago_s],
+  ['Piec Viessmann',d.vi&&d.vi.ok_ago_s],['Powietrze',d.air&&d.air.ok_ago_s],
+  ['Radar opadów',d.radar&&d.radar.ok_ago_s],['Samoloty',d.flights&&d.flights.ok_ago_s],
+  ['MQTT',d.mqtt&&d.mqtt.ok_ago_s]];
+ $('liveFresh').innerHTML=fresh.map(f=>{const v=(f[1]==null?-1:f[1]);
+  const c=v<0?'var(--mute)':(v<900?'var(--ok)':'var(--warn)');
+  return `<div class=frow><span class=fk>${f[0]}</span><span style="color:${c}">${agoTxt(v)}</span></div>`;}).join('');
+ if($('liveDot'))$('liveDot').textContent='● odświeżono '+new Date().toLocaleTimeString('pl-PL');
+}
+// --- OBECNOSC · SWIATLO · RUCH (integracja prototypu): logika i wyglad z prototypu, dane
+// na zywo z /api/diag (d.sensors). Wykresy INLINE (svg + divy), zero bibliotek z CDN.
+// Liczby "na dobe" dzielimy przez collected_s/86400, NIGDY przez uptime. ---
+async function obec(){
+ let d;
+ try{d=await(await fetch('/api/diag?'+Date.now())).json();}catch(e){$('obecCards').innerHTML='<div class="hint err">Nie udało się pobrać danych.</div>';return;}
+ const s=d.sensors||{};
+ const byh=s.pir_by_hour||[],wid=s.pir_width_ms||[],gap=s.pir_gap_ms||[],hist=s.ldr_hist||[];
+ const collected=(s.pir_meas&&s.pir_meas.collected_s)||0;
+ const days=collected/86400, perDay=n=>days>0?n/days:0;
+ const pl=n=>n.toFixed(1).replace('.',','), pl2=n=>n.toFixed(2).replace('.',',');
+ const busiest=byh.length?byh.indexOf(Math.max(...byh)):-1;
+ const longGaps=(gap[5]||0)+(gap[6]||0);            // przerwy >=5 min ~ granice wizyt
+ const visitsDay=Math.round(perDay(longGaps));
+ const ldrSec=hist.map(x=>x/4);                     // 4 probki/s => sekundy
+ const bright=ldrSec.slice(9).reduce((a,b)=>a+b,0); // kosze >=640 mV = jasno
+ const totL=ldrSec.reduce((a,b)=>a+b,0)||1;
+ const dark=ldrSec.slice(0,3).reduce((a,b)=>a+b,0); // kosze <32 mV = ciemno
+ const mid=totL-dark-bright, brightHDay=bright/(days||1)/3600;
+ const motMinDay=Math.round(perDay(s.pir_total_s||0)/60);
+ const cards=[
+  ['Wejść / dobę',days>0?'~'+visitsDay:'—',''],
+  ['Ruch aktywny',days>0?motMinDay:'—',' min/dobę'],
+  ['Najruchliwsza godz.',busiest>=0?(String(busiest).padStart(2,'0')+':00'):'—',''],
+  ['Światło jasne',days>0?pl(brightHDay):'—',' h/dobę']];
+ $('obecCards').innerHTML=cards.map(c=>`<div class=gcard><div class=lbl>${c[0]}</div><div class=val>${c[1]}<small>${c[2]}</small></div></div>`).join('');
+ $('obecSub').textContent=`łazienka · okno obserwacji ${days>0?pl2(days)+' doby':'zbiera się…'} · ${s.pir_pulses||0} impulsów ruchu (PIR + LDR)`;
+ // wykres godzinowy (inline SVG); szczyty = 5 najwyzszych godzin
+ const W=820,H=170,padL=8,padR=8,padB=24,padT=8,bw=(W-padL-padR)/24,maxv=Math.max(...byh,1);
+ const top=byh.map((v,i)=>[v,i]).sort((a,b)=>b[0]-a[0]).slice(0,5).filter(x=>x[0]>0).map(x=>x[1]);
+ let bars='';byh.forEach((v,hh)=>{const bh=(H-padB-padT)*(v/maxv),x=padL+hh*bw,y=H-padB-bh,hot=top.includes(hh);
+  bars+=`<rect x="${(x+2).toFixed(1)}" y="${y.toFixed(1)}" width="${(bw-4).toFixed(1)}" height="${bh.toFixed(1)}" rx="2" fill="${hot?'var(--accent)':'#9DB8DD'}"><title>${String(hh).padStart(2,'0')}:00 — ${Math.round(perDay(v))} imp./dobę</title></rect>`;});
+ let ticks='';[0,6,12,18,23].forEach(hh=>{ticks+=`<text x="${(padL+hh*bw+bw/2).toFixed(1)}" y="${H-7}" font-size="11" fill="var(--mute)" text-anchor="middle">${hh}</text>`;});
+ $('obecHourly').innerHTML=byh.length?`<svg viewBox="0 0 ${W} ${H}" role=img aria-label="Obecność wg godzin"><line x1="${padL}" y1="${H-padB}" x2="${W-padR}" y2="${H-padB}" stroke="var(--line)"/>${bars}${ticks}</svg><div class=gnote>godzina doby · podświetlone słupki to szczyty obecności</div>`:'<div class=gnote>Brak danych godzinowych (czekają na zegar NTP).</div>';
+ // swiatlo ciemno/zmierzch/jasno
+ const pct=x=>Math.round(x/totL*100);
+ const brow=(k,v,frac,col)=>`<div class=brow><span class=k>${k}</span><span class=track><span class=fill style="width:${(frac*100).toFixed(0)}%;background:${col}"></span></span><span class=v>${v}</span></div>`;
+ $('obecLight').innerHTML=brow('Ciemno',pct(dark)+'%',dark/totL,'var(--second)')+brow('Zmierzch',pct(mid)+'%',mid/totL,'#B8C6DD')+brow('Jasno',pct(bright)+'%',bright/totL,'var(--warn)')+`<div class=gnote>„Jasno” to poziom LDR ≥ ~640 mV (światło włączone albo dzień przez okno). Ok. ${pl(brightHDay)} h/dobę.</div>`;
+ // dlugosc ruchu
+ const names=['<0,1 s','0,1–1 s','1–3 s','3–10 s','10–60 s','>60 s'];
+ const wtot=wid.reduce((a,b)=>a+b,0)||1,wmax=Math.max(...wid,1);
+ let drows='';wid.forEach((v,i)=>{if(v)drows+=`<div class=brow><span class=k>${names[i]}</span><span class=track><span class=fill style="width:${(v/wmax*100).toFixed(0)}%;background:var(--warn)"></span></span><span class=v>${Math.round(v/wtot*100)}%</span></div>`;});
+ $('obecDur').innerHTML=(drows||'<div class=gnote>Brak zakończonych impulsów.</div>')+`<div class=gnote>Krótkie impulsy 1–3 s to ktoś w ruchu; dłuższe (3–10 s) to zwykle wchodzenie/wychodzenie.</div>`;
+ // DETEKTOR "zostawione swiatlo" (task B) — SZACUNEK z histogramow, nie zdarzenia w czasie.
+ // brightShare = udzial czasu "jasno"; presenceShare = udzial godzin z JAKIMKOLWIEK ruchem
+ // (gorna granica obecnosci — konserwatywnie, zeby nie alarmowac na wyrost).
+ const brightShare=bright/totL, hoursWithMotion=byh.filter(v=>v>0).length, presenceShare=hoursWithMotion/24;
+ const flag=brightShare>presenceShare+0.15 && brightShare>presenceShare*1.4;
+ if(collected<3600){
+  $('obecLeft').innerHTML='<div class=gbox>Za mało danych — okno obserwacji dopiero się zbiera.</div>';
+ }else if(flag){
+  $('obecLeft').innerHTML=`<div class="gbox warn"><b>⚠ Możliwe zostawione światło.</b> Jasno jest ~${pl(brightHDay)} h/dobę (${Math.round(brightShare*100)}% czasu), a ruch wykrywany tylko w ~${hoursWithMotion} godz. doby (${Math.round(presenceShare*100)}%). Skoro „jasno” trwa wyraźnie dłużej niż obecność, część tego czasu to prawdopodobnie światło zostawione po wyjściu — albo dzień przez okno (czujnik LDR tego nie rozróżnia). <b>To szacunek z histogramów LDR/PIR, a nie zdarzenia w czasie rzeczywistym.</b></div>`;
+ }else{
+  $('obecLeft').innerHTML=`<div class="gbox okb">Udział czasu „jasno” (${Math.round(brightShare*100)}%) nie przewyższa wyraźnie obecności (~${hoursWithMotion} godz./dobę) — brak sygnału zostawionego światła. <span style="color:var(--mute)">Szacunek z histogramów, nie zdarzenia w czasie rzeczywistym.</span></div>`;
+ }
+ $('obecInsight').innerHTML=days>0?`<b>Co z tego wynika:</b> obecność koncentruje się ${busiest>=0?('wokół <b>'+String(busiest).padStart(2,'0')+':00</b>'):'w kilku porach doby'}. Dzienny ruch to ok. <b>${motMinDay} min</b> aktywnego czujnika w ~<b>${visitsDay} wejściach</b>. Światło jest jasne ~<b>${pl(brightHDay)} h/dobę</b> — warto sprawdzić, czy te godziny pokrywają się z obecnością.`:'Dane się zbierają — wróć po kilku godzinach.';
+ $('obecFoot').textContent='Dane na żywo z /api/diag (sensory PIR + LDR, liczniki przeżywają restart/OTA). Liczby „na dobę” liczone z okna obserwacji (collected_s), nie z uptime.';
+}
+// --- ZDROWIE URZADZENIA (task C): uptime, awarie, sterta (ostrzezenie gdy najwiekszy blok
+// < 40 kB), radar/PSRAM, WiFi — wszystko z /api/diag. ---
+async function health(){
+ const o=$('healthOut');o.innerHTML='<div class=hint>Odczytuję…</div>';
+ let d;
+ try{d=await(await fetch('/api/diag?'+Date.now())).json();}catch(e){o.innerHTML='<div class="hint err">Nie udało się odczytać.</div>';return;}
+ let h='';
+ const rs=d.reset||{},cr=rs.crashes_total||0;
+ h+=fblock('Stabilność',
+  (cr>0?('Restartów po awarii (panice): <b>'+cr+'</b> od początku pomiaru. '):'Ani jednego restartu po awarii. ')
+   +'Ostatni restart: '+esc(rs.reason||'?')+(rs.was_crash?' — to była awaria.':' — normalny (nie awaria).')
+   +' Praca bez przerwy: <b>'+fmtUptime(d.uptime_s||0)+'</b>.',
+  rs.was_crash?'err':(cr>0?'warn':'ok'));
+ const hb=d.heap_largest_block||0,hf=d.heap_free||0,hm=d.heap_min_ever||0,lowBlock=hb>0&&hb<40960,total=327680;
+ h+='<div style="padding:8px 0;border-bottom:1px solid var(--line)">'
+  +'<b style=color:var(--panel)>Pamięć robocza (sterta SRAM)</b>'+memBar(total-hf,total)
+  +'<div style="font:12px system-ui;color:var(--second)">wolne <b>'+kb(hf)+'</b> · dołek od startu '+kb(hm)+' · największy ciągły blok <b style="color:'+(lowBlock?'var(--err)':'var(--panel)')+'">'+kb(hb)+'</b></div>'
+  +'<div style="font:11px system-ui;color:var(--mute);margin-top:2px">TLS przy aktualizacji potrzebuje ~40 kB ciągłego bloku. Dołek pokazuje, jak blisko granicy bywało.</div>'
+  +(lowBlock?'<div class="gbox warn" style="margin-top:8px"><b>⚠ Największy ciągły blok poniżej 40 kB.</b> Aktualizacja po sieci (TLS) może się nie udać przy tak pofragmentowanej stercie — jeśli to się utrzymuje, zrestartuj urządzenie przed OTA.</div>':'')
+  +'</div>';
+ const rr=d.radar||{},psram=(d.psram!=null?d.psram:(d.memfull&&d.memfull.psram&&d.memfull.psram.total));
+ const hasPsram=psram>0;
+ h+=fblock('Mapa radaru opadów',
+  (hasPsram?('Mapa radaru: <b>OK</b> — bufory klatek w PSRAM ('+kb(psram)+').')
+           :'<b>Pomiar punktowy (brak PSRAM przy starcie).</b> Animowana mapa niedostępna, radar w trybie awaryjnym.')
+   +' Pominięte klatki przy niskim RAM: <b>'+(rr.skips_low_ram||0)+'</b>.'
+   +(rr.err?(' Ostatni błąd: '+esc(rr.err)+'.'):''),
+  hasPsram?((rr.skips_low_ram||0)>0?'warn':'ok'):'warn');
+ const w=d.wifi||{};
+ h+=fblock('Wi-Fi',
+  'Sieć <b>'+esc(w.ssid||'?')+'</b> · sygnał <b>'+(w.rssi!=null?w.rssi+' dBm':'?')+'</b>'
+   +' · przełączeń AP (roaming): <b>'+(w.roams||0)+'</b> · połączeń od startu: <b>'+(w.connects||0)+'</b>'
+   +(w.channel?(' · kanał '+w.channel):''),
+  (w.rssi!=null&&w.rssi>-75)?'ok':'warn');
+ o.innerHTML=h;
+}
 // --- PASEK STATUSU z /api/diag: praca (uptime) + stabilnosc + skrot falownika ---
 async function diagPills(){
  try{
@@ -586,19 +856,19 @@ async function diagPills(){
 }
 function kb(b){if(b==null)return '—';if(b>=1048576)return (b/1048576).toFixed(2)+' MB';if(b>=1024)return (b/1024).toFixed(1)+' kB';return b+' B';}
 function memBar(used,total){var p=total>0?Math.round(used/total*100):0;
- return '<div style="height:8px;background:#EDEEE9;border-radius:4px;overflow:hidden;margin:3px 0">'
- +'<div style="height:8px;width:'+p+'%;background:'+(p>85?'#C04A3A':p>65?'#B8901F':'#4D9A4D')+'"></div></div>';}
+ return '<div style="height:8px;background:var(--track);border-radius:4px;overflow:hidden;margin:3px 0">'
+ +'<div style="height:8px;width:'+p+'%;background:'+(p>85?'var(--err)':p>65?'var(--warn)':'var(--ok)')+'"></div></div>';}
 function memRow(name,cap,used,free,buf,desc){
  var body='';
  if(cap!=null)body+='<b>'+kb(cap)+'</b> pojemność';
  if(used!=null)body+=' · zajęte '+kb(used);
- if(free!=null)body+=' · <b style=color:#4D9A4D>wolne '+kb(free)+'</b>';
+ if(free!=null)body+=' · <b style=color:var(--ok)>wolne '+kb(free)+'</b>';
  if(buf!=null)body+=' · '+buf;
  var bar=(cap!=null&&used!=null)?memBar(used,cap):'';
- return '<div style="padding:8px 0;border-bottom:1px solid #D9DCD6">'
-  +'<div style="display:flex;justify-content:space-between"><b style=color:#1A1C1E>'+name+'</b></div>'
-  +bar+'<div style="font:12px system-ui;color:#6C6F6A">'+body+'</div>'
-  +'<div style="font:11px system-ui;color:#9A9C96;margin-top:2px">'+desc+'</div></div>';}
+ return '<div style="padding:8px 0;border-bottom:1px solid var(--line)">'
+  +'<div style="display:flex;justify-content:space-between"><b style=color:var(--panel)>'+name+'</b></div>'
+  +bar+'<div style="font:12px system-ui;color:var(--second)">'+body+'</div>'
+  +'<div style="font:11px system-ui;color:var(--mute);margin-top:2px">'+desc+'</div></div>';}
 async function mem(){
  var o=$('memout');o.innerHTML='<div class=hint>Odczytuję…</div>';
  try{
@@ -612,13 +882,31 @@ async function mem(){
   h+=memRow('PSRAM (pamięć zewnętrzna)',ps.total,ps.total-(ps.free||0),ps.free,
     'największy blok '+kb(ps.largest_block),
     'Zewnętrzne 2 MB. Trzyma bufor ekranu (~132 kB) i 13 klatek radaru (~715 kB). Duże bufory graficzne idą tutaj, nie do SRAM.');
-  var fl=m.flash||{};
-  h+=memRow('Flash (pamięć programu)',fl.chip_size,fl.sketch_size,(fl.chip_size&&fl.sketch_size)?fl.chip_size-fl.sketch_size:null,
-    null,'Cały układ flash 4 MB. Firmware zajmuje '+kb(fl.sketch_size)+'. Reszta to druga partycja OTA, tablica partycji, NVS i zrzut awaryjny.');
-  var ap=m.app||{};
-  var afree=(ap.size&&ap.used)?ap.size-ap.used:null;
-  h+=memRow('Partycja aplikacji „'+(ap.running||'?')+'” (aktywna)',ap.size,ap.used,afree,
-    null,'Bieżący firmware działa z tej partycji OTA. Wolne '+kb(afree)+' to zapas na rozrost aplikacji (nowe fonty, ekrany).');
+  // --- FLASH (uczciwie): 4 MB ukladu to NIE budzet firmware'u. Poprzedni pasek pokazywal
+  // "Flash 4 MB - wolne 2,29" (chip - sketch) ORAZ "app1 1,94 - wolne 233 kB" i te dwie liczby
+  // sobie przeczyly. PRAWDA: firmware mieszci sie w JEDNEJ partycji app (1,94 MB), a te
+  // "2,29 MB wolne" to glownie DRUGA partycja app (rezerwa OTA), w ktora NIE da sie dopisac
+  // firmware'u. Rozbijamy wiec 4 MB na: aktywna aplikacja / kopia OTA / system.
+  var fl=m.flash||{}, ap=m.app||{}, prt=m.partitions||[];
+  var appUsed=(ap.used!=null?ap.used:fl.sketch_size), appSize=ap.size||0;
+  var appFree=(appSize&&appUsed!=null)?appSize-appUsed:null;
+  var running=ap.running||'?';
+  // Kopia OTA = druga partycja app (ta, ktora NIE jest uruchomiona).
+  var otaName=(running=='app0')?'app1':'app0';
+  var otaP=prt.find(function(p){return p.name==otaName;})||{};
+  // System: nvs+otadata+coredump(+spiffs jesli obecny) z tablicy partycji + bootloader
+  // i tablica partycji (~36 kB, lezace przed nvs pod 0x0..0x9000 — nie ma ich w liscie).
+  var sysSum=36864;
+  prt.forEach(function(p){if(p.present&&(p.name=='nvs'||p.name=='otadata'||p.name=='coredump'||p.name=='spiffs'))sysSum+=(p.size||0);});
+  h+='<div style="padding:8px 0 2px"><b style=color:var(--panel)>Flash (pamięć programu) — układ '+kb(fl.chip_size)+'</b>'
+   +'<div style="font:11px system-ui;color:var(--mute);margin-top:2px">Cały układ flash. Firmware NIE dostaje go w całości — poniżej uczciwy podział.</div></div>';
+  h+=memRow('Aktywna aplikacja („'+running+'”) — realny budżet firmware',appSize,appUsed,appFree,null,
+    'Tu działa bieżący firmware. Nowa wersja musi zmieścić się w TEJ jednej partycji, więc wolne '+kb(appFree)+' to cały zapas na rozrost (nowe fonty, ekrany). To jest liczba, na którą trzeba patrzeć.');
+  h+=memRow('Kopia OTA („'+otaName+'”) — rezerwa aktualizacji',otaP.size,null,null,null,
+    'Rezerwa na aktualizację po sieci: nowy obraz wgrywa się tutaj, a stary zostaje jako powrót awaryjny. NIE da się w to dopisać bieżącej aplikacji — to nie jest wolne miejsce dla firmware.');
+  h+=memRow('System (NVS, otadata, zrzut, bootloader)',sysSum,null,null,null,
+    'Ustawienia trwałe, wskaźnik OTA, zrzut awaryjny oraz bootloader z tablicą partycji. Stały narzut, poza budżetem aplikacji.');
+  h+='<div style="font:11px system-ui;color:var(--mute);margin:4px 0 8px;line-height:1.5">Układ ma '+kb(fl.chip_size)+', ale dwie równe partycje app („app0”/„app1”, po '+kb(appSize)+') to WARUNEK bezpiecznej aktualizacji po sieci — jedna trzyma wersję działającą, druga przyjmuje nową i pozwala wrócić, gdy coś pójdzie nie tak. Dlatego realny zapas to '+kb(appFree)+' w aktywnej partycji, a nie „wolne '+kb((fl.chip_size&&fl.sketch_size)?fl.chip_size-fl.sketch_size:0)+'” z całego układu.</div>';
   // partycje
   if(m.partitions){
    var descP={nvs:'Ustawienia trwałe: Wi-Fi, MQTT, klucze BLE, token pieca, wybrany wygląd.',
@@ -626,12 +914,12 @@ async function mem(){
     app0:'Partycja aplikacji OTA #0.',app1:'Partycja aplikacji OTA #1.',
     spiffs:'Zarezerwowana — projekt NIE używa systemu plików (odzyskane miejsce oddano partycjom app).',
     coredump:'Zrzut awaryjny po panice: zadanie, adres upadku, backtrace.'};
-   var ph='<div style="padding:8px 0"><b style=color:#1A1C1E>Podział na partycje (OTA i dane)</b>'
-    +'<table style="width:100%;border-collapse:collapse;font:12px system-ui;color:#6C6F6A;margin-top:4px">'
-    +'<tr style=color:#9A9C96><td>nazwa</td><td>adres</td><td style=text-align:right>rozmiar</td></tr>';
+   var ph='<div style="padding:8px 0"><b style=color:var(--panel)>Podział na partycje (OTA i dane)</b>'
+    +'<table style="width:100%;border-collapse:collapse;font:12px system-ui;color:var(--second);margin-top:4px">'
+    +'<tr style=color:var(--mute)><td>nazwa</td><td>adres</td><td style=text-align:right>rozmiar</td></tr>';
    m.partitions.forEach(function(p){if(!p.present)return;
     ph+='<tr><td>'+p.name+'</td><td>0x'+(p.address||0).toString(16)+'</td><td style=text-align:right>'+kb(p.size)+'</td></tr>';});
-   ph+='</table><div style="font:11px system-ui;color:#9A9C96;margin-top:4px">Dwie równe partycje app0/app1 (po '
+   ph+='</table><div style="font:11px system-ui;color:var(--mute);margin-top:4px">Dwie równe partycje app0/app1 (po '
     +kb((m.partitions.find(function(p){return p.name=="app0"})||{}).size)+') to serce OTA: nowa wersja wgrywa się na wolną, a stara zostaje jako powrót awaryjny.</div></div>';
    h+=ph;
   }
@@ -645,20 +933,28 @@ async function mem(){
     'Każde zadanie ma swój stos '+kb(st.configured_size)+'. „Zapas” to ile nigdy nie zostało użyte — margines bezpieczeństwa przed przepełnieniem.');
   h+=memRow('ROM (bootrom układu)',m.rom_size,m.rom_size,0,null,
     'Stała pamięć producenta 384 kB, tylko do odczytu — pierwszy kod po włączeniu zasilania. Nie da się jej zająć ani zwolnić.');
-  h+='<div style="font:11px system-ui;color:#9A9C96;margin-top:8px">Zrzut awaryjny obecny: '+(m.coredump_present?'tak':'nie')+'.</div>';
+  h+='<div style="font:11px system-ui;color:var(--mute);margin-top:8px">Zrzut awaryjny obecny: '+(m.coredump_present?'tak':'nie')+'.</div>';
   o.innerHTML=h;
  }catch(e){o.innerHTML='<div class="hint err">Nie udało się odczytać pamięci.</div>';}
 }
-// kolejna klatka dopiero, gdy poprzednia dojdzie — nie zalewamy urządzenia
+// kolejna klatka dopiero, gdy poprzednia dojdzie — nie zalewamy urządzenia. Checkbox
+// "Auto" (sekcja Ekran) wlacza/wylacza odswiezanie; pauza gdy karta niewidoczna LUB gdy
+// sekcja Ekran nie jest na wierzchu (nie ma po co pobierac podgladu, ktorego nie widac).
+// Petla chodzi zawsze: gdy warunek niespelniony, tylko sprawdza co 1 s.
+function ekranOpen(){const el=$('sec-ekran');return el&&(el.classList.contains('active')||el.classList.contains('open'));}
+function shotOn(){return live&&ekranOpen()&&(!$('autoshot')||$('autoshot').checked);}
 function nextShot(){
- if(!live){setTimeout(nextShot,700);return;}
+ if(!shotOn()){setTimeout(nextShot,1000);return;}
  const im=new Image();
- im.onload=()=>{$('shot').src=im.src;setTimeout(nextShot,700);};
- im.onerror=()=>setTimeout(nextShot,2000);
+ im.onload=()=>{$('shot').src=im.src;setTimeout(nextShot,4000);};   // ~4 s, dopiero PO zaladowaniu
+ im.onerror=()=>setTimeout(nextShot,4000);
  im.src='/api/screen?'+Date.now();
 }
+function shotDot(){
+ if($('live'))$('live').textContent=shotOn()?'● na żywo':(document.hidden?'‖ wstrzymane (karta w tle)':(($('autoshot')&&!$('autoshot').checked)?'‖ auto wyłączone':'‖ wstrzymane'));
+}
 document.addEventListener('visibilitychange',()=>{
- live=!document.hidden;$('live').textContent=live?'● na żywo':'‖ wstrzymane';});
+ live=!document.hidden;shotDot();liveSync();});
 // --- czujniki BLE ---
 async function bles(){
  let r;
@@ -761,24 +1057,27 @@ async function viStat(){
    $('sVi').textContent='niepodłączony';$('sVi').className='sig';
    return;
   }
-  const dni=(r.days>=0?r.days:'?')+' dni';
-  bset('b-token','ważny '+dni);
   if(r.ok){
-   // Dane swieze = odswiezanie tokena dziala. Licznik dni liczony od PIERWSZEJ
-   // autoryzacji (Viessmann.cpp), wiec realnie odlicza.
-   $('sVi').textContent='✓ ważny '+dni;$('sVi').className='sig ok';
+   // UCZCIWIE: token Viessmanna ROTUJE — przy kazdym odswiezeniu (~co 55 min) dostaje
+   // nowe 180 dni. Dopoki urzadzenie jest online, autoryzacja NIE wygasa. Wiec "X dni"
+   // to tylko zapas na offline, a nie odliczanie do konca. Gdy dziala — zaden badge.
+   bset('b-token','');
+   $('sVi').textContent='✓ działa';$('sVi').className='sig ok';
    $('vistat').className='hint ok';
-   $('vistat').textContent=`Połączono. CWU ${r.dhw.toFixed(1)}°C, zasilanie ${r.sup.toFixed(1)}°C. `
-    +`Autoryzacja ważna jeszcze ok. ${dni} (od pierwszej autoryzacji) — odświeżana automatycznie, `
-    +`ostatni odczyt ${agoTxt(r.ok_ago_s)}.`;
+   $('vistat').textContent=`✓ Działa automatycznie — nic nie musisz robić. `
+    +`CWU ${r.dhw.toFixed(1)}°C, zasilanie ${r.sup.toFixed(1)}°C (ostatni odczyt ${agoTxt(r.ok_ago_s)}). `
+    +`Autoryzacja odnawia się przy każdym połączeniu; ~${r.days>=0?r.days:'?'} dni to zapas na wypadek dłuższego offline (bez prądu/sieci). `
+    +`Odnów ręcznie tylko gdy zobaczysz ostrzeżenie.`;
   }else{
-   // Dane NIEAKTUALNE = odswiezanie realnie zawodzi -> zwykle trzeba autoryzowac od nowa.
-   $('sVi').textContent='⚠ '+dni+' · sprawdź';$('sVi').className='sig warn';
+   // Dane NIEAKTUALNE = odswiezanie realnie zawiodlo -> zwykle trzeba autoryzowac od nowa.
+   bset('b-token','⚠');
+   $('sVi').textContent='⚠ Odśwież autoryzację';$('sVi').className='sig warn';
    $('vistat').className='hint warn';
-   $('vistat').textContent=(r.ok_ago_s<0?'Jeszcze ani jednego udanego odczytu. '
+   $('vistat').textContent='⚠ Odśwież autoryzację. '
+    +(r.ok_ago_s<0?'Jeszcze ani jednego udanego odczytu. '
       :`Brak świeżych danych (ostatni ${agoTxt(r.ok_ago_s)}). `)
-    +(r.err?('Błąd: '+r.err+'. '):'')
-    +'Jeśli to się utrzymuje, kliknij „1. Zapisz i wygeneruj link autoryzacyjny” i autoryzuj piec ponownie.';
+    +(r.err?('Błąd: '+esc(r.err)+'. '):'')
+    +'Autoryzacja mogła wygasnąć po dłuższym offline — kliknij „1. Zapisz i wygeneruj link autoryzacyjny” i autoryzuj piec ponownie.';
   }
  }catch(e){}
 }
@@ -790,12 +1089,12 @@ async function demo(on){
 }
 // Kolorowy blok "po ludzku": kropka statusu + tytul + tresc. cls: 'ok'|'warn'|'err'.
 function fblock(title,body,cls){
- const col=cls==='err'?'#C04A3A':cls==='warn'?'#B8901F':'#4D9A4D';
- return '<div style="padding:8px 0;border-bottom:1px solid #D9DCD6">'
+ const col=cls==='err'?'var(--err)':cls==='warn'?'var(--warn)':'var(--ok)';
+ return '<div style="padding:8px 0;border-bottom:1px solid var(--line)">'
   +'<div style="display:flex;align-items:center;gap:8px">'
   +'<span style="width:9px;height:9px;border-radius:50%;background:'+col+';flex:0 0 auto"></span>'
-  +'<b style=color:#1A1C1E>'+title+'</b></div>'
-  +'<div style="font:12px system-ui;color:#6C6F6A;margin-top:4px">'+body+'</div></div>';}
+  +'<b style=color:var(--panel)>'+title+'</b></div>'
+  +'<div style="font:12px system-ui;color:var(--second);margin-top:4px">'+body+'</div></div>';}
 // Czytelny stan awarii i lacznosci z /api/diag: reset (crashes_total/reason/was_crash),
 // skrot coredumpa (zadanie+adres+backtrace, tylko czesc bezpieczna), liczniki Modbusa
 // falownika opisane po ludzku, oraz stan pieca. Ma byc zrozumiale bez znajomosci kodu.
@@ -943,6 +1242,11 @@ async function fgt(){
 document.querySelectorAll('.navitem').forEach(a=>a.onclick=()=>showSection(a.dataset.sec));
 document.querySelectorAll('.sechead').forEach(b=>b.onclick=()=>toggleSection(b.dataset.sec));
 (async()=>{
+ // Motyw: wczesny skrypt u gory juz dodal klase .dark z localStorage — tu tylko
+ // synchronizujemy napis przycisku. Checkbox "Auto" podglądu odswieza wskaznik.
+ applyDark(document.documentElement.classList.contains('dark'));
+ if($('autoshot'))$('autoshot').onchange=shotDot;
+ shotDot();
  try{const r=await(await fetch('/api/view')).json();pin=r.pin;}catch(e){}
  tabs();highlightBl('auto');nextShot();await load();bles();viStat();meters();diagPills();
  setInterval(bles,20000);setInterval(viStat,30000);setInterval(diagPills,60000);

@@ -199,6 +199,20 @@ void storeTokens(JsonDocument& doc) {
       LOG("Piec: zapisano nowy refresh token");
     }
 
+    // viRefreshAt = epoch OSTATNIEGO udanego odswiezenia. To od NIEGO liczy daysLeft() —
+    // patrz obszerny komentarz w Settings.h i w daysLeft() nizej. Ustawiamy przy KAZDYM
+    // udanym token opie (acc != ''), NIE tylko gdy zmienil sie string refresh tokena:
+    // sam fakt udanego refresha dowodzi lacznosci i resetuje 180-dniowy bufor "na offline".
+    // Dopoki online (refresh co ~55 min) viRefreshAt goni now, wiec licznik stoi ~180
+    // (pelny zapas) — i to jest UCZCIWE, bo token faktycznie nie wygasa. Dopiero dluzszy
+    // offline (brak udanego refresha) zaczyna odliczac w dol. now>1700000000 chroni przed
+    // zapisem smiecia z 1970, gdy NTP jeszcze nie odpowiedzial. Extra save=true jest
+    // darmowy: rotacja refresh tokena i tak wywoluje viSave() przy kazdym odswiezeniu.
+    if (acc[0] != '\0' && now > 1700000000UL) {
+      settings().viRefreshAt = now;
+      save = true;
+    }
+
   // viAuthAt = data PIERWSZEJ autoryzacji (viLink), ustawiana RAZ i NIE ruszana przy
   // odswiezaniu. Wczesniej przesuwala sie przy kazdym udanym odswiezeniu tokena (co
   // ~55 min) w imie "kazde odswiezenie potwierdza waznosc" — ale skutek byl taki, ze
@@ -455,12 +469,22 @@ bool exchangeCode(const char* code, const char* redirectUri, char* errOut, size_
   return true;
 }
 
+// Ile dni realnego zapasu do PRZYMUSOWEJ (recznej) autoryzacji. Liczone od viRefreshAt
+// (OSTATNIE udane odswiezenie), a NIE od viAuthAt (pierwsza autoryzacja) — patrz obszerny
+// komentarz w storeTokens() i w Settings.h. Refresh token rotuje co ~55 min i dostaje
+// swieze 180 dni, wiec dopoki urzadzenie jest online viRefreshAt goni now i licznik stoi
+// ~180 (pelny zapas) — token faktycznie nie wygasa. Po dluzszym OFFLINE (brak udanego
+// refresha) licznik uczciwie schodzi: tyle dni realnie zostalo, zanim token przekroczy
+// 180 dni od ostatniego uzycia. Zwraca 0..180; -1 = nieznane (brak viRefreshAt / brak NTP).
 int daysLeft() {
-  if (settings().viAuthAt == 0) return -1;
+  if (settings().viRefreshAt == 0) return -1;
   const uint32_t now = static_cast<uint32_t>(time(nullptr));
   if (now < 1700000000UL) return -1;
-  const int32_t used = static_cast<int32_t>(now - settings().viAuthAt) / 86400;
-  const int32_t left = static_cast<int32_t>(kRefreshTtlDays) - used;
+  // Cofniecie zegara daloby now < viRefreshAt (used < 0, left > 180) — docinamy z gory
+  // do 180, z dolu do 0 (po 180 dniach offline). Nigdy nie pokazujemy > 180 ani < 0.
+  const int32_t used = static_cast<int32_t>(now - settings().viRefreshAt) / 86400;
+  int32_t left = static_cast<int32_t>(kRefreshTtlDays) - used;
+  if (left > static_cast<int32_t>(kRefreshTtlDays)) left = static_cast<int32_t>(kRefreshTtlDays);
   return left < 0 ? 0 : left;
 }
 
@@ -506,6 +530,7 @@ void forget() {
     settings().viGateway[0] = '\0';
     settings().viEnabled = false;
     settings().viAuthAt = 0;
+    settings().viRefreshAt = 0;   // po forget() daysLeft() ma wrocic do -1 (nieautoryzowany)
     gAccess[0] = '\0';
     gAccessExpAt = 0;
   }

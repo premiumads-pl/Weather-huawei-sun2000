@@ -121,7 +121,15 @@ struct Settings {
   char viRefresh[600] = {};      // JWT bywa dlugi
   char viInstallation[12] = {};  // cache — zeby nie pytac o to co odczyt
   char viGateway[20] = {};
-  uint32_t viAuthAt = 0;         // epoch autoryzacji — refresh token zyje 180 dni
+  uint32_t viAuthAt = 0;         // epoch PIERWSZEJ autoryzacji (viLink) — informacyjny, NIE licznik
+  // Epoch OSTATNIEGO udanego odswiezenia/rotacji refresh tokena (ustawia storeTokens()).
+  // Refresh token Viessmanna ROTUJE przy kazdym odswiezeniu (~55 min) i dostaje swieze
+  // 180 dni, wiec dopoki urzadzenie jest online token NIE wygasa. Realny "zapas do
+  // przymusowej autoryzacji" = 180 dni MINUS czas od ostatniego odswiezenia (bufor na
+  // wypadek dluzszego offline): daysLeft() liczy od TEGO pola, nie od viAuthAt. Online
+  // stoi ~180 (viRefreshAt goni now co ~55 min); po dluzszym offline uczciwie odlicza.
+  // Klucz NVS "virt". 0 = jeszcze nie autoryzowano -> daysLeft() zwraca -1.
+  uint32_t viRefreshAt = 0;
   bool viEnabled = false;
 
   bool hasViessmann() const { return viEnabled && viClientId[0] != '\0' && viRefresh[0] != '\0'; }

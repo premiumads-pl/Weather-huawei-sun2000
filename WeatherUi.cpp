@@ -83,6 +83,15 @@ constexpr uint8_t kV3Loop[] = {
     cfg::VIEW_HOME, cfg::VIEW_BOILER, cfg::VIEW_AIR, cfg::VIEW_FLIGHTS};
 constexpr int kV3LoopN = sizeof(kV3Loop) / sizeof(kV3Loop[0]);
 
+// TRYB NOCNY "dotyk budzi ekran" (ustalenia wlasciciela). W oknie nocnym (isNightNow: ciemno
+// == blNight + pora nocna, domyslnie 22..6) render() rysuje przygaszony zegar nocny na
+// settings().blNight. Dotkniecie elektrody ma na chwile przywrocic PELNY, nawigowalny UI —
+// jak w dzien — na tej POSREDNIEJ jasnosci, a po kNightWakeMs bez dotyku wrocic do zegara.
+// To zachowanie RUNTIME: NIE ruszamy zapisanych nightStartH/EndH/blNight (twarde ogr. 4).
+// kNightWakeBl = 130: jasny na tyle, by czytac w nocy z 2 m, ale nie razacy jak 255.
+constexpr uint8_t  kNightWakeBl = 130;      // jasnosc wybudzonego UI w nocy (nie blNight, nie 255)
+constexpr uint32_t kNightWakeMs = 60000UL;  // 60 s bez dotyku -> powrot do zegara nocnego
+
 float clampf(float v, float lo, float hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
@@ -2342,6 +2351,26 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
     cpuTempAt_ = nowMs;
   }
 
+  // --- TRYB NOCNY: dotyk WYBUDZA normalny UI (runtime; NIE zmienia nightStartH/EndH/blNight) -
+  // W oknie nocnym (isNightNow: ciemno + pora nocna) domyslnie leci przygaszony zegar nocny —
+  // drawV3 rysuje v3MainNight, bo isNightNow(blTarget_) == true. Gdy od ostatniego STUKNIECIA
+  // minelo < kNightWakeMs, podbijamy blTarget_ do kNightWakeBl (~130): wtedy isNightNow(blTarget_)
+  // w drawV3/drawV3Bottom zwroci FALSE, wiec TE SAME funkcje narysuja pelny, nawigowalny UI jak
+  // w dzien, tyle ze na jasnosci ~130. Po kNightWakeMs bez dotyku blTarget_ zostaje blNight (z
+  // automatu LDR w .ino) i zegar nocny wraca. Robimy to PRZED sygnatura nizej (mix(blTarget_)),
+  // zeby przejscie spanie<->czuwanie ZAWSZE wymusilo przerysowanie (inaczej skip zjadlby klatke).
+  // nightAsleep_ = noc bez swiezego dotyku — czyta go touchTapV3/touchDoubleV3, zeby PIERWSZY
+  // dotyk budzil na Glowny, a nie przeskakiwal ekranu. Liczymy od lastTouchMs_ (STUKNIECIE, ta
+  // sama nawigacja co w dzien), wiec pin z panelu bez dotyku NIE wybudza (twarde ogr. 4).
+  nightAsleep_ = false;
+  if (settings().theme == 3 && isNightNow(blTarget_)) {
+    if (lastTouchMs_ != 0 && nowMs - lastTouchMs_ < kNightWakeMs) {
+      blTarget_ = kNightWakeBl;   // wybudzony: ~130 => isNightNow() w drawV3 false => dzienny UI
+    } else {
+      nightAsleep_ = true;        // przygaszony zegar nocny; czekamy na wybudzajacy dotyk
+    }
+  }
+
   // --- V3: pomijanie przerysowania, gdy nic widocznego sie nie zmienilo -----------
   // loop() wola render() co ~50 ms i BEZWARUNKOWO wypycha bufor na TFT. Na ciemnym
   // tle (V1/V2) przepisanie tych samych pikseli jest niewidoczne; na JASNYM ukladzie
@@ -4459,6 +4488,16 @@ void WeatherUi::setViewV3(uint8_t v) {
 
 void WeatherUi::touchTapV3() {
   lastTouchMs_ = millis();
+  // TRYB NOCNY: gdy TERAZ swieci przygaszony zegar nocny (nightAsleep_ ustawia render()),
+  // PIERWSZY dotyk ma tylko WYBUDZIC na Glowny — bez przeskakiwania na nastepny ekran.
+  // Ustawione wyzej lastTouchMs_ sprawia, ze od tej klatki render() podbije jasnosc do
+  // kNightWakeBl i narysuje pelny UI; kolejne dotkniecia (juz wybudzony, nightAsleep_==false)
+  // nawiguja normalnie. Decyzja "pierwszy dotyk budzi, nie skacze" — wg ustalen wlasciciela.
+  if (nightAsleep_) {
+    nightAsleep_ = false;
+    setViewV3(static_cast<uint8_t>(cfg::VIEW_NOW));
+    return;
+  }
   // W diagnostyce 1x przelacza STATS <-> MEM, nie rusza petli glownej (spec 7a).
   if (view_ == cfg::VIEW_STATS || view_ == cfg::VIEW_MEM) {
     setViewV3(view_ == cfg::VIEW_STATS ? cfg::VIEW_MEM : cfg::VIEW_STATS);
@@ -4484,6 +4523,13 @@ void WeatherUi::touchTapV3() {
 
 void WeatherUi::touchDoubleV3() {
   lastTouchMs_ = millis();
+  // TRYB NOCNY: spojnie z touchTapV3 — pierwsza interakcja w nocy (takze podwojna) tylko
+  // WYBUDZA na Glowny, zamiast od razu wchodzic w diagnostyke. Kolejne gesty dzialaja normalnie.
+  if (nightAsleep_) {
+    nightAsleep_ = false;
+    setViewV3(static_cast<uint8_t>(cfg::VIEW_NOW));
+    return;
+  }
   // 2x w diagnostyce wychodzi na GLOWNY; poza nia 2x wchodzi w diagnostyke (STATS).
   if (view_ == cfg::VIEW_STATS || view_ == cfg::VIEW_MEM)
     setViewV3(static_cast<uint8_t>(cfg::VIEW_NOW));
