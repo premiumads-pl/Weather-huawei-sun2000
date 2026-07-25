@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "MapDataRadar.h"
@@ -63,6 +64,25 @@ uint8_t levelAt(int i, int x, int y);    // 0 = brak opadu, 1..5 rosnaco
 const uint8_t* raster(int i);
 uint32_t updatedAt();                    // millis() ostatniego udanego pobrania
 const char* lastError();
+
+// --- stan alokacji buforow: do /api/diag ("radar_map") i sekcji "Zdrowie urzadzenia" ---
+// Czy begin() zarezerwowal KOMPLET buforow, czyli czy animowana mapa w ogole dziala.
+// To NIE jest to samo, co count() > 0: count() mowi tylko, czy DOSZLY dane — jest 0
+// takze przez pierwsze sekundy po udanym starcie, zanim przejdzie pierwszy fetch().
+// Odwrotnie tez: przy nieudanej alokacji count() zostaje 0 na cala sesje i z samego
+// count() nie odroznisz "jeszcze nie pobrano" od "nie ma z czego rysowac". Panel do
+// tej pory zgadywal stan mapy z ESP.getPsramSize() > 0 i przez to klamal dokladnie
+// w jedynym ciekawym przypadku: PSRAM jest, a alokacja i tak padla.
+bool ready();
+
+// Ile razy probowano zaalokowac bufory — liczy sie takze proba przerwana od razu na
+// !psramFound(). Dzis zawsze 1, bo begin() wolane jest raz przy starcie; pole istnieje
+// po to, zeby ewentualne pozniejsze ponawianie alokacji nie wymagalo zmiany kontraktu
+// /api/diag ani panelu — obie strony od razu pokaza prawdziwa liczbe prob.
+int allocTries();
+
+// Ile bajtow PSRAM trzymaja bufory (klatki + kafelek roboczy); 0 gdy !ready().
+size_t bufferBytes();
 
 // Czy w KTOREJKOLWIEK klatce jest opad. Ekran radaru bez deszczu to pusta mapa,
 // wiec rotacja go wtedy pomija — a pasek postepu zaznacza go innym kolorem.

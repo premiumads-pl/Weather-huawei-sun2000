@@ -865,14 +865,43 @@ async function health(){
   +'<div style="font:11px system-ui;color:var(--mute);margin-top:2px">TLS przy aktualizacji potrzebuje ~40 kB ciągłego bloku. Dołek pokazuje, jak blisko granicy bywało.</div>'
   +(lowBlock?'<div class="gbox warn" style="margin-top:8px"><b>⚠ Największy ciągły blok poniżej 40 kB.</b> Aktualizacja po sieci (TLS) może się nie udać przy tak pofragmentowanej stercie — jeśli to się utrzymuje, zrestartuj urządzenie przed OTA.</div>':'')
   +'</div>';
- const rr=d.radar||{},psram=(d.psram!=null?d.psram:(d.memfull&&d.memfull.psram&&d.memfull.psram.total));
- const hasPsram=psram>0;
+ // Werdykt o mapie bierze sie WYLACZNIE z radar_map.ready (czyli: czy begin() zalozyl
+ // komplet buforow), a NIE z rozmiaru PSRAM. Panel do tej pory zgadywal stan mapy
+ // z ESP.getPsramSize() > 0 i przez to klamal dokladnie w jedynym ciekawym przypadku:
+ // PSRAM na pokladzie jest, alokacja padla, a blok pisal "Mapa radaru: OK".
+ // Uwaga na rm.err: po UDANYM starcie siedzi tam jeszcze
+ // poczatkowe "brak danych", dopoki nie przejdzie pierwszy fetch — dlatego
+ // niepuste err NIE jest tu przeslanka awarii, czyta je tylko galaz ready===false.
+ // Starszy firmware nie ma sekcji radar_map: wtedy stan NIEZNANY, nie "OK".
+ const rr=d.radar||{},rm=d.radar_map;
+ const rmOk=!!(rm&&rm.ready===true),rmBad=!!(rm&&rm.ready===false);
+ let mapTxt,mapCls;
+ if(rmOk){
+  const nf=rm.frames||0;
+  mapTxt='Animowana mapa opadów: <b>działa</b> — bufory klatek zarezerwowane w PSRAM (<b>'+kb(rm.bytes)+'</b>), wolnego PSRAM <b>'+kb(rm.psram_free)+'</b>.'
+   +' Klatek z danymi: <b>'+nf+'</b>.'
+   +(nf===0?' Zero klatek przy działających buforach to normalny stan przez chwilę po starcie — dane radaru dopiero lecą z sieci.':'');
+  mapCls='ok';
+ }else if(rmBad){
+  mapTxt='<b>Pomiar punktowy — bufory mapy nie zostały zarezerwowane przy starcie.</b>'
+   +' Animowana mapa jest niedostępna przez <b>całą sesję</b> (rezerwacja odbywa się raz, przy starcie) — pomaga zwykły restart urządzenia.'
+   +(rm.err?(' Powód: '+esc(rm.err)+'.'):'')
+   +' PSRAM teraz: wolne <b>'+kb(rm.psram_free)+'</b>, największy ciągły blok <b>'+kb(rm.psram_largest)+'</b>'
+   +' — jeśli wolnego jest dużo, a blok mały, pamięci nie zabrakło, tylko była pofragmentowana.';
+  // warn, nie err: brak mapy to ZAPROJEKTOWANY tryb awaryjny (radar leci pomiarem
+  // punktowym, ekrany dzialaja, dane nie gina, pomaga restart). Czerwien w tym panelu
+  // jest zarezerwowana dla rzeczy pokroju "ostatni restart to byla awaria" — wrzucenie
+  // do niej degradacji funkcji rozmywa sygnal.
+  mapCls='warn';
+ }else{
+  mapTxt='Stan animowanej mapy opadów: <b>nieznany</b> — ta odpowiedź /api/diag nie zawiera sekcji <b>radar_map</b> (starsze firmware). Nie znaczy to ani „działa”, ani „nie działa”.';
+  mapCls='warn';
+ }
  h+=fblock('Mapa radaru opadów',
-  (hasPsram?('Mapa radaru: <b>OK</b> — bufory klatek w PSRAM ('+kb(psram)+').')
-           :'<b>Pomiar punktowy (brak PSRAM przy starcie).</b> Animowana mapa niedostępna, radar w trybie awaryjnym.')
-   +' Pominięte klatki przy niskim RAM: <b>'+(rr.skips_low_ram||0)+'</b>.'
-   +(rr.err?(' Ostatni błąd: '+esc(rr.err)+'.'):''),
-  hasPsram?((rr.skips_low_ram||0)>0?'warn':'ok'):'warn');
+  mapTxt
+   +'<div style="margin-top:4px;color:var(--mute)">Osobno radar <b>punktowy</b> (poziom opadu nad domem, inne źródło niż mapa): pominiętych klatek przy niskim RAM <b>'+(rr.skips_low_ram||0)+'</b>'
+   +(rr.err?(', ostatni błąd: '+esc(rr.err)):'')+'.</div>',
+  mapCls);
  const w=d.wifi||{};
  h+=fblock('Wi-Fi',
   'Sieć <b>'+esc(w.ssid||'?')+'</b> · sygnał <b>'+(w.rssi!=null?w.rssi+' dBm':'?')+'</b>'
@@ -1981,6 +2010,31 @@ void apiDiag() {
   r["frame_age_s"] = d.radarAgeSec;
   r["skips_low_ram"] = d.radarSkips;
   r["err"] = d.radarErr;
+
+  // OSOBNY obiekt, celowo NIE dopisany do "radar" wyżej. To dwa różne źródła:
+  // "radar" to radar PUNKTOWY (RadarClient — jeden poziom opadu nad nami, własne
+  // liczniki skips_low_ram/err), a "radar_map" to animowana MAPA (radarmap — 13
+  // klatek 320x172 w PSRAM). Sklejenie ich w jeden obiekt jest dokładnie tym, co
+  // dziś wprowadza w błąd: panel pokazywał liczniki radaru punktowego pod
+  // nagłówkiem o mapie, więc awaria jednego wyglądała na stan drugiego.
+  //
+  // Uwaga przy czytaniu "err": po UDANYM starcie siedzi tam jeszcze początkowe
+  // "brak danych", dopóki nie przejdzie pierwszy fetch(). Niepuste "err" NIE jest
+  // więc dowodem awarii — werdykt o mapie wydaje wyłącznie "ready".
+  JsonObject rm = j["radar_map"].to<JsonObject>();
+  rm["ready"]         = radarmap::ready();      // komplet buforów stoi = mapa działa
+  rm["frames"]        = radarmap::count();      // ile klatek MA DANE (0 zaraz po starcie)
+  rm["tries"]         = radarmap::allocTries();
+  rm["bytes"]         = radarmap::bufferBytes();
+  // KOPIA, nie wskaznik: ArduinoJson v7 dla const char* zapisuje sam wskaznik, a gErr
+  // to statyczny bufor, do ktorego netTask pisze snprintf() w trakcie, gdy zadanie web
+  // serializuje ten dokument. Przypisanie char* (nie const) wymusza kopie w miejscu.
+  char rmErr[48];
+  strncpy(rmErr, radarmap::lastError(), sizeof(rmErr) - 1);
+  rmErr[sizeof(rmErr) - 1] = '\0';
+  rm["err"] = rmErr;
+  rm["psram_free"]    = ESP.getFreePsram();
+  rm["psram_largest"] = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
 
   JsonObject f = j["flights"].to<JsonObject>();
   f["ok_ago_s"] = ago(d.flightOkAt);

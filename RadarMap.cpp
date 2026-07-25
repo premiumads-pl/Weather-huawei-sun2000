@@ -37,6 +37,11 @@ uint32_t gUpdatedAt = 0;
 // gFrames[0] i pisal do wszystkich siedmiu, czyli pod adres 0. Jedna flaga zamiast
 // siedmiu sprawdzen wskaznika.
 bool gReady = false;
+// Ile razy begin() probowal zalozyc bufory. Dzis rusza raz przy starcie, wiec jest to
+// zawsze 1 — liczymy to mimo wszystko, bo bez tej liczby /api/diag nie odroznia "nie
+// probowano jeszcze" od "probowano i nie wyszlo", a pozniejsze ponawianie alokacji
+// nie musialoby juz zmieniac kontraktu diagnostyki.
+int gTries = 0;
 bool gDemo = false;
 bool gRain = false;
 bool gWantFetch = false;
@@ -301,6 +306,10 @@ void invalidate(int i, uint32_t epoch, int32_t offsetMin) {
 
 bool begin() {
   if (gMx == nullptr) gMx = xSemaphoreCreateMutex();
+  // Zliczamy PRZED sprawdzeniem psramFound(), zeby proba przerwana na braku PSRAM
+  // tez byla widoczna jako proba — inaczej allocTries() zostaloby 0 i wygladalo, jakby
+  // begin() w ogole nie ruszyl.
+  ++gTries;
   gReady = false;
   if (!psramFound()) {
     snprintf(gErr, sizeof(gErr), "brak PSRAM");
@@ -521,6 +530,23 @@ uint32_t updatedAt() {
 
 const char* lastError() {
   return gErr;
+}
+
+bool ready() {
+  return gReady;
+}
+
+int allocTries() {
+  return gTries;
+}
+
+size_t bufferBytes() {
+  if (!gReady) return 0;
+  // static_cast PRZED mnozeniem, a nie po: rozmiar pamieci jest wielkoscia typu size_t
+  // i tak ma byc liczony od poczatku do konca. FRAMES, W, H i kTilePx to same int-y,
+  // wiec bez tego rzutowania caly iloczyn poszedlby przez int i dopiero gotowy wynik
+  // trafilby do size_t — czyli o typie decydowalby przypadek, a nie to, co liczymy.
+  return static_cast<size_t>(FRAMES) * W * H + static_cast<size_t>(kTilePx) * kTilePx;
 }
 
 bool hasRain() {
