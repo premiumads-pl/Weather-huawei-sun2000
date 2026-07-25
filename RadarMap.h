@@ -47,7 +47,18 @@ struct Frame {
   bool valid = false;
 };
 
-bool begin();               // alokacja buforow w PSRAM
+bool begin();               // alokacja buforow w PSRAM (raz, w setup())
+
+// Wolane z netTask przy KAZDYM obiegu, PRZED decyzja o pobieraniu klatek.
+// Gdy bufory stoja — jeden odczyt bool i wyjscie, wiec kosztuje tyle co nic.
+// Gdy nie weszly przy starcie, ponawia alokacje w tle: pierwsza proba minute po
+// nieudanym begin(), potem odstep podwaja sie do 10 minut, przez 20 prob lacznie.
+// Do v145 nieudany begin() skazywal cala sesje na tryb zastepczy "pomiar punktowy"
+// az do recznego restartu — a alokacja padala zwykle nie z braku PSRAM, tylko przez
+// chwilowe zajecie/fragmentacje w trakcie rozruchu. Po udanej probie sam ustawia
+// wantsFetch(), zeby mapa nie czekala pusta do najblizszego cyklu (10 min).
+bool ensureReady();
+
 bool fetch();               // pobiera komplet klatek (wolane z netTask)
 
 int count();                             // ile klatek jest gotowych
@@ -59,27 +70,47 @@ uint8_t levelAt(int i, int x, int y);    // 0 = brak opadu, 1..5 rosnaco
 // przy budzecie 21 ms, a levelAt() to wywolanie do innej jednostki kompilacji,
 // ktore przy KAZDYM pikselu od nowa sprawdza indeks klatki i wskaznik bufora.
 // Model ekranu (RadarData.h) bierze ten wskaznik RAZ i indeksuje tablice sam.
-// Wskaznik jest trwaly: bufory alokuje raz begin() (ps_calloc), a zwalnia je
-// wylacznie releaseAll() na sciezce NIEUDANEGO startu.
+//
+// DLACZEGO WOLNO CZYTAC TO BEZ MUTEXA (rdzen 1 rysuje, rdzen 0 pobiera i alokuje):
+// bo raz opublikowany wskaznik bufora NIE JEST ZWALNIANY NIGDY — nie ma w module
+// zadnej sciezki, ktora by to robila. Alokacja (RadarMap.cpp, allocateBuffers())
+// pracuje na wskaznikach LOKALNYCH i podstawia do gFrames/gTile dopiero KOMPLET,
+// pod gMx; nieudana proba zwalnia wylacznie to, co sama zaalokowala, i nie dotyka
+// tego, co juz opublikowane. Zmiana jest wiec zawsze jednokierunkowa i jednorazowa:
+// nullptr -> wazny adres, i tam zostaje do konca sesji. Gorzej niz "nieaktualny"
+// ten wskaznik byc nie moze, a nieaktualny nullptr rysowanie i tak obsluguje
+// (RadarViewModel::levelAt zwraca 0).
+// Uwaga: ponawianie alokacji w tle (ensureReady()) tej gwarancji NIE oslabia —
+// przeciwnie, to wlasnie ono wymusilo powyzsza dyscypline. Wczesniej powod byl
+// slabszy ("bufory alokuje raz begin(), a zwalnia je releaseAll() na sciezce
+// nieudanego startu") i przestalby obowiazywac przy pierwszej probie ponowienia.
 const uint8_t* raster(int i);
 uint32_t updatedAt();                    // millis() ostatniego udanego pobrania
 const char* lastError();
 
 // --- stan alokacji buforow: do /api/diag ("radar_map") i sekcji "Zdrowie urzadzenia" ---
-// Czy begin() zarezerwowal KOMPLET buforow, czyli czy animowana mapa w ogole dziala.
+// Czy stoi KOMPLET buforow, czyli czy animowana mapa w ogole dziala. Zalozyc je moze
+// begin() przy starcie ALBO pozniejsze ensureReady() — raz ustawione true juz nie
+// wraca na false, bo opublikowanych buforow nic nie zwalnia (patrz raster() wyzej).
 // To NIE jest to samo, co count() > 0: count() mowi tylko, czy DOSZLY dane — jest 0
 // takze przez pierwsze sekundy po udanym starcie, zanim przejdzie pierwszy fetch().
-// Odwrotnie tez: przy nieudanej alokacji count() zostaje 0 na cala sesje i z samego
-// count() nie odroznisz "jeszcze nie pobrano" od "nie ma z czego rysowac". Panel do
-// tej pory zgadywal stan mapy z ESP.getPsramSize() > 0 i przez to klamal dokladnie
-// w jedynym ciekawym przypadku: PSRAM jest, a alokacja i tak padla.
+// Odwrotnie tez: przy nieudanej alokacji count() zostaje 0, dopoki bufory nie wejda,
+// i z samego count() nie odroznisz "jeszcze nie pobrano" od "nie ma z czego rysowac".
+// Panel do tej pory zgadywal stan mapy z ESP.getPsramSize() > 0 i przez to klamal
+// dokladnie w jedynym ciekawym przypadku: PSRAM jest, a alokacja i tak padla.
 bool ready();
 
 // Ile razy probowano zaalokowac bufory — liczy sie takze proba przerwana od razu na
-// !psramFound(). Dzis zawsze 1, bo begin() wolane jest raz przy starcie; pole istnieje
-// po to, zeby ewentualne pozniejsze ponawianie alokacji nie wymagalo zmiany kontraktu
-// /api/diag ani panelu — obie strony od razu pokaza prawdziwa liczbe prob.
+// !psramFound(). Nie jest to juz zawsze 1: po nieudanym starcie ensureReady() ponawia
+// alokacje w tle, wiec liczba mowi, ile podejsc bylo naprawde. Razem z next_try_s
+// w /api/diag daje pelny obraz: ile razy juz probowano i kiedy kolejna proba.
 int allocTries();
+
+// Ile sekund zostalo do kolejnej proby alokacji. 0 = bufory stoja (nie ma czego
+// probowac) albo termin wlasnie minal i proba pojdzie w najblizszym obiegu netTask.
+// -1 = juz nie probujemy: albo na pokladzie nie ma PSRAM, albo wyczerpal sie limit
+// prob i pomoze dopiero restart. Wylacznie do diagnostyki (/api/diag, panel).
+int32_t nextTrySec();
 
 // Ile bajtow PSRAM trzymaja bufory (klatki + kafelek roboczy); 0 gdy !ready().
 size_t bufferBytes();

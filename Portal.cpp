@@ -883,8 +883,17 @@ async function health(){
    +(nf===0?' Zero klatek przy działających buforach to normalny stan przez chwilę po starcie — dane radaru dopiero lecą z sieci.':'');
   mapCls='ok';
  }else if(rmBad){
+  // Zdanie o ponawianiu MUSI zalezec od obecnosci next_try_s: starszy firmware
+  // (do v145) naprawde probowal raz i czekal na restart, a nowy ponawia sam.
+  // Napisanie "urzadzenie probuje samo" bez tego pola byloby zgadywaniem — czyli
+  // dokladnie tym, za co ten blok dostal przepisanie (patrz komentarz wyzej).
+  const nt=(rm.next_try_s==null)?null:rm.next_try_s,ntry=rm.tries||0;
   mapTxt='<b>Pomiar punktowy — bufory mapy nie zostały zarezerwowane przy starcie.</b>'
-   +' Animowana mapa jest niedostępna przez <b>całą sesję</b> (rezerwacja odbywa się raz, przy starcie) — pomaga zwykły restart urządzenia.'
+   +(nt===null
+     ?' Animowana mapa jest niedostępna przez <b>całą sesję</b> (rezerwacja odbywa się raz, przy starcie) — pomaga zwykły restart urządzenia.'
+     :(nt<0
+       ?(' Urządzenie ponawiało rezerwację samo (prób: <b>'+ntry+'</b>) i po serii nieudanych <b>przestało próbować</b> — teraz pomoże dopiero restart.')
+       :(' Urządzenie <b>próbuje samo</b>: kolejne podejście '+(nt>0?('za <b>'+(nt>=60?(Math.round(nt/60)+' min'):(nt+' s'))+'</b>'):'<b>lada moment</b>')+', dotychczasowych prób: <b>'+ntry+'</b>. Restart nie jest konieczny — mapa może wejść sama, gdy PSRAM się zwolni.')))
    +(rm.err?(' Powód: '+esc(rm.err)+'.'):'')
    +' PSRAM teraz: wolne <b>'+kb(rm.psram_free)+'</b>, największy ciągły blok <b>'+kb(rm.psram_largest)+'</b>'
    +' — jeśli wolnego jest dużo, a blok mały, pamięci nie zabrakło, tylko była pofragmentowana.';
@@ -2025,6 +2034,10 @@ void apiDiag() {
   rm["ready"]         = radarmap::ready();      // komplet buforów stoi = mapa działa
   rm["frames"]        = radarmap::count();      // ile klatek MA DANE (0 zaraz po starcie)
   rm["tries"]         = radarmap::allocTries();
+  // Sekundy do kolejnej proby alokacji (0 = bufory stoja albo proba jest wlasnie
+  // nalezna, -1 = juz nie probujemy). Bez tego pola "tries" > 1 mowiloby, ze cos
+  // sie dzieje, ale nie czy JESZCZE sie dzieje.
+  rm["next_try_s"]    = radarmap::nextTrySec();
   rm["bytes"]         = radarmap::bufferBytes();
   // KOPIA, nie wskaznik: ArduinoJson v7 dla const char* zapisuje sam wskaznik, a gErr
   // to statyczny bufor, do ktorego netTask pisze snprintf() w trakcie, gdy zadanie web

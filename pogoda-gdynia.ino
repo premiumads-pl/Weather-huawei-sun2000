@@ -1070,6 +1070,14 @@ static void netTask(void*) {
     // ---- animowana mapa opadow (7 kafelkow, 2 h wstecz) ----
     // Idzie PO radarze punktowym i PRZED lotami: sciaga 7 obrazkow, wiec nie chcemy
     // tego robic czesto ani rownolegle z niczym ciezkim.
+    // Bufory mogly nie wejsc przy starcie (setup() wola begin() w chwili, gdy pamiec
+    // zajmuja wlasnie bufor ekranu, BLE i pierwsze TLS) — wtedy do niedawna cala
+    // sesja szla trybem zastepczym "pomiar punktowy" az do recznego restartu.
+    // ensureReady() ponawia alokacje w tle z rosnacym odstepem. Gdy bufory STOJA —
+    // a to jest przypadek normalny — kosztuje jeden odczyt bool, wiec moze stac
+    // w kazdym obiegu netTask. Po udanej probie sam podnosi wantsFetch(), czyli
+    // warunek nizej odpala pobranie od razu, bez czekania na termin.
+    radarmap::ensureReady();
     if (radarmap::wantsFetch() || static_cast<int32_t>(millis() - nextRadarMapAt) >= 0) {
       if (radarmap::fetch()) {
         nextRadarMapAt = millis() + cfg::RADAR_MAP_REFRESH_MS;
@@ -1620,7 +1628,15 @@ void setup() {
   // ma bronić.
   ble::begin();
   touch::begin();
-  radarmap::begin();
+  // Wynik NIE jest juz ignorowany. Nieudana alokacja nie konczy sprawy — netTask
+  // ponawia ja w tle (radarmap::ensureReady()) — ale ma zostawic slad w dzienniku
+  // razem z POWODEM, bo to jedyne miejsce, w ktorym widac stan pamieci dokladnie
+  // w chwili rozruchu. Miejsce wywolania zostaje tam gdzie bylo (po ui.begin()):
+  // bufor ekranu ma byc zajety PRZED tymi 715 kB, nie po nich.
+  if (!radarmap::begin()) {
+    LOG("Radar mapa: bufory NIE weszly przy starcie (%s) — netTask bedzie ponawial",
+        radarmap::lastError());
+  }
 
   esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_BSS_RSSI_LOW, &onRssiLow, nullptr);
 

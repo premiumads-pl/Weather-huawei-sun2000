@@ -2,6 +2,13 @@
 
 #include "Log.h"
 
+// heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) — przedbieg przed alokacja
+// buforow (patrz allocateBuffers). Sam ps_calloc() z Arduino.h nie odpowiada na
+// pytanie "czy jest sens probowac", a przy ponawianiu chcemy je zadawac TANIO.
+// Modul jest juz zlinkowany (ESP.getFreeHeap() z niego korzysta, a Portal.cpp
+// i WeatherUi.cpp wolaja go tak samo) — to nie jest nowa zaleznosc.
+#include "esp_heap_caps.h"
+
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
@@ -23,6 +30,27 @@ constexpr int kZoom = 6;
 constexpr int kTilePx = 256;
 constexpr size_t kMaxPng = 90000;
 
+// --- ponawianie alokacji buforow (patrz ensureReady() ponizej, tuz za begin()) ---
+// Alokacja przy starcie potrafi paść nie dlatego, ze PSRAM-u brakuje, tylko
+// dlatego, ze akurat w tej chwili jest zajety albo pofragmentowany (bufor ekranu,
+// stos BLE, pierwsze polaczenie TLS). Chwile pozniej sytuacja bywa zupelnie inna,
+// wiec ponawiamy — ale z odstepem, bo 715 kB to nie jest proba za darmo.
+// Pierwsza ponowna proba po minucie (natychmiastowa nie mialaby czego zastac),
+// potem odstep sie podwaja do sufitu 10 minut.
+constexpr uint32_t kRetryFirstMs = 60000;
+constexpr uint32_t kRetryMaxMs = 600000;
+// Twardy limit prob LACZNIE z ta z begin(). Po nim odpuszczamy — nie dlatego, ze
+// pozniej nie moglaby sie udac, tylko dlatego, ze kazda nieudana proba pisze linijke
+// do dziennika, a dziennik ma sluzyc do diagnozy, nie do liczenia porazek do konca
+// swiata. 20 prob z tym backoffem to ok. 3 godziny szukania okazji.
+constexpr int kRetryLimit = 20;
+// Zapas ponad sam rozmiar buforow, sprawdzany w przedbiegu alokacji. Dekoder PNG
+// (sizeof(PNG), ok. 46 kB) i bufor pobieranego kafelka (do kMaxPng) tez ida
+// z PSRAM — przy KAZDYM kaflu, w kazdym fetch(). Zajecie na klatki calej wolnej
+// PSRAM co do bajta daloby mape formalnie "gotowa", ktorej fetch() nigdy by nie
+// napelnil; reszta marginesu idzie na naglowki 14 blokow sterty.
+constexpr size_t kAllocMarginB = 160 * 1024;
+
 // Bufory w PSRAM. 13 klatek x 320x172 B (55 040 B/klatka) = 715 520 B (~715 kB)
 // — w SRAM nie do pomyslenia (budzet SRAM jest <76000 B na CALY program, patrz
 // tools/release.sh). Wzgledem 7 klatek (do v109) to +330 kB PSRAM — nie liczy
@@ -32,16 +60,20 @@ uint8_t* gTile = nullptr;    // 256x256 poziomow, bufor roboczy jednego kafelka
 Frame gMeta[FRAMES];
 int gCount = 0;
 uint32_t gUpdatedAt = 0;
-// Komplet buforow stoi. begin() alokowal 7 klatek w petli i przy porazce wychodzil,
-// zostawiajac czesc wskaznikow waznych, a reszte NULL — a setDemo() sprawdzal tylko
-// gFrames[0] i pisal do wszystkich siedmiu, czyli pod adres 0. Jedna flaga zamiast
-// siedmiu sprawdzen wskaznika.
+// Komplet buforow stoi. Patrz allocateBuffers() nizej — tam siedzi cala historia
+// tej flagi i powod, dla ktorego publikujemy KOMPLET, a nie klatka po klatce.
+// Raz ustawiona na true JUZ NIE WRACA na false: opublikowanego bufora nie zwalnia
+// nic i nigdy (na tym stoi prawo rysowania do czytania raster() bez mutexa).
 bool gReady = false;
-// Ile razy begin() probowal zalozyc bufory. Dzis rusza raz przy starcie, wiec jest to
-// zawsze 1 — liczymy to mimo wszystko, bo bez tej liczby /api/diag nie odroznia "nie
-// probowano jeszcze" od "probowano i nie wyszlo", a pozniejsze ponawianie alokacji
-// nie musialoby juz zmieniac kontraktu diagnostyki.
+// Ile razy probowano zalozyc bufory — liczy sie takze proba przerwana od razu na
+// !psramFound(). To juz NIE jest zawsze 1 (jak bylo, dopoki alokacja szla wylacznie
+// z begin()): przy nieudanym starcie netTask ponawia ja w tle przez ensureReady(),
+// wiec liczba mowi, ile podejsc naprawde bylo — i sluzy zarazem za licznik twardego
+// limitu prob (kRetryLimit).
 int gTries = 0;
+// Ponawianie alokacji w tle. To JEDYNY nowy koszt RAM-u tej zmiany: 8 B.
+uint32_t gNextTryAt = 0;   // millis(), kiedy wolno sprobowac ponownie
+uint32_t gBackoffMs = 0;   // rosnacy odstep miedzy probami
 bool gDemo = false;
 bool gRain = false;
 bool gWantFetch = false;
@@ -277,14 +309,98 @@ void resample(uint8_t* dst, int tileX, int tileY) {
   }
 }
 
-// Porazka alokacji zostawia jednoznaczny stan: albo stoi komplet, albo nic.
-void releaseAll() {
-  for (int i = 0; i < FRAMES; ++i) {
-    free(gFrames[i]);
-    gFrames[i] = nullptr;
+// JEDYNE miejsce, w ktorym powstaja bufory mapy — wolane i przy starcie (begin()),
+// i pozniej, przy ponawianiu w tle (ensureReady()).
+//
+// ZELAZNA ZASADA: pracujemy na wskaznikach LOKALNYCH i publikujemy dopiero KOMPLET.
+// Nieudana proba zwalnia WYLACZNIE to, co sama zaalokowala — nigdy niczego, co juz
+// stoi w gFrames/gTile. Dzieki temu opublikowany wskaznik nie przestaje byc wazny
+// NIGDY, a przejscie jest jednokierunkowe: nullptr -> wazny adres i koniec.
+// Na tym stoi prawo zadania rysujacego (rdzen 1) do czytania raster()/count()/
+// frame() BEZ brania gMx — patrz komentarz przy raster() w RadarMap.h. Gdyby proba
+// ponowienia pracowala na globalach, rysowanie mogloby trafic na wskaznik w trakcie
+// podmiany albo na bufor wlasnie zwolniony przez rdzen 0.
+//
+// To jest ta sama wiedza, ktora do niedawna niosl komentarz przy releaseAll():
+// pierwotny begin() alokowal klatki w petli i przy porazce wychodzil, zostawiajac
+// czesc wskaznikow WAZNYCH, a reszte NULL — a setDemo() sprawdzal tylko gFrames[0]
+// i pisal do wszystkich FRAMES klatek, czyli pod adres 0. Stad jedna flaga (gReady)
+// zamiast FRAMES sprawdzen wskaznika i stad publikacja kompletem: stan po probie ma
+// byc jednoznaczny — albo stoi calosc, albo nie zmienilo sie nic.
+bool allocateBuffers() {
+  // Zliczamy PRZED sprawdzeniem psramFound(), zeby proba przerwana na braku PSRAM
+  // tez byla widoczna jako proba — inaczej allocTries() zostaloby 0 i wygladalo, jakby
+  // begin() w ogole nie ruszyl.
+  ++gTries;
+  if (!psramFound()) {
+    snprintf(gErr, sizeof(gErr), "brak PSRAM");
+    return false;
   }
-  free(gTile);
-  gTile = nullptr;
+
+  // Tani przedbieg przed 14 alokacjami. Same proby tez kosztuja: ps_calloc() zeruje
+  // to, co dostanie, a seria czesciowo udanych podejsc mieli sterte PSRAM. Przy
+  // ponawianiu co minute chcemy wiec zapytac NAJPIERW, czy jest o co walczyc.
+  // Dwa warunki, bo mowia o czym innym: albo sumy brakuje (za malo pamieci), albo
+  // suma jest, ale rozsypana na kawalki mniejsze niz JEDNA klatka (fragmentacja) —
+  // i to rozroznienie jest tym, po co ta funkcja w ogole wpisuje liczby do gErr.
+  const size_t frameB = static_cast<size_t>(W) * H;
+  const size_t need = static_cast<size_t>(FRAMES) * frameB +
+                      static_cast<size_t>(kTilePx) * kTilePx + kAllocMarginB;
+  const size_t freePs = ESP.getFreePsram();
+  if (freePs < need) {
+    snprintf(gErr, sizeof(gErr), "PSRAM %u kB, trzeba %u kB",
+             static_cast<unsigned>(freePs / 1024), static_cast<unsigned>(need / 1024));
+    return false;
+  }
+  const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+  if (largest < frameB) {
+    snprintf(gErr, sizeof(gErr), "PSRAM blok %u kB < klatka %u kB",
+             static_cast<unsigned>(largest / 1024), static_cast<unsigned>(frameB / 1024));
+    return false;
+  }
+
+  uint8_t* frames[FRAMES] = {};
+  for (int i = 0; i < FRAMES; ++i) {
+    frames[i] = static_cast<uint8_t*>(ps_calloc(frameB, 1));
+    if (frames[i] == nullptr) {
+      // NUMER klatki, na ktorej padlo, jest tu cala informacja diagnostyczna:
+      // porazka na pierwszej to zwykly brak pamieci, porazka na dziesiatej to
+      // fragmentacja (dziewiec razy po 55 kB weszlo, wiec pamiec byla — tylko
+      // w kawalkach). Bez tej liczby oba przypadki wygladaja identycznie.
+      snprintf(gErr, sizeof(gErr), "brak PSRAM na klatke %d z %d", i + 1, FRAMES);
+      for (int k = 0; k < i; ++k) free(frames[k]);
+      return false;
+    }
+  }
+  uint8_t* tile = static_cast<uint8_t*>(ps_malloc(kTilePx * kTilePx));
+  if (tile == nullptr) {
+    snprintf(gErr, sizeof(gErr), "brak PSRAM na kafelek (klatki weszly)");
+    for (int i = 0; i < FRAMES; ++i) free(frames[i]);
+    return false;
+  }
+
+  // PUBLIKACJA. ps_calloc() wyzej wyzerowalo 715 kB i szlo POZA mutexem CELOWO:
+  // kilkanascie milisekund zerowania pod gMx zablokowaloby zadanie rysujace przy
+  // budzecie 21 ms na klatke. Pod mutexem zostaje samo przepisanie 14 wskaznikow
+  // i wyzerowanie metadanych — kilkadziesiat bajtow.
+  xSemaphoreTake(gMx, portMAX_DELAY);
+  for (int i = 0; i < FRAMES; ++i) {
+    gFrames[i] = frames[i];
+    gMeta[i] = Frame{};
+  }
+  gTile = tile;
+  gCount = 0;   // dane dopiero przed nami — pierwszy fetch() jeszcze nie przeszedl
+  xSemaphoreGive(gMx);
+
+  computeGeometry();
+  gReady = true;
+  // Blad poprzedniej proby MUSI stad zniknac. /api/diag oddaje gErr zawsze, takze
+  // przy ready===true, wiec bez tego panel pisalby "brak PSRAM na klatke 10 z 13"
+  // pod naglowkiem dzialajacej mapy. Wracamy do stanu poczatkowego: buforow jest
+  // komplet, danych jeszcze nie ma.
+  snprintf(gErr, sizeof(gErr), "brak danych");
+  LOG("Radar mapa: %d klatek x %d B w PSRAM", FRAMES, W * H);
+  return true;
 }
 
 // Klatka, ktora nie doszla albo sie nie zdekodowala, NIE moze zostac z poprzedniego
@@ -306,34 +422,50 @@ void invalidate(int i, uint32_t epoch, int32_t offsetMin) {
 
 bool begin() {
   if (gMx == nullptr) gMx = xSemaphoreCreateMutex();
-  // Zliczamy PRZED sprawdzeniem psramFound(), zeby proba przerwana na braku PSRAM
-  // tez byla widoczna jako proba — inaczej allocTries() zostaloby 0 i wygladalo, jakby
-  // begin() w ogole nie ruszyl.
-  ++gTries;
   gReady = false;
-  if (!psramFound()) {
-    snprintf(gErr, sizeof(gErr), "brak PSRAM");
+  if (!allocateBuffers()) {
+    // Nie odpuszczamy na cala sesje, jak do niedawna — tylko planujemy pierwsze
+    // ponowienie. NIE natychmiast: gdy alokacja padla w setup(), to zwykle dlatego,
+    // ze reszta rozruchu (bufor ekranu, stos BLE, pierwsze TLS) wlasnie zajela
+    // pamiec — sekunde pozniej nie ma sie co zmienic. Reszte robi netTask przez
+    // ensureReady(); przy !psramFound() ta funkcja i tak nie ruszy, wiec termin
+    // ustawiony tu na zapas nikomu nie szkodzi.
+    gBackoffMs = kRetryFirstMs;
+    gNextTryAt = millis() + gBackoffMs;
+  }
+  return gReady;
+}
+
+// Wolane z netTask przy KAZDYM obiegu — gdy bufory stoja, to jeden odczyt bool
+// i wyjscie. Cala reszta dzieje sie wylacznie w sesji, w ktorej start sie nie udal.
+bool ensureReady() {
+  if (gReady) return true;
+  // Bez PSRAM nie ma czego ponawiac: to nie jest stan, ktory sam sie zmieni.
+  // Wychodzimy PRZED allocateBuffers(), zeby allocTries() nie pompowalo sie
+  // o "proby", ktorych nikt nie podjal — licznik ma zostac uczciwy.
+  if (!psramFound()) return false;
+  if (gMx == nullptr) return false;   // begin() jeszcze nie przeszlo
+  if (gTries >= kRetryLimit) return false;
+  // Porownanie przez roznice rzutowana na int32_t — jak wszedzie w tym projekcie.
+  // Bezposrednie millis() < gNextTryAt zalamuje sie przy przewinieciu licznika
+  // (co 49 dni), a to urzadzenie chodzi miesiacami.
+  if (static_cast<int32_t>(millis() - gNextTryAt) < 0) return false;
+
+  if (!allocateBuffers()) {
+    if (gBackoffMs == 0) gBackoffMs = kRetryFirstMs;
+    else if (gBackoffMs < kRetryMaxMs) gBackoffMs *= 2;
+    if (gBackoffMs > kRetryMaxMs) gBackoffMs = kRetryMaxMs;
+    gNextTryAt = millis() + gBackoffMs;
+    LOG("Radar mapa: proba %d/%d nieudana (%s), kolejna za %lu s", gTries, kRetryLimit,
+        gErr, static_cast<unsigned long>(gBackoffMs / 1000));
     return false;
   }
 
-  for (int i = 0; i < FRAMES; ++i) {
-    gFrames[i] = static_cast<uint8_t*>(ps_calloc(W * H, 1));
-    if (gFrames[i] == nullptr) {
-      releaseAll();
-      snprintf(gErr, sizeof(gErr), "brak PSRAM na klatki");
-      return false;
-    }
-  }
-  gTile = static_cast<uint8_t*>(ps_malloc(kTilePx * kTilePx));
-  if (gTile == nullptr) {
-    releaseAll();
-    snprintf(gErr, sizeof(gErr), "brak PSRAM na kafelek");
-    return false;
-  }
-
-  computeGeometry();
-  gReady = true;
-  LOG("Radar mapa: %d klatek x %d B w PSRAM", FRAMES, W * H);
+  // Bufory weszly — i sa PUSTE. Bez tego mapa czekalaby na najblizszy termin
+  // z nextRadarMapAt, czyli do 10 minut z pusta animacja, mimo ze wszystko juz
+  // dziala. Ta sama sciezka, ktorej uzywa wylaczenie symulacji (setDemo(false)).
+  gWantFetch = true;
+  LOG("Radar mapa: bufory weszly za %d podejsciem — pelna mapa wraca", gTries);
   return true;
 }
 
@@ -538,6 +670,19 @@ bool ready() {
 
 int allocTries() {
   return gTries;
+}
+
+int32_t nextTrySec() {
+  if (gReady) return 0;
+  // -1 to "juz nie probujemy": albo nie ma PSRAM (nic sie nie zmieni), albo limit
+  // prob wyczerpany. Panel ma z tego zrobic zdanie o restarcie, a nie odliczanie
+  // do proby, ktora nigdy nie nadejdzie.
+  if (!psramFound() || gTries >= kRetryLimit) return -1;
+  // Odejmowanie na uint32_t i dopiero potem znak — jak w ensureReady(), z tego
+  // samego powodu (przewiniecie millis()).
+  const int32_t leftMs = static_cast<int32_t>(gNextTryAt - millis());
+  if (leftMs <= 0) return 0;   // termin juz minal, proba pojdzie w najblizszym obiegu
+  return (leftMs + 999) / 1000;   // w gore: "za 0 s" przy 400 ms wyglada na blad
 }
 
 size_t bufferBytes() {

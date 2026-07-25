@@ -39,8 +39,13 @@ struct RadarViewModel {
   int16_t shiftY = 0;
 
   // Raster wybranej klatki: rw*rh bajtow poziomu opadu (0 = sucho, 1..5 rosnaco),
-  // w PSRAM. nullptr = brak. Bufory alokuje raz radarmap::begin() i nie zwalnia ich
-  // az do nieudanego startu, wiec wskaznik przezyje klatke rysowania.
+  // w PSRAM. nullptr = brak. GOLY wskaznik, nie kopia — i to jest bezpieczne, bo
+  // opublikowanego bufora radarmap NIE ZWALNIA NIGDY: alokacja podstawia komplet
+  // wskaznikow pod mutexem i tylko raz, a nieudana proba (takze ta ponawiana w tle
+  // przez radarmap::ensureReady()) zwalnia wylacznie wlasne, jeszcze nieopublikowane
+  // bufory. Przejscie jest jednokierunkowe — nullptr -> wazny adres — wiec wskaznik
+  // przezyje nie tylko te klatke rysowania, ale cala sesje. Pelne uzasadnienie stoi
+  // przy radarmap::raster() w RadarMap.h.
   const uint8_t* raster = nullptr;
   int16_t rw = 0;
   int16_t rh = 0;
