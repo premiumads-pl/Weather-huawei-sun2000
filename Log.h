@@ -23,7 +23,10 @@ struct Diag {
   char radarErr[48] = {};
   char flightErr[48] = {};
   char airErr[48] = {};
-  char otaMsg[48] = {};
+  // Bylo tu `char otaMsg[48]`. NIKT go nigdy nie zapisywal — /api/diag czytalo je
+  // (zawsze puste), wiec panel dostawal martwy komunikat OTA. Tresc na zywo jest w
+  // otaStatus().message (Ota.h), wypelnianym przez setMsg() w Ota.cpp, i stamtad
+  // /api/diag bierze ja teraz bezposrednio. 48 B w .bss odzyskane.
   char mqttErr[48] = {};
 
   uint32_t mqttConnects = 0;
@@ -56,7 +59,14 @@ struct Diag {
   int airIndex = 0;             // 1..6 wg tabeli ARMAAG, 0 = brak (patrz AirClient.cpp)
   uint32_t airSampleEpoch = 0;  // epoch UTC najswiezszej wykorzystanej probki PM, 0 = brak
   int otaRemote = 0;
-  uint32_t otaOkAt = 0;
+  uint32_t otaOkAt = 0;      // ostatnie UDANE pobranie numeru wersji z GitHuba
+  // Ostatnia ZAKONCZONA proba pobrania wersji — stemplowana i po sukcesie, i po
+  // porazce (Ota.cpp). To NIE to samo, co otaOkAt powyzej, i wlasnie ta roznica jest
+  // tu cala wartoscia: bez niej panel nie odrozni "sprawdzanie jeszcze trwa" od
+  // "sprawdzanie sie skonczylo i tyle z niego wyszlo", a po nieudanym sprawdzeniu
+  // czytalby STARE otaRemote jako swiezy wynik. Panel porownuje oba stemple: swiezy
+  // otaCheckedAt bez ruchu na otaOkAt = proba byla i sie nie udala.
+  uint32_t otaCheckedAt = 0;
   uint32_t wifiConnects = 0;
   uint32_t minHeap = 0xFFFFFFFF;
   uint32_t stackNet = 0;   // zapas stosu netTask (B)

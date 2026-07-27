@@ -552,7 +552,10 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
 <div class=secbody>
  <div class=blk>
   <h2>Aktualizacje</h2>
-  <div class=hint>Urządzenie samo sprawdza GitHub co 15 minut.</div>
+  <div class=hint>Urządzenie samo sprawdza GitHub co 15 minut. „Sprawdź teraz” robi to
+   od razu i relacjonuje wynik poniżej: czy jest nowsza wersja, a jeśli jest — postęp
+   pobierania, instalację i restart. Zostaw tę sekcję otwartą, bo relacja urywa się
+   w chwili, gdy z niej wyjdziesz (urządzenie aktualizuje się dalej).</div>
   <button class=s onclick=upd()>Sprawdź teraz</button>
   <div class=hint id=umsg></div>
  </div>
@@ -1404,10 +1407,132 @@ async function saveMqtt(){
  $('qmsg').textContent=r.msg;
  load();
 }
+// --- Aktualizacje: prowadzimy uzytkownika przez CALY proces ---
+// Wczesniej klikniecie wypisywalo JEDNO stale zdanie ("sprawdzanie zlecone...") i na tym
+// koniec — nie bylo widac ani czy sprawdzenie sie odbylo, ani czym sie skonczylo. Zdarzylo
+// sie to naprawde: GitHub jeszcze nie przestawil "latest", urzadzenie zobaczylo wlasna
+// wersje jako najnowsza i nic nie zrobilo, a panel napisal to samo co zawsze.
+// Teraz odpytujemy /api/diag co 1,5 s i relacjonujemy stan na zywo.
+// TO NIE JEST STALY POLLING i nie wolno go w taki zamienic: /api/diag bywa ciezkie na
+// wolnym laczu. Petla rusza WYLACZNIE na klikniecie i konczy sie sama — po rozstrzygnieciu,
+// po limicie ciszy, albo gdy uzytkownik wyjdzie z sekcji Aktualizacje.
+let updBusy=false;
+// Ta sama zasada, co w liveVisible() wyzej: .active = sidebar na komputerze, .open =
+// rozwiniety naglowek na telefonie. document.hidden CELOWO nie wchodzi w gre — przelaczenie
+// karty przegladarki w trakcie instalacji nie moze zgubic wyniku, na ktory czekamy.
+function updVisible(){const el=$('sec-aktual');
+ return !!el&&(el.classList.contains('active')||el.classList.contains('open'));}
+function usay(t,c){$('umsg').className='hint'+(c?' '+c:'');$('umsg').textContent=t;}
+const usleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function udiag(){try{return await(await fetch('/api/diag?'+Date.now())).json();}catch(e){return null;}}
+// Chwila (w sekundach uptime'u), w ktorej urzadzenie SKONCZYLO ostatnia probe sprawdzenia
+// (checked_ago_s) albo ostatnia UDANA probe (ok_ago_s). Samo *_ago_s rosnie z kazdym
+// odpytem, wiec nie da sie go porownac miedzy odpytami — ta roznica stoi w miejscu.
+// -1 = jeszcze nigdy.
+function uat(d,k){const o=d.ota||{},v=o[k];
+ return (v==null||v<0)?-1:((d.uptime_s||0)-v);}
 async function upd(){
- $('umsg').textContent='Sprawdzam…';
- const r=await(await fetch('/api/update',{method:'POST'})).json();
- $('umsg').textContent=r.msg;
+ if(updBusy)return;
+ updBusy=true;
+ try{
+  usay('Sprawdzam…');
+  // Punkt odniesienia SPRZED zlecenia: wersja lokalna i stemple obu ostatnich prob.
+  // Bez nich nie odroznimy NASZEGO sprawdzenia od automatycznego, ktore moglo przejsc
+  // chwile wczesniej (cykl 15 minut) — i panel oglosilby cudzy wynik jako swoj.
+  const d0=await udiag();
+  let local=d0?d0.fw:null,lastUp=d0?(d0.uptime_s||0):0;
+  const base={chk:d0?uat(d0,'checked_ago_s'):-1,ok:d0?uat(d0,'ok_ago_s'):-1};
+  let r;
+  try{r=await(await fetch('/api/update',{method:'POST'})).json();}
+  catch(e){usay('Nie udało się zlecić sprawdzenia — urządzenie nie odpowiada.','err');return;}
+  if(!r.ok){usay(r.msg||'Sprawdzenie nie ruszyło.','err');return;}
+  usay(r.msg||'Sprawdzam…');
+  let installing=false;   // wiadomo juz, ze leci nowa wersja (pobieranie/zapis/restart)
+  let gone=false;         // urzadzenie przestalo odpowiadac — zwykle wlasnie sie restartuje
+  // Limit liczymy od OSTATNIEGO objawu zycia, a nie od kliknięcia. Samo sprawdzenie trwa
+  // sekundy, ale pobranie 1,3 MB przez TLS i zapis do flasha to grubo wiecej niz poltorej
+  // minuty — sztywne 90 s od kliknięcia ucinaloby relacje w polowie udanej instalacji.
+  // Odliczamy wiec 90 s CISZY: kazdy postep przesuwa termin, brak postepu konczy petle.
+  let dl=Date.now()+90000;
+  while(Date.now()<dl){
+   await usleep(1500);
+   if(!updVisible())return;   // uzytkownik wyszedl z sekcji — nie meczymy urzadzenia w tle
+   const d=await udiag();
+   if(!d){
+    // Cisza w trakcie instalacji jest NORMALNA: urzadzenie wlasnie sie restartuje.
+    // Poza instalacja to zwykla utrata lacznosci — czekamy tak samo, bo limit ciszy
+    // i tak zamknie petle.
+    gone=true;
+    usay(installing?'Instaluję i restartuję…':'Urządzenie nie odpowiada — czekam…');
+    continue;
+   }
+   if(local==null)local=d.fw;
+   if(gone){
+    gone=false;
+    if(d.fw>local){
+     usay('Zainstalowano v'+d.fw+'. Odświeżam panel…','ok');
+     setTimeout(()=>location.reload(),1000);
+     return;
+    }
+    if(installing){
+     usay('Urządzenie wróciło na v'+d.fw+' — instalacja się nie powiodła. '
+      +'Szczegóły w Diagnostyce.','err');
+     return;
+    }
+   }
+   // Restart (nasz albo cudzy) zeruje uptime, a razem z nim OBA stemple — stary punkt
+   // odniesienia przestaje wtedy cokolwiek znaczyc i trzeba go porzucic.
+   if(d.uptime_s<lastUp){base.chk=-1;base.ok=-1;}
+   lastUp=d.uptime_s;
+   const o=d.ota||{};
+   if(o.state==='downloading'){
+    dl=Date.now()+90000;
+    // "downloading" to NIE zawsze pobieranie firmware'u: przy malej stercie Ota.cpp
+    // ustawia ten stan takze po to, zeby UI oddalo 150 kB bufora PRZED ponownym
+    // sprawdzeniem wersji (patrz "SIEC BEZPIECZENSTWA" w Ota.cpp). Rozstrzyga `remote`
+    // — dopiero przy realnym pobieraniu jest juz podniesione ponad wersje lokalna.
+    if(o.remote>local){installing=true;
+     usay('Pobieram v'+o.remote+'… '+(o.progress||0)+'%');}
+    else{usay(o.msg||'Zwalniam pamięć…');}
+    continue;}
+   if(o.state==='done'){installing=true;dl=Date.now()+90000;
+    usay('Zapisano nową wersję — restartuję…');continue;}
+   if(o.state==='checking'){usay('Sprawdzam GitHub…');continue;}
+   // `msg` w stanie FAILED bywa ostatnim komunikatem POSTEPU ("Sprawdzam aktualizacje..."),
+   // a nie opisem bledu — tym samym polem leci jedno i drugie. Sam nie utrzyma wiec calego
+   // zdania i musi dostac wlasny naglowek, inaczej na czerwono staloby "Sprawdzam...".
+   if(o.state==='failed'){
+    usay('Nie powiodło się: '+(o.msg||'brak szczegółów')
+     +'. Urządzenie zaraz się zrestartuje — sprawdź potem stan w Diagnostyce.','err');
+    return;}
+   // Stan spoczynkowy. Rozstrzyga stempel, a nie sam stan: dopoki NASZA proba sie nie
+   // skonczyla, czekamy dalej (prosbe odbiera zadanie sieciowe, co potrafi chwile potrwac).
+   // Margines 1 s NIE jest ostrozowscia na wyrost: uptime_s i *_ago_s to dwa NIEZALEZNE
+   // dzielenia calkowite przez 1000 tego samego millis(), wiec ich roznica skacze o +-1
+   // miedzy odpytami przy CALKOWICIE nieruchomym stemplu. Bez marginesu ten skok czytaloby
+   // sie jako "nowe sprawdzenie sie skonczylo" i panel oglaszalby wynik POPRZEDNIEGO,
+   // automatycznego sprawdzenia. Realne sprawdzenie i tak przesuwa stempel o sekundy.
+   const chk=uat(d,'checked_ago_s');
+   if(chk<0||chk<=base.chk+1){usay('Sprawdzam GitHub…');continue;}
+   // Proba sie skonczyla. Czy ODCZYT WERSJI sie udal? Mowi o tym drugi stempel — bez niego
+   // stare `remote` z poprzedniego sprawdzenia udawaloby swiezy wynik i po nieudanym
+   // sprawdzeniu panel oglaszalby "masz najnowsza wersje".
+   const okAt=uat(d,'ok_ago_s');
+   if(okAt<0||okAt<=base.ok+1){   // ten sam margines zaokraglenia, co wyzej
+    usay('Nie udało się odczytać wersji z GitHuba — sprawdzenie się nie powiodło. '
+     +'Spróbuj za chwilę.','err');
+    return;
+   }
+   if(o.remote>local){installing=true;dl=Date.now()+90000;
+    usay('Jest nowsza wersja v'+o.remote+' — pobieram i instaluję…');continue;}
+   // GitHub potrafi jeszcze przez chwile po wydaniu podawac STARA wersje jako "latest" —
+   // zaliczylismy to na zywo. Dlatego zaden ostateczny ton.
+   usay('Masz najnowszą wersję (v'+local+'). Najnowsza na GitHubie: v'+o.remote+'. '
+    +'Jeśli wydanie właśnie powstało, GitHub może potrzebować chwili — spróbuj za minutę.','ok');
+   return;
+  }
+  usay('Nie doczekałem się odpowiedzi — sprawdź stan w Diagnostyce.','err');
+ }finally{updBusy=false;}
 }
 async function fgt(){
  if(!confirm('Usunąć zapisaną sieć Wi-Fi?'))return;
@@ -1724,16 +1849,36 @@ void apiMqtt() {
   server.send(200, "application/json", out);
 }
 
+// Odpowiada TYM, co sie naprawde stanie — nie jednym stalym zdaniem "sprawdzanie
+// zlecone", ktore padalo takze wtedy, gdy zadne sprawdzenie NIE mialo prawa ruszyc
+// (wylaczone aktualizacje, trwajacy okres probny). Reszte — wynik sprawdzenia — panel
+// dopowiada sam, odpytujac /api/diag; tu odsylamy tylko werdykt "czy w ogole warto
+// czekac", w polu `ok`.
 void apiUpdate() {
+  JsonDocument r;
   if (WiFi.status() != WL_CONNECTED) {
-    server.send(200, "application/json", "{\"msg\":\"Brak internetu\"}");
-    return;
+    r["ok"] = false;
+    r["msg"] = "Brak internetu — urządzenie nie ma jak zapytać GitHuba.";
+  } else if (!settings().otaEnabled) {
+    // Ten sam warunek bramkuje blok OTA w netTask (pogoda-gdynia.ino) — bez tej
+    // galezi prosba poszlaby w prozne i panel czekalby na wynik, ktorego nie bedzie.
+    r["ok"] = false;
+    r["msg"] = "Aktualizacje są wyłączone w ustawieniach — włącz je, żeby sprawdzić.";
+  } else if (otaTrialActive()) {
+    // Ota::checkAndUpdate() odmawia w tym stanie i tylko pisze do logu (patrz komentarz
+    // o rollbacku tam). Uzytkownik ma prawo to zobaczyc, zamiast czekac na nic.
+    r["ok"] = false;
+    r["msg"] = "Bieżąca wersja jest w okresie próbnym — aktualizacja jest teraz "
+               "zablokowana. Spróbuj ponownie, gdy wersja się potwierdzi.";
+  } else {
+    // Nie robimy OTA w zadaniu web — tylko zgłaszamy prośbę zadaniu sieciowemu.
+    requestOtaCheck();
+    r["ok"] = true;
+    r["msg"] = "Sprawdzam…";
   }
-  // Nie robimy OTA w zadaniu web — tylko zgłaszamy prośbę zadaniu sieciowemu.
-  requestOtaCheck();
-  server.send(200, "application/json",
-              "{\"msg\":\"Sprawdzanie zlecone — jeśli jest nowsza wersja, "
-              "urządzenie zaktualizuje się i zrestartuje.\"}");
+  String out;
+  serializeJson(r, out);
+  server.send(200, "application/json", out);
 }
 
 // --- diagnostyka: urządzenie wisi na ścianie bez USB, Serial jest ślepy ---
@@ -1867,6 +2012,21 @@ void coredumpInfo(JsonObject o) {
     o["panic_reason"] = String(reason);
   }
 #endif
+}
+
+// OtaState -> tekst dla /api/diag. Panel podejmuje na tym decyzje ("czekaj jeszcze"
+// kontra "juz wiadomo"), wiec te napisy sa CZESCIA API — nie zmieniaj ich bez zmiany
+// funkcji upd() w PAGE powyzej. Domyslka celowo "idle", a nie pusty string: nowy stan
+// dolozony kiedys do enuma ma wygladac jak "nic sie nie dzieje", a nie wysypac panelu.
+const char* otaStateName(OtaState s) {
+  switch (s) {
+    case OtaState::CHECKING:    return "checking";
+    case OtaState::DOWNLOADING: return "downloading";
+    case OtaState::DONE:        return "done";
+    case OtaState::FAILED:      return "failed";
+    case OtaState::IDLE:        break;
+  }
+  return "idle";
 }
 
 void apiDiag() {
@@ -2195,7 +2355,22 @@ void apiDiag() {
 
   JsonObject o = j["ota"].to<JsonObject>();
   o["remote"] = d.otaRemote;
-  o["msg"] = d.otaMsg;
+  o["local"] = FW_VERSION;   // zeby panel nie musial zgadywac wersji z innego pola
+  // --- stan NA ZYWO z zadania sieciowego (Ota.h) ---
+  // Bez tego panel po "Sprawdz teraz" mogl tylko wypisac staly tekst: nie wiedzial ani
+  // czy sprawdzenie sie odbylo, ani czym sie skonczylo.
+  const OtaStatus& os = otaStatus();
+  o["state"] = otaStateName(os.state);
+  o["progress"] = os.progress;                // 0..100, sensowne w stanie "downloading"
+  o["msg"] = os.message;                      // wczesniej szlo tu d.otaMsg, ktorego NIKT
+                                              // nigdy nie zapisywal (pole usuniete z Diag)
+  // Ostatnia ZAKONCZONA proba sprawdzenia wersji — i udana, i nieudana. To jest pole,
+  // ktore pozwala panelowi odroznic "sprawdzanie trwa" od "skonczylo sie, oto wynik".
+  o["checked_ago_s"] = ago(d.otaCheckedAt);
+  // ...a to samo pole dla proby UDANEJ. Swiezy checked_ago_s przy NIEswiezym ok_ago_s
+  // znaczy "proba byla i sie nie powiodla" — inaczej panel czytalby stare `remote`
+  // jako swiezy wynik i po nieudanym sprawdzeniu oglaszal "masz najnowsza wersje".
+  o["ok_ago_s"] = ago(d.otaOkAt);
   // Okres próbny po aktualizacji (patrz OtaGuard.h).
   o["trial"] = d.otaTrial == 1 ? "probna" : (d.otaTrial == 2 ? "potwierdzona" : "stabilna");
   o["trial_active"] = otaTrialActive();

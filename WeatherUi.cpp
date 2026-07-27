@@ -4186,7 +4186,7 @@ void WeatherUi::drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs,
       // configured(), nie "bleGwHost[0] == 0" — poprawne takze wtedy, gdyby lista
       // kiedys przestala byc zageszczana.
       {gwCfg > 1 ? "Bramki" : "Bramka", blegw::lastOkAt(), gwSt, gwCfg == 0, "wyłączona"},
-      // OTA: err zawsze puste. otaMsg NIE nadaje sie na blad — tym samym kanalem
+      // OTA: err zawsze puste. otaStatus().message NIE nadaje sie na blad — tym samym kanalem
       // leci postep ("Pobieram nową wersję"), wiec czerwona kropka zapalalaby sie
       // w trakcie poprawnej aktualizacji. Tu wystarczy wiek ostatniego sprawdzenia.
       {"OTA", d.otaOkAt, "", false, ""},

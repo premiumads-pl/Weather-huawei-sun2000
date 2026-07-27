@@ -222,7 +222,12 @@ bool Ota::checkAndUpdate(bool manual) {
   setMsg("Sprawdzam aktualizacje");
 
   int remote = 0;
-  if (!fetchRemoteVersion(remote)) {
+  // Stempel po KAZDEJ zakonczonej probie — i udanej, i nieudanej (diag().otaOkAt nizej
+  // stawiamy tylko po udanej). Panel WWW rozstrzyga z ROZNICY tych dwoch, czy
+  // sprawdzenie jeszcze trwa, czy juz sie skonczylo i czym. Logiki OTA to nie dotyka.
+  bool fetched = fetchRemoteVersion(remote);
+  diag().otaCheckedAt = millis();
+  if (!fetched) {
     // SIEĆ BEZPIECZEŃSTWA: jeśli sterty jest tak mało, że nie da się zestawić TLS,
     // urządzenie nie mogłoby się już NIGDY zaktualizować po sieci (dokładnie to
     // zabiło v14). Oddajemy więc 150 kB bufora ekranu i próbujemy jeszcze raz.
@@ -230,24 +235,31 @@ bool Ota::checkAndUpdate(bool manual) {
     if (heap < 60000) {
       LOG("OTA: malo RAM (%lu B) — zwalniam bufor i probuje ponownie\n",
           static_cast<unsigned long>(heap));
-      gStatus.state = OtaState::DOWNLOADING;   // UI odda bufor
+      // DOWNLOADING nie znaczy tu "pobieram firmware" — to jedyny sposob, zeby kazac UI
+      // oddac bufor: loop() (pogoda-gdynia.ino) na ten stan wola ui.releaseBuffer().
+      // ODDANIE JEST BEZZWROTNE TYLKO POZORNIE i nie trzeba tu nic sprzatac — gdy stan
+      // wroci do IDLE, loop() przestaje wchodzic w ta galaz, a WeatherUi::render() sam
+      // wola restoreBuffer() przy najblizszej klatce (patrz `if (freed_ && ...)` na
+      // poczatku render()). Zaden powrot z tej funkcji nie musi wiec odtwarzac bufora.
+      gStatus.state = OtaState::DOWNLOADING;
       setMsg("Sprawdzam aktualizacje...");
       for (int i = 0; i < 60 && !gUiFreed; ++i) {
         delay(50);
       }
-      if (!fetchRemoteVersion(remote)) {
+      fetched = fetchRemoteVersion(remote);
+      diag().otaCheckedAt = millis();   // druga proba tez jest proba — patrz wyzej
+      if (!fetched) {
         gStatus.state = OtaState::FAILED;
         LOG("OTA: nie udalo sie mimo zwolnienia bufora — restart\n");
         delay(3000);
         ESP.restart();
         return false;
       }
-      // udało się — jeśli nie ma nowszej wersji, wracamy do normalnej pracy
-      if (remote <= FW_VERSION) {
-        gStatus.state = OtaState::IDLE;
-        setMsg("");
-        return false;   // render() sam odtworzy bufor
-      }
+      // Udalo sie za drugim razem. NIE ma tu wlasnej galezi "brak nowszej wersji" —
+      // celowo lecimy do wspolnego bloku nizej. Stal tu kiedys wczesny return, ktory
+      // robil DOKLADNIE to samo (IDLE + pusty komunikat), ale omijal stemple
+      // diag().otaRemote/otaOkAt — czyli po UDANYM sprawdzeniu diagnostyka wygladala
+      // jak po nieudanym i panel WWW oglaszal "nie udalo sie odczytac wersji".
     } else {
       gStatus.state = OtaState::IDLE;
       setMsg("");
