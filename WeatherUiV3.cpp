@@ -814,7 +814,13 @@ void v3Days(TFT_eSPI& s, const WeatherModel& w) {
   // Nie dotyczy to przypadku "nigdy nie pobrano" (n==0 nizej -> "Pobieram prognozę...").
   const bool fresh = w.ready && wxFresh();
   char hr[24] = "";
-  if (w.updatedAt[0]) snprintf(hr, sizeof(hr), "prognoza z %.5s", w.updatedAt + 11);
+  // UWAGA: w.updatedAt to SAMO "HH:MM" (5 znakow), a NIE znacznik ISO — wypelnia je
+  // hhmmFromEpoch() w WeatherClient.cpp (snprintf "%02d:%02d"). Bylo tu "%.5s" z
+  // w.updatedAt + 11, czyli offset godziny w ISO "2026-07-27T07:15" — model tego formatu
+  // nigdy nie przechowywal, wiec +11 celowalo za terminator, w wyzerowany ogon bufora
+  // char[20], i naglowek pokazywal samo "prognoza z". Bierzemy caly string, tak jak V1
+  // (WeatherUi.cpp). NIE "poprawiac" z powrotem na offset.
+  if (w.updatedAt[0]) snprintf(hr, sizeof(hr), "prognoza z %s", w.updatedAt);
   lightHeader(s, "5 DNI", fresh ? hr : nullptr, wxFreshState(w));
 
   int n = 0;
@@ -895,8 +901,9 @@ void v3Days(TFT_eSPI& s, const WeatherModel& w) {
     // raz przed petla, wiec kazdy wiersz ma dokladnie te sama geometrie skali.
     const int xa = barX + static_cast<int>((d.tempMin - wkMin) / (wkMax - wkMin) * barW);
     const int xb = barX + static_cast<int>((d.tempMax - wkMin) / (wkMax - wkMin) * barW);
-    s.fillRect(barX, y + 1, barW, 6, col::LINE);
-    if (fresh) s.fillRoundRect(xa, y, (xb - xa > 4 ? xb - xa : 4), 8, 3, tempCol(d.tempMax));
+    const int segW = (xb - xa > 4 ? xb - xa : 4);   // twarde minimum, by segment byl widoczny
+    s.fillRect(barX, y + 1, barW, 6, col::LINE);                        // tor: zawsze
+    if (fresh) s.fillRoundRect(xa, y, segW, 8, 3, tempCol(d.tempMax));  // segment: tylko swieze
 
     // KOLUMNA OPADU zostaje STALA przy prawej krawedzi — wiedza kupiona bledem:
     // dwucyfrowy opad ("11 mm") wjezdzal kiedys na temperature, wiec rezerwujemy
@@ -918,11 +925,38 @@ void v3Days(TFT_eSPI& s, const WeatherModel& w) {
       snprintf(hi, sizeof(hi), "-");
       snprintf(lo, sizeof(lo), "-");
     }
-    // min DO PRAWEJ przy lewym koncu paska: przy "9°" i przy "-19°" prawa krawedz liczby
-    // stoi w tym samym miejscu, tuz obok paska. max DO LEWEJ tuz za prawym koncem paska.
-    // Baseline y + 8 bez zmian (wspolny z nazwa dnia).
-    plex::strRight(s, plex::f13(), lo, barX - 6, y + 8, col::MUTE);
-    plex::str(s, plex::f20(), hi, barX + barW + 8, y + 8, fresh ? col::PANEL : col::MUTE);
+    // WARIANT PROBNY: liczby trzymaja sie koncow KOLOROWEGO SEGMENTU, a nie koncow toru.
+    // Powod: przy dniu 22..29° na skali tygodnia 15..29° "22°" stalo przy lewej krawedzi
+    // toru, a segment zaczynal sie dopiero w 60% jego dlugosci — i to bylo widac.
+    // Pozycje z v147 (przy koncach TORU) zostaja jako AWARYJNE: uzywamy ich w kazdym
+    // przypadku zdegenerowanym, zawsze dla CALEGO wiersza naraz, bo spojny wiersz jest
+    // wazniejszy niz doklejenie liczby do segmentu. Baseline y + 8 bez zmian.
+    const int loW = plex::width(plex::f13(), lo);
+    const int hiW = plex::width(plex::f20(), hi);
+    const int loRfix = barX - 6;             // v147: min do prawej przy lewym koncu toru
+    const int hiLfix = barX + barW + 8;      // v147: max do lewej za prawym koncem toru
+    int loR = loRfix, hiL = hiLfix;
+    if (fresh) {
+      // Nieaktualna prognoza NIE MA segmentu (jest sam szary tor), wiec xa/xb nic tam nie
+      // znacza — dlatego caly ten blok liczymy tylko dla fresh, a "-" ida na pozycje v147.
+      loR = xa - 5;                          // min do prawej przy LEWYM koncu segmentu
+      hiL = xa + segW + 5;                   // max do lewej za PRAWYM koncem segmentu
+      // Zacisk 1: min nie moze wejsc na glif (granica jak w v147: prawa krawedz glifu + 8).
+      if (loR - loW < glyphCx + glyphHalf + 8) loR = loRfix;
+      // Zacisk 2: max nie moze wejsc w zarezerwowana kolumne opadu.
+      if (hiL + hiW > precipL - 12) hiL = hiLfix;
+      // Zacisk 3: przy segmencie zacisnietym do 4 px obie liczby cisna sie do srodka —
+      // gwarantujemy miedzy nimi 10 px, a jak sie nie da, caly wiersz wraca na v147.
+      if (hiL - loR < 10) { loR = loRfix; hiL = hiLfix; }
+    }
+    // Liczby siedza teraz NA szynie, wiec przed kazda wycieramy tor na wysokosc segmentu
+    // (y..y+7) z 3 px zapasu — w szynie powstaje czysta przerwa tuz przy koncu segmentu.
+    // Odstep 5 px minus zapas 3 px zostawia 2 px toru miedzy przerwa a segmentem, wiec
+    // wycieraczka nigdy nie podgryza samego segmentu. Poza torem to malowanie BG na BG.
+    s.fillRect(loR - loW - 3, y, loW + 6, 8, col::BG);
+    plex::str(s, plex::f13(), lo, loR - loW, y + 8, col::MUTE);
+    s.fillRect(hiL - 3, y, hiW + 6, 8, col::BG);
+    plex::str(s, plex::f20(), hi, hiL, y + 8, fresh ? col::PANEL : col::MUTE);
     ++r;
   }
 }
