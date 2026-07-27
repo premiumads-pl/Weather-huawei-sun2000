@@ -831,9 +831,41 @@ void v3Days(TFT_eSPI& s, const WeatherModel& w) {
   }
   if (wkMax - wkMin < 2.f) { wkMin -= 1.f; wkMax += 1.f; }
 
-  // Naglowek kolumn po prawej — wlasciciel pytal, co to 19° i 15°: to MAX i MIN
-  // temperatura dnia. Opisujemy je (i kolumne opadu) drobnym naglowkiem.
-  plex::strRight(s, plex::f10(), "max  min · opad", grid::DATA_R, 46, col::MUTE);
+  // Nad kolumna opadu zostaje sam "opad". Opisu min/max tu juz nie ma, bo po przebudowie
+  // wiersza znaczenie niesie POZYCJA liczby: stoi przy tym koncu paska, ktory oznacza
+  // (lewo = wkMin = chlodniej, prawo = wkMax = cieplej — ta sama skala co w stopce).
+  // Naglowka opisowego juz raz probowano i nie zadzialal: f10 w MUTE, dwa wiersze wyzej,
+  // nie laczy sie w oku z liczbami (wlasciciel pytal o nie drugi raz JUZ po jego dodaniu).
+  // Zostawienie "max min" nad kolumna, w ktorej tych liczb juz nie ma, byloby gorsze
+  // niz brak opisu — myliloby zamiast tlumaczyc.
+  plex::strRight(s, plex::f10(), "opad", grid::DATA_R, 46, col::MUTE);
+
+  // UKLAD WIERSZA: liczba stoi przy tym koncu paska, ktory oznacza — min po LEWEJ,
+  // max po PRAWEJ. Pasek biegnie po wspolnej skali tygodnia (lewa krawedz = wkMin,
+  // prawa = wkMax; stopka to powtarza), wiec "lewo = zimniej, prawo = cieplej" czyta
+  // sie bez podpisu. Ten sam zabieg, co przy pasku energii na ekranie glownym w v143:
+  // wartosc wyrownana do tego, co opisuje, zamiast upchana w jednej kolumnie obok.
+  //   [DZIEN f20] [glif] [min f13] [====pasek====] [MAX f20]        [opad f13]|DATA_R
+  // Granice liczymy RAZ przed petla, na zywo z plex::width i dla NAJSZERSZYCH
+  // przypadkow — pasek musi miec identyczna geometrie w kazdym wierszu, bo to wspolna
+  // skala. Najszersze: skrot dnia z kDowHi ("CZW"), zimowe "-19°" (snprintf "%.0f°"
+  // przy -18,6) i dwucyfrowy opad "88 mm".
+  const int precipL = grid::DATA_R - plex::width(plex::f13(), "88 mm");
+  const int minW = plex::width(plex::f13(), "-19°");
+  const int maxW = plex::width(plex::f20(), "-19°");
+  int dowW = 0;
+  for (const char* nm : kDowHi) {
+    const int nw = plex::width(plex::f20(), nm);
+    if (nw > dowW) dowW = nw;
+  }
+  // Glif NIE jest kwadratem o boku r: przy r=9 tarcza slonca ma promien r*80/100 = 7,
+  // a promienie siegaja jeszcze 7*70/100 + 3 dalej — lacznie +-14 px od srodka
+  // (ThemeV3.cpp, sunOrMoon). Srodek wyliczamy, zamiast trzymac dawne 78, bo glif musi
+  // sie cofnac w lewo, zeby zrobic miejsce na kolumne min przed paskiem.
+  const int glyphR = 9, glyphHalf = 14;
+  const int glyphCx = grid::MARGIN + dowW + 7 + glyphHalf;   // 7 px odstepu od nazwy dnia
+  const int barX = glyphCx + glyphHalf + 8 + minW + 6;       // 8 px za glifem, 6 px min->pasek
+  const int barW = precipL - 12 - maxW - 8 - barX;           // 8 px pasek->max, 12 px max->opad
 
   const time_t now = time(nullptr);
   const int rowY0 = 56, pitch = 30;
@@ -857,30 +889,26 @@ void v3Days(TFT_eSPI& s, const WeatherModel& w) {
 
     // Glif i KOLOROWY pasek tylko dla swiezej prognozy — nieaktualna zostawia sam
     // wyszarzony tor (bez sugerowania konkretnej, starej temperatury).
-    if (fresh) wx::glyph(s, d.weatherCode, false, 78, y + 4, 9, true);
+    if (fresh) wx::glyph(s, d.weatherCode, false, glyphCx, y + 4, glyphR, true);
 
-    // Pasek temperatury na wspolnej skali (plaski kolor wg tempMax). Zwezony ze 96 do 84,
-    // zeby oddac szerokosc kolumnom liczb po prawej (temp + opad nie kolidowaly).
-    const int barX = 108, barW = 84;
+    // Pasek temperatury na wspolnej skali (plaski kolor wg tempMax). barX/barW policzone
+    // raz przed petla, wiec kazdy wiersz ma dokladnie te sama geometrie skali.
     const int xa = barX + static_cast<int>((d.tempMin - wkMin) / (wkMax - wkMin) * barW);
     const int xb = barX + static_cast<int>((d.tempMax - wkMin) / (wkMax - wkMin) * barW);
     s.fillRect(barX, y + 1, barW, 6, col::LINE);
     if (fresh) s.fillRoundRect(xa, y, (xb - xa > 4 ? xb - xa : 4), 8, 3, tempCol(d.tempMax));
 
-    // UKLAD PRAWEJ STRONY (naprawa: "11 mm" nachodzilo na temperature). Dwie ROZLACZNE
-    // kolumny wyrownane do prawej:
-    //   [ ... temp max° min° ]  <odstep>  [ OPAD ]|DATA_R
-    // Opad ma STALA kolumne przy prawej krawedzi — rezerwujemy szerokosc "88 mm", wiec
-    // jej lewa granica (precipL) nie zalezy od tego, czy opad ma 1 czy 2 cyfry ani czy w
-    // ogole jest. Temperatura wyrownana do prawej do precipL - odstep, rosnie w LEWO (ku
-    // paskowi), NIGDY w kolumne opadu. Wszystkie granice liczone z plex::width na zywo.
+    // KOLUMNA OPADU zostaje STALA przy prawej krawedzi — wiedza kupiona bledem:
+    // dwucyfrowy opad ("11 mm") wjezdzal kiedys na temperature, wiec rezerwujemy
+    // szerokosc "88 mm" i lewa granica precipL nie zalezy od tego, czy opad ma 1 czy
+    // 2 cyfry ani czy w ogole jest. Rezerwacja obowiazuje dalej: barW policzono wyzej
+    // tak, zeby najszerszy max konczyl sie PRZED precipL (12 px zapasu).
     char pm[10];
     const bool hasP = fresh && d.precipMm >= 0.1f;
     if (!fresh)    snprintf(pm, sizeof(pm), "-");   // prognoza nieaktualna -> myslnik
     else if (hasP) snprintf(pm, sizeof(pm), "%.0f mm", d.precipMm);
     else           snprintf(pm, sizeof(pm), "-");
     plex::strRight(s, plex::f13(), pm, grid::DATA_R, y + 8, hasP ? col::RAIN : col::MUTE);
-    const int precipL = grid::DATA_R - plex::width(plex::f13(), "88 mm");
 
     char hi[8], lo[8];
     if (fresh) {
@@ -890,9 +918,11 @@ void v3Days(TFT_eSPI& s, const WeatherModel& w) {
       snprintf(hi, sizeof(hi), "-");
       snprintf(lo, sizeof(lo), "-");
     }
-    const int loX = precipL - 12 - plex::width(plex::f13(), lo);
-    plex::str(s, plex::f13(), lo, loX, y + 8, col::MUTE);
-    plex::str(s, plex::f20(), hi, loX - 6 - plex::width(plex::f20(), hi), y + 8, fresh ? col::PANEL : col::MUTE);
+    // min DO PRAWEJ przy lewym koncu paska: przy "9°" i przy "-19°" prawa krawedz liczby
+    // stoi w tym samym miejscu, tuz obok paska. max DO LEWEJ tuz za prawym koncem paska.
+    // Baseline y + 8 bez zmian (wspolny z nazwa dnia).
+    plex::strRight(s, plex::f13(), lo, barX - 6, y + 8, col::MUTE);
+    plex::str(s, plex::f20(), hi, barX + barW + 8, y + 8, fresh ? col::PANEL : col::MUTE);
     ++r;
   }
 }
