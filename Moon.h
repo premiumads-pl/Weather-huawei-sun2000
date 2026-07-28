@@ -52,12 +52,19 @@ inline const char* name(float p) {
 // polowa szerokosci to w = sqrt(r^2 - y^2), a granica lezy na x = w * (1 - 2k),
 // gdzie k to oswietlona czesc. Stad: k=0 -> granica na prawej krawedzi (now),
 // k=0.5 -> przez srodek (kwadra), k=1 -> na lewej krawedzi (pelnia).
-inline void draw(TFT_eSPI& s, int cx, int cy, int r, float p) {
+//
+// Kolory sa PARAMETRAMI, bo ten sam ksiezyc rysuje sie na roznych tlach: V1/V2 maja
+// granatowa noc, a motyw V3 stawia go raz na ciemnej kolumnie kontekstu, raz na jasnym
+// module PRAD — kremowa tarcza na jasnym tle bylaby niewidoczna. Wartosci DOMYSLNE sa
+// dokladnie tymi, ktore staly tu wczesniej na sztywno, wiec wszystkie dotychczasowe
+// wywolania (WeatherUi.cpp, WeatherIcons.h) rysuja piksel w piksel to samo, co przedtem.
+// `dark` warto podac rowne kolorowi TLA — wtedy czesc zacieniona znika w tle, a nów
+// zostaje samym obrysem `rim` (bez obrysu wygladalby na dziure po bledzie rysowania).
+inline void draw(TFT_eSPI& s, int cx, int cy, int r, float p,
+                 uint16_t lit = C565(248, 244, 220),    // tarcza oswietlona
+                 uint16_t dark = C565(46, 54, 74),      // czesc zacieniona
+                 uint16_t rim = C565(96, 108, 134)) {   // obrys, zeby now nie znikal calkiem
   if (r < 3) return;
-
-  const uint16_t lit = C565(248, 244, 220);   // tarcza oswietlona
-  const uint16_t dark = C565(46, 54, 74);     // czesc zacieniona — widoczna, ale ciemna
-  const uint16_t rim = C565(96, 108, 134);    // obrys, zeby now nie znikal calkiem
 
   const float k = illum(p);
   const bool waxing = p < 0.5f;

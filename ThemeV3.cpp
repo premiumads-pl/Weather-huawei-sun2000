@@ -1,5 +1,9 @@
 #include "ThemeV3.h"
 
+#include <ctime>
+
+#include "Moon.h"   // moon::phase/draw — JEDNO zrodlo matematyki fazy w calym projekcie
+
 namespace tv3 {
 
 using namespace grid;
@@ -90,11 +94,40 @@ void cloud(TFT_eSPI& g, int cx, int cy, int s, uint16_t body, uint16_t edge) {
   (void)edge;
 }
 
-// Slonce: tarcza + promienie. Albo ksiezyc: sierp (tarcza minus przesunieta tarcza tla).
-void sunOrMoon(TFT_eSPI& g, int cx, int cy, int r, bool night, uint16_t bg) {
+// Slonce: tarcza + promienie. Albo ksiezyc: PRAWDZIWA faza z kalendarza.
+//
+// Bylo tu dwa fillCircle robiace ozdobny sierp o STALYM ksztalcie — ikona nie miala nic
+// wspolnego z niebem: przy pelni i przy nowiu wygladala identycznie. Teraz faze liczy
+// moon::phase() (miesiac synodyczny, konwencja polkuli polnocnej: przybywajacy swieci z
+// PRAWEJ, ubywajacy z LEWEJ), a rysuje moon::draw() — ta sama matematyka, ktorej uzywaja
+// V1/V2, bez duplikowania jej tutaj.
+//
+// KOLORY. Ksiezyc pojawia sie na DWOCH tlach, wiec trojke bierzemy z `onLight`:
+//   * ciemna kolumna kontekstu (PANEL): tarcza col::ONDARK (najjasniejszy tusz panelu —
+//     jak col::SUN dla slonca), obrys col::ONDARK_DIM (widoczny, ale wyraznie slabszy);
+//   * jasny modul PRAD (BG): tarcza col::SECOND (mocny tusz, ~11:1 na #F4F4F0 — kremowa
+//     zniknelaby), obrys col::MUTE (~6:1, znowu slabszy od tarczy).
+// Czesc ZACIENIONA dostaje kolor `bg`, czyli po prostu znika w tle. Obrys zostaje zawsze
+// — bez niego now (zero oswietlonej tarczy) bylby pusty prostokat tla i wygladalby na
+// awarie rysowania, a nie na now.
+void sunOrMoon(TFT_eSPI& g, int cx, int cy, int r, bool night, uint16_t bg, bool onLight) {
   if (night) {
-    g.fillCircle(cx, cy, r, col::MUTE);
-    g.fillCircle(cx + r * 45 / 100, cy - r * 35 / 100, r, bg);  // wycina sierp
+    const time_t now = time(nullptr);
+    // BEZ NTP (i przy tarczy mniejszej niz 3 px, ktorej moon::draw nie umie narysowac)
+    // wracamy do dawnego, NEUTRALNEGO sierpa. moon::phase() podstawia wtedy 0.5, czyli
+    // PELNIE — a pelnia to konkretne twierdzenie o niebie, ktore wlasciciel sprawdzi
+    // przez okno i uzna ekran za klamiacy. Sierp o stalym ksztalcie nie twierdzi nic
+    // poza "noc": to piktogram, nie pomiar. Ta sama zasada, co "--:--" na zegarze bez
+    // czasu i "—" zamiast zera przy nieznanej swiezosci danych.
+    if (now < 1700000000 || r < 3) {
+      g.fillCircle(cx, cy, r, col::MUTE);
+      g.fillCircle(cx + r * 45 / 100, cy - r * 35 / 100, r, bg);  // wycina sierp
+      return;
+    }
+    moon::draw(g, cx, cy, r, moon::phase(now),
+               onLight ? col::SECOND : col::ONDARK,       // tarcza oswietlona
+               bg,                                        // cien = tlo (znika)
+               onLight ? col::MUTE : col::ONDARK_DIM);    // obrys (now nie znika)
   } else {
     for (int a = 0; a < 8; ++a) {
       const float ang = a * 3.14159f / 4.f;
@@ -136,10 +169,10 @@ void glyph(TFT_eSPI& s, int wmoCode, bool night, int cx, int cy, int r, uint16_t
 
   switch (c) {
     case CLEAR:
-      sunOrMoon(s, cx, cy, sr * 80 / 100, night, bg);
+      sunOrMoon(s, cx, cy, sr * 80 / 100, night, bg, onLight != 0);
       break;
     case PARTLY:
-      sunOrMoon(s, cx + sr * 45 / 100, cy - sr * 45 / 100, sr * 55 / 100, night, bg);
+      sunOrMoon(s, cx + sr * 45 / 100, cy - sr * 45 / 100, sr * 55 / 100, night, bg, onLight != 0);
       cloud(s, cx - sr * 10 / 100, cy + sr * 20 / 100, sr * 62 / 100, body, body);
       break;
     case CLOUDY:
