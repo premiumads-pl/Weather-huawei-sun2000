@@ -3,11 +3,11 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
-#include <WiFiClientSecure.h>
 #include <cmath>
 #include <cstring>
 
 #include "Config.h"
+#include "SecureClient.h"
 #include "Settings.h"
 #include "MapDataWide.h"
 
@@ -67,7 +67,7 @@ bool routeApiBlocked() {
 // 200 = OK i JSON sparsowany. 0 = blad transportu/TLS/DNS albo zle JSON.
 // HTTPClient oddaje przy bledach polaczenia wartosci ujemne — tez nie sa 200.
 int httpGetJson(const char* url, JsonDocument& doc, const JsonDocument* filter) {
-  WiFiClientSecure client;
+  YieldingSecureClient client;
   client.setInsecure();
   client.setTimeout(10);
 

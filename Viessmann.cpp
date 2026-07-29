@@ -1,11 +1,11 @@
 #include "Viessmann.h"
 
 #include "Log.h"
+#include "SecureClient.h"
 #include "Settings.h"
 
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
-#include <WiFiClientSecure.h>
 #include <mbedtls/base64.h>
 #include <mbedtls/sha256.h>
 
@@ -146,7 +146,7 @@ String urlenc(const char* s) {
 
 // POST form -> JSON. Wspolne dla wymiany kodu i odswiezania.
 bool postToken(const String& body, JsonDocument& doc, char* errOut, size_t errLen) {
-  WiFiClientSecure client;
+  YieldingSecureClient client;
   client.setInsecure();
   client.setTimeout(15);
 
@@ -263,7 +263,7 @@ bool ensureAccess() {
 // POST komendy. Zwraca true tylko przy HTTP 200/201 — piec potrafi odpowiedziec
 // 200 z bledem w ciele, wiec sprawdzamy tez tresc.
 bool apiPost(const String& path, const String& body, char* errOut, size_t errLen) {
-  WiFiClientSecure client;
+  YieldingSecureClient client;
   client.setInsecure();
   client.setTimeout(20);
 
@@ -312,7 +312,7 @@ bool apiPost(const String& path, const String& body, char* errOut, size_t errLen
 }
 
 bool apiGet(const String& path, JsonDocument& doc, JsonDocument* filter) {
-  WiFiClientSecure client;
+  YieldingSecureClient client;
   client.setInsecure();
   client.setTimeout(25);
 

@@ -196,15 +196,30 @@ Diag* gDiagIsr = nullptr;           // zlapane raz w setup(), zeby ISR nie wolal
 // bariera na adres gPir w tools/release.sh — ten sam pomysl, ale ten skrypt pilnuje
 // TYLKO gPir; gLdr i gPvRtc trzeba sprawdzic recznie).
 //
-// ZANIM DOLOZYSZ CZWARTA ZMIENNA RTC: wstaw ja NAD gPvRtc (gPvRtc, gLdr, gPir zostaja w
-// tej kolejnosci) i SPRAWDZ `nm`, ze cala trojka nadal stoi pod tymi samymi adresami.
+// ZANIM DOLOZYSZ PIATA ZMIENNA RTC: wstaw ja NAD gNetStage (gNetStage, gPvRtc, gLdr, gPir
+// zostaja w tej kolejnosci) i SPRAWDZ `nm`, ze cala czworka nadal stoi pod tymi samymi
+// adresami.
 // Jesli kiedys ta obserwacja o GCC przestanie sie trzymac, wlasciwym lekiem jest JEDNA
 // struktura z podstrukturami (`struct { PirRtc pir; LdrRtc ldr; PvRtc pv; }` z osobnymi
 // magicami w srodku), bo ukladu pol WEWNATRZ struktury pilnuje ABI, a nie szczescie w
 // kolejnosci emisji sekcji.
-RTC_NOINIT_ATTR PvRtc gPvRtc;   // nowa (v113) — dostaje NAJWYZSZY adres: zadeklarowana
-                                // JAKO PIERWSZA z trojki, wiec GCC wyemituje jej sekcje
-                                // JAKO OSTATNIA (patrz "KOLEJNOSC ODWROTNA" wyzej)
+//
+// CZWARTA ZMIENNA RTC: gNetStage, wstawiona DOKLADNIE wg powyzszej zasady — NAD gPvRtc,
+// czyli JAKO PIERWSZA w pliku, wiec GCC wyemituje jej sekcje JAKO OSTATNIA i dostanie
+// NAJWYZSZY adres. gPvRtc, gLdr i gPir nie ruszaja sie z miejsca: nic nie wchodzi POD
+// nie. Trzyma etap netTask (NetStage w Log.h) po to, zeby po panicu Task watchdoga dalo
+// sie powiedziec, KTORY klient wisial — /api/log tego nie powie, bo to bufor kolowy w
+// DRAM (~6 minut) i panic kasuje go w calosci. Osiem bajtow w regionie, ktory ma 7680.
+//
+// Adres gNetStage NIE zostal potwierdzony realnym `nm` (nie kompilowalem — patrz raport).
+// Wyliczony: gPvRtc @ 0x50000398 + sizeof(PvRtc) = 40 B (10 pol * 4 B = 0x28), czyli
+// gNetStage @ 0x500003c0. ZWERYFIKUJ `nm` PRZED wydaniem — istotne sa jednak nie tyle
+// adresy tej nowej zmiennej, co to, ze gPir @ 0x50000200 i gLdr @ 0x500002c0 NIE DRGNELY
+// (bariera w tools/release.sh pilnuje tylko gPir; gLdr i gPvRtc recznie).
+RTC_NOINIT_ATTR NetStageRtc gNetStage;   // najnowsza — dostaje NAJWYZSZY adres
+
+RTC_NOINIT_ATTR PvRtc gPvRtc;   // (v113) — zostaje 0x50000398, dolozenie gNetStage NAD
+                                // nia go nie rusza (patrz "KOLEJNOSC ODWROTNA" wyzej)
 RTC_NOINIT_ATTR LdrRtc gLdr;    // zostaje 0x500002c0 — NIETKNIETE dolozeniem gPvRtc
 RTC_NOINIT_ATTR PirRtc gPir;    // zostaje 0x50000200 — pilnuje automat w tools/release.sh
 
@@ -291,6 +306,38 @@ void pvRtcBegin() {
     gPvRtc.magic = PV_RTC_MAGIC;
     LOG("PV: RTC puste lub z innego ukladu pol — zimny start, liczniki Modbusa wyzerowane\n");
   }
+}
+
+// --- ETAP netTask: przeniesienie z POPRZEDNIEJ sesji do Diag (patrz NetStage w Log.h) ---
+//
+// To NIE jest licznik, tylko JEDNA wartosc, ktora ma sens wylacznie ZANIM zaczniemy pisac
+// nowa. Stad kolejnosc, ktorej nie wolno odwrocic:
+//   1. czytamy etap zapisany przez POPRZEDNIA sesje (o ile znacznik jest wazny),
+//   2. odkladamy go do Diag (DRAM) — tam dozyje do konca TEJ sesji i stamtad bierze go
+//      /api/diag,
+//   3. dopiero teraz ustawiamy magic i zerujemy pole na etap BIEZACY.
+// Odwrotna kolejnosc (najpierw magic/zero) skasowalaby dokladnie te informacje, po ktora
+// tu przyszlismy — i to bezszelestnie: w RTC zostaloby ladne, poprawnie wygladajace zero,
+// czyli "netTask stal bezczynny", i nikt by sie nie domyslil, ze to my je tam wpisalismy.
+//
+// Zimny start rozstrzyga TEN SAM wzorzec, co w pirRtcBegin()/ldrRtcBegin()/pvRtcBegin():
+// nie "czy liczba wyglada sensownie" (smiec z RTC potrafi trafic w zakres 0..10), tylko
+// znacznik. Roznica jest jedna i celowa: zamiast zera wpisujemy NET_STAGE_UNKNOWN, bo
+// zero znaczy "netTask stal bezczynny", czyli konkretna i FALSZYWA odpowiedz na pytanie
+// "gdzie padlo". "Nie wiem" jest tu jedyna prawdziwa.
+//
+// Wolac PRZED xTaskCreatePinnedToCore(netTask, ...).
+void netStageBegin() {
+  if (gNetStage.magic == NET_STAGE_RTC_MAGIC) {
+    diag().netStagePrevSession = static_cast<uint8_t>(gNetStage.stageNow);
+    LOG("netTask: poprzednia sesja skonczyla sie na etapie %lu (%s)\n",
+        (unsigned long)gNetStage.stageNow, netStageName(diag().netStagePrevSession));
+  } else {
+    diag().netStagePrevSession = NET_STAGE_UNKNOWN;
+    gNetStage.magic = NET_STAGE_RTC_MAGIC;
+    LOG("netTask: RTC puste lub z innego ukladu pol — etapu poprzedniej sesji nie znam\n");
+  }
+  gNetStage.stageNow = NET_STAGE_IDLE;
 }
 
 // Krawedzie koszy sa POWTORZONE tekstem w /api/diag (ldr_hist_bins) — tak samo, jak przy
@@ -879,10 +926,14 @@ static void netTask(void*) {
     // Brak brokera nie moze zatrzymac reszty: proby laczenia maja krotki timeout
     // i backoff, wiec ta linijka albo kosztuje mikrosekundy, albo raz na jakis
     // czas ~2 s (nieudany TCP connect). Nigdy nie blokuje na dluzej.
+    // Znacznik etapu (NetStage w Log.h) stoi PRZED kazdym blokiem i przezywa panic w RTC —
+    // bez niego po awarii wiadomo tylko tyle, ze wisial netTask, a nie ktory klient.
+    gNetStage.stageNow = NET_STAGE_MQTT;
     mqttha::loop();
 
     // ---- pogoda ----
     if (static_cast<int32_t>(now - nextWeatherAt) >= 0) {
+      gNetStage.stageNow = NET_STAGE_WEATHER;
       if (!firstWeather) {
         setBootMsg("Pobieram prognozę...");
       }
@@ -913,6 +964,7 @@ static void netTask(void*) {
     // Co ~15 min: dane to srednie GODZINOWE (nowa probka raz na godzine), wiec czesciej
     // pytalibysmy cudzy serwer bez ANI JEDNEJ nowej wartosci do pokazania.
     if (static_cast<int32_t>(now - nextAirAt) >= 0) {
+      gNetStage.stageNow = NET_STAGE_AIR;
       const time_t ntpNow = time(nullptr);
       if (ntpNow <= 1700000000) {
         // Bez czasu z NTP zapytanie nie ma sensu (patrz AirClient::fetch — sam tez
@@ -965,6 +1017,7 @@ static void netTask(void*) {
 
     // ---- fotowoltaika ----
     if (static_cast<int32_t>(now - nextPvAt) >= 0) {
+      gNetStage.stageNow = NET_STAGE_PV;
       // Czy falownikowi wolno teraz spać? Godziny wschodu/zachodu mamy z prognozy.
       char sunrise[6], sunset[6];
       xSemaphoreTake(gLock, portMAX_DELAY);
@@ -1027,6 +1080,7 @@ static void netTask(void*) {
 
     // ---- radar opadowy (realny pomiar; model bywa ślepy na lokalne ulewy) ----
     if (static_cast<int32_t>(millis() - nextRadarAt) >= 0) {
+      gNetStage.stageNow = NET_STAGE_RADAR;
       // USUNIETE: proszenie rdzenia 1 o oddanie bufora ekranu przed dekodowaniem PNG.
       //
       // Ten mechanizm zamrazal ekran na CALY czas pobierania radaru (nie na 3 s —
@@ -1077,6 +1131,9 @@ static void netTask(void*) {
     // a to jest przypadek normalny — kosztuje jeden odczyt bool, wiec moze stac
     // w kazdym obiegu netTask. Po udanej probie sam podnosi wantsFetch(), czyli
     // warunek nizej odpala pobranie od razu, bez czekania na termin.
+    // Etap ustawiamy PRZED ensureReady(), a nie dopiero przy fetch(): ensureReady()
+    // tez potrafi cos zrobic (ponawia alokacje buforow), wiec ma nalezec do tego etapu.
+    gNetStage.stageNow = NET_STAGE_RADAR_MAP;
     radarmap::ensureReady();
     if (radarmap::wantsFetch() || static_cast<int32_t>(millis() - nextRadarMapAt) >= 0) {
       if (radarmap::fetch()) {
@@ -1091,6 +1148,7 @@ static void netTask(void*) {
     // Co 3 minuty = 480 zapytan na dobe. Limit Viessmanna to 1450/dobe i 120 na
     // 10 minut, wiec mamy zapas takze na odswiezanie tokena (co ~55 min).
     if (settings().hasViessmann() && static_cast<int32_t>(millis() - nextViAt) >= 0) {
+      gNetStage.stageNow = NET_STAGE_VIESSMANN;
       vi::Model tmp{};
       const bool ok = vi::fetch(tmp);
       bool gasWantSave = false;
@@ -1169,6 +1227,7 @@ static void netTask(void*) {
     // Co 20 s, bo to tanie: jeden GET po WiFi, kilkaset bajtow. Nasze wlasne radio
     // dziala dalej — bramka tylko dokłada uszu, nie zastepuje ich.
     if (settings().bleGwHost[0] != '\0' && static_cast<int32_t>(millis() - nextGwAt) >= 0) {
+      gNetStage.stageNow = NET_STAGE_BLE_GW;
       blegw::poll();
       nextGwAt = millis() + 20000;
     }
@@ -1329,6 +1388,7 @@ static void netTask(void*) {
 
     // ---- samoloty ----
     if (gFlightsNeeded && static_cast<int32_t>(millis() - nextFlightAt) >= 0) {
+      gNetStage.stageNow = NET_STAGE_FLIGHTS;
       FlightModel tmp{};
       if (flightClient.fetch(tmp)) {
         xSemaphoreTake(gLock, portMAX_DELAY);
@@ -1350,6 +1410,7 @@ static void netTask(void*) {
     const bool otaAsked = takeOtaRequest();
     if (settings().otaEnabled &&
         (otaAsked || static_cast<int32_t>(millis() - nextOtaAt) >= 0)) {
+      gNetStage.stageNow = NET_STAGE_OTA;
       // otaAsked = kliknięcie w panelu; tylko wtedy wolno wymusić wersję, która
       // wcześniej nie przeżyła okresu próbnego.
       ota.checkAndUpdate(otaAsked);  // przy sukcesie restartuje urządzenie
@@ -1362,6 +1423,12 @@ static void netTask(void*) {
     if (gBooting && millis() > 35000) {
       gBooting = false;
     }
+
+    // Koniec obiegu: od tej chwili do poczatku nastepnego bloku netTask naprawde nic
+    // nie robi, wiec ma to tak raportowac. Bez tego zera urzadzenie, ktore padlo w
+    // przerwie miedzy obiegami (albo na zupelnie innym zadaniu), wskazywaloby palcem
+    // na ostatniego klienta, ktory akurat zakonczyl sie poprawnie.
+    gNetStage.stageNow = NET_STAGE_IDLE;
 
     vTaskDelay(pdMS_TO_TICKS(250));
   }
@@ -1544,6 +1611,10 @@ void setup() {
   // Bez zaleznosci od powyzszych dwoch (gPvRtc nie jest z nimi wspoldzielona) — kolejnosc
   // wzgledem pirRtcBegin()/ldrRtcBegin() jest tu bez znaczenia.
   pvRtcBegin();
+  // Etap netTask z poprzedniej sesji -> Diag. Musi stac PRZED xTaskCreatePinnedToCore
+  // (netTask, ...) nizej: pierwszy obieg petli sieci nadpisuje gNetStage.stageNow i
+  // starej wartosci nie da sie juz odzyskac. Zaleznosci od trzech powyzszych nie ma.
+  netStageBegin();
   gDiagIsr = &diag();
   attachInterrupt(digitalPinToInterrupt(cfg::PIN_PIR), pirIsr, CHANGE);
 

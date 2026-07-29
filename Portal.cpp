@@ -6,7 +6,6 @@
 #include <HTTPClient.h>
 #include <WebServer.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <cstdlib>
@@ -39,6 +38,7 @@
 #include "BleSensors.h"
 #include "GasMeter.h"
 #include "RadarMap.h"
+#include "SecureClient.h"   // YieldingSecureClient — geokoder w apiGeo() (patrz tam)
 #include "Viessmann.h"
 #include "Settings.h"
 #include "Version.h"
@@ -1718,7 +1718,14 @@ void apiGeo() {
     }
   }
 
-  WiFiClientSecure client;
+  // YieldingSecureClient, a nie goly WiFiClientSecure — z DOKLADNIE tego samego powodu,
+  // co w WeatherClient/FlightClient/Ota/Viessmann (cale uzasadnienie: SecureClient.h).
+  // Tu ryzyko jest INNE i mniejsze, ale realne: to jedyna sciezka TLS wolana z webTask
+  // (priorytet 2, rdzen 0), a nie z netTask. Zawieszenie w writeToStreamDataBlock()
+  // rowniez tutaj nie oddaje procesora IDLE0 — `delay(0)` to portYIELD, a IDLE0 ma
+  // priorytet 0, czyli nizszy takze od dwojki. Panic "IDLE0 did not reset the watchdog"
+  // wyszedlby wiec tak samo, tylko z innego zadania.
+  YieldingSecureClient client;
   client.setInsecure();
   HTTPClient http;
   http.setTimeout(10000);
@@ -2166,6 +2173,20 @@ void apiDiag() {
   rs["prev_reason"] = resetReasonText(d.prevResetReason);
   rs["was_crash"] = resetWasCrash();
   rs["crashes_total"] = d.panicCount;
+
+  // NA KTORYM ETAPIE netTask BYL, GDY TA SESJA SIE SKONCZYLA — czyli z POPRZEDNIEGO
+  // rozruchu, tak samo jak `prev_reason` obok. To NIE jest stan biezacy: obie liczby
+  // opisuja sesje, ktora juz nie zyje, i tylko razem cos znacza ("panic" + "pogoda"
+  // to zupelnie inne zgloszenie niz "panic" + "OTA").
+  // Skad sie tu bierze: netTask zapisuje etap do pamieci RTC (przezywa panic, bo DRAM
+  // razem z buforem /api/log ginie), a netStageBegin() w setup() przenosi go RAZ do
+  // Diag, zanim nowa sesja zdazy nadpisac RTC. Pelny opis: NetStage w Log.h.
+  // Po zimnym starcie (odlaczenie zasilania) bedzie tu 255 / "nieznany (zimny start)" —
+  // i to jest prawda, a nie brak danych: poprzedniej sesji po prostu nie ma.
+  rs["net_stage_prev"] = d.netStagePrevSession;
+  // Sama liczba nic nie powie temu, kto czyta zgloszenie, a mapowanie po stronie panelu
+  // rozjechaloby sie z enumem przy pierwszym dolozeniu etapu — nazwa idzie z Log.h.
+  rs["net_stage_prev_name"] = netStageName(d.netStagePrevSession);
 
   // Dotad `crashes_total` mowilo ILE razy padlo i na tym sie konczylo. Zrzut awaryjny
   // dokłada DLACZEGO: zadanie, adres upadku i backtrace — bez pobierania czegokolwiek

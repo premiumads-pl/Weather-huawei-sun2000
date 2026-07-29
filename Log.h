@@ -9,6 +9,66 @@ String logDump();
 
 #define LOG(...) logPrintf(__VA_ARGS__)
 
+// =============================================================================
+// NetStage — na ktorym kliencie netTask stal, gdy urzadzenie padlo
+// =============================================================================
+//
+// PO CO: po panicu Task watchdoga (patrz SecureClient.h — cala historia awarii w
+// sciezce TLS) wiedzielismy TYLKO tyle, ze wisial netTask. Ktory z dziesieciu
+// klientow w tej petli — nie. Jedyny zapis, ktory to mowil, byl w /api/log, a to
+// bufor KOLOWY 3072 B (Log.cpp:7), czyli okno rzedu SZESCIU MINUT, i panic i tak
+// kasuje go w calosci razem z DRAM. Znacznik musi wiec przezyc panic — stad RTC
+// (NetStageRtc nizej, przy PirRtc/LdrRtc/PvRtc).
+//
+// TA CZESC (enum + nazwy) STOI NAD `struct Diag` CELOWO: Diag ma pole
+// netStagePrevSession o tym typie, wiec enum musi byc znany wczesniej. Sama
+// struktura RTC siedzi juz na dole pliku, razem z pozostalymi trzema.
+//
+// Numery sa CZESCIA INTERFEJSU /api/diag (reset.net_stage_prev) i przezywaja OTA
+// w pamieci RTC: po aktualizacji nowy kod czyta liczbe zapisana przez STARY.
+// Dlatego wartosci sa jawne i NIE WOLNO ich przenumerowac — mozna tylko dopisywac
+// na koncu. Przy zmianie znaczenia istniejacego numeru podbij NET_STAGE_RTC_MAGIC.
+enum NetStage : uint8_t {
+  NET_STAGE_IDLE = 0,       // koniec obiegu petli: nie stoimy na zadnym kliencie
+  NET_STAGE_MQTT = 1,       // mqttha::loop()
+  NET_STAGE_WEATHER = 2,    // weatherClient.fetch()      [TLS]
+  NET_STAGE_AIR = 3,        // airClient.fetch()
+  NET_STAGE_PV = 4,         // pvClient.fetch() (Modbus TCP)
+  NET_STAGE_RADAR = 5,      // radarClient.fetch() — radar PUNKTOWY
+  NET_STAGE_RADAR_MAP = 6,  // radarmap::ensureReady()/fetch() — animowana MAPA
+  NET_STAGE_VIESSMANN = 7,  // vi::fetch()                [TLS]
+  NET_STAGE_BLE_GW = 8,     // blegw::poll()
+  NET_STAGE_FLIGHTS = 9,    // flightClient.fetch()       [TLS]
+  NET_STAGE_OTA = 10,       // ota.checkAndUpdate()       [TLS]
+
+  // NIE jest etapem petli — to odpowiedz "poprzedniej sesji NIE BYLO". Ustawiane
+  // wylacznie w netStageBegin() po zimnym starcie (RTC bez waznego znacznika, czyli
+  // po odlaczeniu zasilania). Zera uzyc tu NIE WOLNO: 0 znaczy "netTask stal
+  // bezczynnie", a to zupelnie inna informacja niz "nie mam pojecia".
+  NET_STAGE_UNKNOWN = 255,
+};
+
+// Nazwa do /api/diag. Sama liczba nikomu nic nie powie, a mapowanie po stronie
+// panelu rozjechaloby sie z tym enumem przy pierwszym dolozeniu etapu.
+// Zwraca literal w .rodata (flash) — zero bajtow w .bss.
+inline const char* netStageName(uint8_t s) {
+  switch (s) {
+    case NET_STAGE_IDLE:      return "bezczynny";
+    case NET_STAGE_MQTT:      return "MQTT";
+    case NET_STAGE_WEATHER:   return "pogoda";
+    case NET_STAGE_AIR:       return "powietrze";
+    case NET_STAGE_PV:        return "fotowoltaika";
+    case NET_STAGE_RADAR:     return "radar punktowy";
+    case NET_STAGE_RADAR_MAP: return "mapa radaru";
+    case NET_STAGE_VIESSMANN: return "piec Viessmann";
+    case NET_STAGE_BLE_GW:    return "bramka BLE";
+    case NET_STAGE_FLIGHTS:   return "loty";
+    case NET_STAGE_OTA:       return "OTA";
+    case NET_STAGE_UNKNOWN:   return "nieznany (zimny start)";
+    default:                  return "?";   // numer z NOWSZEJ wersji, po rollbacku
+  }
+}
+
 // --- migawka stanu dla GET /api/diag ---
 struct Diag {
   uint32_t weatherOkAt = 0;
@@ -114,6 +174,15 @@ struct Diag {
   // --- restarty: dziś nie wiemy, czy urządzenie się wywala ---
   uint8_t resetReason = 0;      // esp_reset_reason() z bieżącego startu
   uint8_t prevResetReason = 0;  // to samo z poprzedniego startu (z NVS)
+  // Etap netTask z POPRZEDNIEJ sesji — czyli ten, na ktorym urzadzenie PADLO (albo na
+  // ktorym zastal je restart/OTA). NIE jest to etap biezacy: biezacy zyje wylacznie w
+  // RTC (gNetStage.stageNow) i jest nadpisywany kilka razy na obieg petli. Tutaj stoi
+  // kopia przeniesiona RAZ, w netStageBegin() w setup(), zanim cokolwiek zdazy ja
+  // zamazac. Wartosci: NetStage (patrz wyzej), NET_STAGE_UNKNOWN po zimnym starcie.
+  // Dlaczego to w ogole musi byc osobne pole w DRAM, a nie odczyt z RTC w Portalu:
+  // po przeniesieniu netTask NATYCHMIAST zaczyna pisac do RTC etap biezacej sesji,
+  // wiec do chwili pierwszego zapytania /api/diag stara wartosc juz tam nie istnieje.
+  uint8_t netStagePrevSession = NET_STAGE_UNKNOWN;
   uint16_t panicCount = 0;      // ile razy panic/watchdog/brownout — od zawsze
 
   // --- falownik ---
@@ -597,3 +666,47 @@ extern PvRtc gPvRtc;
 // setup(); kolejnosc wzgledem pirRtcBegin()/ldrRtcBegin() jest bez znaczenia (gPvRtc nie
 // jest z niczym wspoldzielona).
 void pvRtcBegin();
+
+// --- ETAP netTask, PRZEZYWA PANIC (pamiec RTC) — enum NetStage na gorze tego pliku ---
+//
+// PO CO: pelne uzasadnienie stoi przy enumie NetStage. Krotko: po panicu wiedzielismy
+// tylko, ze wisial netTask, a nie KTORY z klientow — bo jedyny slad byl w /api/log,
+// czyli w buforze kolowym 3072 B w DRAM (~6 minut), ktory panic kasuje razem z reszta
+// pamieci. RTC_NOINIT_ATTR przezywa panic, watchdog i OTA — ginie dopiero przy
+// odlaczeniu zasilania, czyli dokladnie wtedy, kiedy i tak nie ma czego diagnozowac.
+//
+// DLACZEGO uint32_t NA JEDEN BAJT INFORMACJI: RTC SLOW ma tu 7680 B i jest praktycznie
+// puste (cala czworka to <500 B), wiec oszczedzanie trzech bajtow nic nie kupuje, a
+// wyrownanie kupuje spokoj: przy PirRtc stoi wprost "wszystkie pola to uint32 pod
+// adresem podzielnym przez 4, wiec zadnego dostepu bajtowego ani niewyrownanego".
+// Trzymam sie tej samej zasady, zeby nie otwierac pytania o dostep bajtowy do RTC.
+//
+// WSPOLBIEZNOSC: pisze WYLACZNIE netTask (jedno zadanie, jeden wyrownany uint32, czyli
+// zapis atomowy), czyta netStageBegin() w setup() — czyli PRZED startem netTask. Portal
+// (webTask) tego pola NIE czyta: czyta kopie z Diag. Zadnych blokad i zadnej potrzeby.
+//
+// KOLEJNOSC DEKLARACJI W .ino: gNetStage stoi NAD gPvRtc, czyli jest zadeklarowana JAKO
+// PIERWSZA z czworki i dostaje NAJWYZSZY adres — patrz wielki komentarz o kolejnosci
+// sekcji .rtc_noinit przy tych deklaracjach. To jedyne miejsce, w ktore wolno dolozyc
+// nowa zmienna RTC bez ruszania gPir/gLdr/gPvRtc.
+//
+// Dolny bajt magica to WERSJA UKLADU POL — podbij przy KAZDEJ zmianie tej struktury
+// ORAZ przy zmianie znaczenia istniejacego numeru w enum NetStage. Inaczej po OTA nowy
+// kod odczytalby stara liczbe jako swoja i pokazal zly etap z pelnym przekonaniem.
+inline constexpr uint32_t NET_STAGE_RTC_MAGIC = 0x4E535401;  // 'N' 'S' 'T' + wersja (01)
+
+struct NetStageRtc {
+  uint32_t magic;      // po zaniku zasilania RTC to SMIECI — rozstrzyga znacznik, a nie
+                       // "czy liczba miesci sie w zakresie enuma" (smiec tez sie miesci)
+  uint32_t stageNow;   // etap, ktory netTask wykonuje TERAZ, w TEJ sesji (NetStage).
+                       // Wartosci z poprzedniej sesji szukaj w Diag::netStagePrevSession —
+                       // tutaj jej JUZ NIE MA, netStageBegin() nadpisuje to pole na starcie.
+};
+
+// Definicja (z RTC_NOINIT_ATTR) siedzi w pogoda-gdynia.ino, tuz NAD gPvRtc.
+extern NetStageRtc gNetStage;
+
+// Przenosi etap z POPRZEDNIEJ sesji do Diag i przygotowuje pole na biezaca.
+// Wolac w setup() PRZED xTaskCreatePinnedToCore(netTask, ...) — po starcie netTask
+// stara wartosc jest juz nadpisana i nie da sie jej odzyskac.
+void netStageBegin();

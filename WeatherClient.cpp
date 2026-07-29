@@ -1,12 +1,12 @@
 #include "WeatherClient.h"
 
 #include "Config.h"
+#include "SecureClient.h"
 #include "Settings.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
-#include <WiFiClientSecure.h>
 #include <cstring>
 #include <ctime>
 
@@ -179,7 +179,7 @@ bool WeatherClient::fetch(WeatherModel& out) {
   char url[640];
   buildUrl(url, sizeof(url));
 
-  WiFiClientSecure client;
+  YieldingSecureClient client;
   client.setInsecure();
   HTTPClient http;
   http.setTimeout(15000);

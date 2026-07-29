@@ -4,7 +4,6 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <Update.h>
-#include <WiFiClientSecure.h>
 #include <cstring>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
@@ -12,6 +11,7 @@
 #include "Config.h"
 #include "Log.h"
 #include "OtaGuard.h"
+#include "SecureClient.h"
 #include "Version.h"
 
 namespace {
@@ -47,7 +47,7 @@ void otaUiBufferFreed() {
 }
 
 bool Ota::fetchRemoteVersion(int& version) {
-  WiFiClientSecure client;
+  YieldingSecureClient client;
   client.setInsecure();
   client.setTimeout(15);
   client.setHandshakeTimeout(15);
@@ -98,7 +98,7 @@ bool Ota::downloadAndFlash() {
   Serial.printf("OTA: heap przed pobieraniem = %u B\n",
                 static_cast<unsigned>(ESP.getFreeHeap()));
 
-  WiFiClientSecure client;
+  YieldingSecureClient client;
   client.setInsecure();
   client.setTimeout(20);
 
