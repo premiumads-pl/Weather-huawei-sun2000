@@ -301,8 +301,13 @@ class WeatherUi {
   void drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const WeatherModel& w,
               const PvModel& pv, const PvHistory& hist, const FlightModel& fl,
               uint32_t nowMs, uint32_t heapNow);
+  // (v164) `hist` takze tutaj: dolny pas ekranu PRAD liczy autokonsumpcje z tego
+  // samego profilu doby, co paski bilansu w v3Pv — przekazujemy model przez argument
+  // (jak wszystkie inne), a nie przez pole/cache, bo dolny pas rysuja tez zrzuty
+  // BMP/JPEG z drugiego rdzenia i zaden stan wspolny nie moze tu mutowac.
   void drawV3Bottom(TFT_eSPI& tft, uint8_t view, const WeatherModel& w, const PvModel& pv,
-                    const FlightModel& fl, uint32_t nowMs, uint32_t heapNow);
+                    const PvHistory& hist, const FlightModel& fl, uint32_t nowMs,
+                    uint32_t heapNow);
   // Czy teraz noc "do zwiniecia ekranu" (ciemno == blTarget na poziomie blNight + pora nocna
   // z okna nightStartH/EndH). Definicja w WeatherUiV3.cpp. Metoda, a nie file-static tamtego
   // pliku, bo wolaja ja ZAROWNO drawV3/drawV3Bottom (zegar nocny) jak i render() (tryb nocny

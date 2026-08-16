@@ -1160,7 +1160,69 @@ void v3DaysBottom(TFT_eSPI& tft, const WeatherModel& w) {
 }
 
 // ============================================================ PRAD =============
-// Makieta 05. Pelnojasne tlo, wielka moc + wykres doby.
+// (v164) Uklad "bilans + wykres" na wzor panelu FusionSolar — wariant B z makiety,
+// zaakceptowany przez wlasciciela. Ewolucja makiety 05: naglowek i stany swiezosci
+// z v158/v161 bez zmian, gorny blok scisniety, w srodku DWA PASKI BILANSU DNIA
+// (PV: zuzyte/oddane, DOM: z PV/z sieci), nizej ISTNIEJACY wykres doby, tylko nizszy.
+
+// --- BILANS DNIA [kWh] scalkowany z profilu doby --------------------------------
+// Falownik daje przez Modbus tylko produkcje dzienna (rej. 32114) i moce CHWILOWE
+// — zadnego licznika energii ODDANEJ/POBRANEJ dzis. Calkujemy wiec PvHistory:
+// 144 sloty po 10 min, w slocie OSTATNI udany odczyt mocy (kadencja dzienna 30 s),
+// kWh = W * (1/6) h / 1000 = W / 6000. Metoda prostokatow na probce chwilowej —
+// przy 10-minutowym slocie blad pojedynczego slotu bywa spory (chmura na 9 minut),
+// ale w sumie dnia sie usrednia; obie serie (watts/load) sa probkowane W TEJ SAMEJ
+// chwili i zerowane RAZEM o polnocy (PvHistory::push -> reset), wiec min/roznica
+// na parze probek jest spojna. Petla 144 iteracji na klatke — tania, bez cache.
+// NOC: Huawei wylacza Modbus TCP po zachodzie, wiec nocne sloty sa PUSTE i nocny
+// pobor domu (~0,1-0,3 kW) NIE wchodzi do "z sieci" — pasek DOM liczy tylko czesc
+// doby, w ktorej falownik odpowiadal. Uczciwiej tego z dostepnych rejestrow nie
+// policzymy (licznik energii pobranej wymagalby nowego rejestru — nie dokladamy).
+struct PvDayKwh {
+  float selfPv;    // energia PV zuzyta na miejscu: sum(min(prod, pobor))
+  float fromGrid;  // energia dobrana z sieci:      sum(max(pobor - prod, 0))
+};
+PvDayKwh pvDayEnergy(const PvHistory& h) {
+  int32_t selfSum = 0, impSum = 0;   // [W * slot]; max 144 * 65535 < 2^24, bez przepelnienia
+  for (int i = 0; i < PvHistory::SLOTS; ++i) {
+    if (!h.filled[i]) continue;
+    const int32_t p = h.watts[i], l = h.load[i];
+    selfSum += p < l ? p : l;
+    if (l > p) impSum += l - p;
+  }
+  return {selfSum / 6000.f, impSum / 6000.f};
+}
+
+// Pasek bilansu dnia: dwa segmenty na pelnej szerokosci kolumny (306 px, h=11),
+// procent w segmencie tylko gdy sie miesci (szerokosc tekstu + 8 px luzu).
+// `hasData` false (produkcja/zuzycie ~0 rano albo zima) -> sam tor col::LINE,
+// zadnych segmentow ani procentow — pusty pasek zamiast dzielenia przez zero.
+// `muted` (dane stare, wzorzec v158): segment A col::MUTE, segment B col::LINE —
+// podzial wciaz widac, ale kolor-komunikat ("zielone=dobre", "czerwone=platne")
+// jest zdjety; procenty tez znikaja, bo sa czescia tego samego komunikatu.
+// txtA/txtB: kolor procentu dobrany do jasnosci segmentu (BG na ciemnych OK/GRID,
+// PANEL na jasnych OK2/PV) — jeden kontrast, zero zgadywania w miejscu wywolania.
+void dayBar(TFT_eSPI& s, int y, float frac, bool hasData, bool muted,
+            uint16_t colA, uint16_t colB, uint16_t txtA, uint16_t txtB) {
+  const int bx = grid::MARGIN, bw = grid::W - 2 * grid::MARGIN, bh = 11;
+  s.fillRect(bx, y, bw, bh, col::LINE);   // tor
+  if (!hasData) return;
+  const float f = clampf(frac, 0.f, 1.f);
+  int sw = static_cast<int>(bw * f + 0.5f);
+  if (sw < 0) sw = 0; else if (sw > bw) sw = bw;   // twardy clamp jak w mainPvModule
+  if (sw > 0) s.fillRect(bx, y, sw, bh, muted ? col::MUTE : colA);
+  if (sw < bw) s.fillRect(bx + sw, y, bw - sw, bh, muted ? col::LINE : colB);
+  if (muted) return;
+  const int pA = static_cast<int>(f * 100.f + 0.5f);
+  char pb[16];
+  snprintf(pb, sizeof(pb), "%d%%", pA);
+  // Baseline y+9: cyfry f10 (7 px) siedza w pasku y..y+10 z ~2 px swiatla u gory.
+  if (plex::width(plex::f10(), pb) + 8 <= sw)
+    plex::strCenter(s, plex::f10(), pb, bx + sw / 2, y + 9, txtA);
+  snprintf(pb, sizeof(pb), "%d%%", 100 - pA);
+  if (plex::width(plex::f10(), pb) + 8 <= bw - sw)
+    plex::strCenter(s, plex::f10(), pb, bx + sw + (bw - sw) / 2, y + 9, txtB);
+}
 
 void v3Pv(TFT_eSPI& s, const PvModel& pv, const PvHistory& hist) {
   s.fillRect(0, 0, grid::W, 206, col::BG);
@@ -1241,45 +1303,132 @@ void v3Pv(TFT_eSPI& s, const PvModel& pv, const PvHistory& hist) {
   const uint16_t cMain = pvOld ? col::MUTE : col::PANEL;
   const uint16_t cSec = pvOld ? col::MUTE : col::SECOND;
 
-  // Wielka moc.
+  // --- GORNY BLOK (y=34..66, scisniety pod paski bilansu) -----------------------
+  // Wielka moc AC (f52, baseline 66 — cyfry 28..66, tuz pod linia naglowka y=30).
+  // Przy prod >= 9,95 kW bez dziesiatych: "12,3" ma w f52 117 px i razem z "kW"
+  // (f20, 32 px) konczyloby sie na x=161, wjezdzajac w kolumne metryk (x=141).
+  // "12" ma 66 px -> "kW" konczy sie na x=110, zostaje >=31 px luzu; strata 0,1 kW
+  // przy >=10 kW to <1% i ponizej dokladnosci chwilowego odczytu.
   const int prod = pv.data.powerAcW;
   const int load = pv.data.houseLoadW;
   const int gridW = pv.data.gridPowerW;
   char big[16];
-  fmt1(big, sizeof(big), prod / 1000.f);
-  const int bw = plex::str(s, plex::f52(), big, grid::MARGIN, 70, cMain);
-  plex::str(s, plex::f20(), "kW", grid::MARGIN + bw + 6, 66, cSec);
+  if (prod >= 9950) snprintf(big, sizeof(big), "%.0f", prod / 1000.f);
+  else fmt1(big, sizeof(big), prod / 1000.f);
+  const int bw = plex::str(s, plex::f52(), big, grid::MARGIN, 66, cMain);
+  plex::str(s, plex::f20(), "kW", grid::MARGIN + bw + 5, 66, cSec);
 
-  // Srodek: dom / siec.
-  char l[24];
-  fmt1(l, sizeof(l), load / 1000.f);
-  char l2[24];
-  snprintf(l2, sizeof(l2), "dom %s kW", l);
-  plex::str(s, plex::f13(), l2, 150, 48, cMain);
-  char g[24];
-  fmt1(g, sizeof(g), (gridW < 0 ? -gridW : gridW) / 1000.f);
-  char g2[28];
-  snprintf(g2, sizeof(g2), gridW >= 0 ? "do sieci +%s kW" : "z sieci −%s kW", g);
-  plex::str(s, plex::f13(), g2, 150, 66, pvOld ? col::MUTE : (gridW >= 0 ? col::OK : col::GRID));
-
-  // Prawa: energia.
-  char e[16];
-  fmt1(e, sizeof(e), pv.data.energyTodayKwh);
-  char e2[24];
-  snprintf(e2, sizeof(e2), "dziś %s kWh", e);
-  plex::strRight(s, plex::f13(), e2, grid::DATA_R, 48, col::MUTE);
-  char tot[24];
+  // Prawa krawedz (wiersze 46/64): energia dzienna (rej. 32114) i licznik zycia
+  // (rej. 32106). "dziś 99,9 kWh" (77 px) zaczyna sie na x=236. Rysowane PRZED
+  // metrykami sieci, bo szerokosc "łącznie" wyznacza budzet metryki w tym samym
+  // wierszu (patrz kaskada nizej).
+  char ev[12];
+  fmt1(ev, sizeof(ev), pv.data.energyTodayKwh);
+  char e2[28];
+  snprintf(e2, sizeof(e2), "dziś %s kWh", ev);
+  plex::strRight(s, plex::f13(), e2, grid::DATA_R, 46, col::MUTE);
+  char tot[28];
   snprintf(tot, sizeof(tot), "łącznie %.0f", pv.data.energyTotalKwh);
-  // y=84, nie 66: przy duzym poborze "z sieci −11,5 kW" (x=150) siega w prawo tak
-  // daleko, ze na wspolnym wierszu naslo by na "łącznie". Wlasny wiersz nizej —
-  // wciaz nad wykresem (cy=90).
-  plex::strRight(s, plex::f13(), tot, grid::DATA_R, 84, col::MUTE);
+  const int totW = plex::strRight(s, plex::f13(), tot, grid::DATA_R, 64, col::MUTE);
+
+  // Metryki (x=141, wiersze 46/64): pobor domu + kierunek sieci. Semantyka kolorow
+  // jak dotad: "do sieci +" zielony (oddajemy), "z sieci" czerwony (kupujemy) —
+  // znak w napisie tylko przy oddawaniu (mockup B), kierunek poboru niesie slowo
+  // i kolor. Wiersz 46: "dom 19,9 kW" (74 px) konczy sie na x=215, "dziś 99,9 kWh"
+  // zaczyna na x=236 -> 21 px luzu.
+  char lv[12];
+  fmt1(lv, sizeof(lv), load / 1000.f);
+  char l2[28];
+  snprintf(l2, sizeof(l2), "dom %s kW", lv);
+  plex::str(s, plex::f13(), l2, 141, 46, cMain);
+  // Wiersz 64 dzieli 172 px miedzy metryke sieci a "łącznie", wiec szerokosc
+  // metryki MIERZYMY i w razie ciasnoty degradujemy dwustopniowo (zawsze do
+  // prawdziwej, tylko krotszej formy):
+  //   pelna:  "do sieci +15,5 kW" (100 px) / "z sieci 15,5 kW" (82 px)
+  //   krok 1: bez dziesiatych      "do sieci +16 kW" (89 px)  — przy >=10 kW
+  //           strata 0,5 kW to <5% i mniej niz drganie odczytu chwilowego;
+  //   krok 2: bez znaku "+"        "do sieci 16 kW"  (79 px)  — kierunek wciaz
+  //           niesie slowo i zielony kolor, znak byl tylko ozdobnikiem mockupu.
+  // Budzet = 313 − szer("łącznie …") − 3 px przerwy − 141. Najczestszy uklad
+  // (5-cyfrowe "łącznie 99999", 76 px): budzet 93 px — "do sieci +9,9 kW" (93 px)
+  // wchodzi co do piksela; 6-cyfrowy licznik (83 px, >100 MWh w ~15. roku pracy)
+  // zbija budzet do 86 px i wtedy dziala kaskada. Import ("z sieci …", max 82 px)
+  // nie degraduje sie nigdy.
+  const int agw = gridW < 0 ? -gridW : gridW;
+  const int gAvail = grid::DATA_R - totW - 3 - 141;
+  char gv[12];
+  char g2[28];
+  fmt1(gv, sizeof(gv), agw / 1000.f);
+  snprintf(g2, sizeof(g2), gridW >= 0 ? "do sieci +%s kW" : "z sieci %s kW", gv);
+  if (plex::width(plex::f13(), g2) > gAvail) {
+    snprintf(gv, sizeof(gv), "%.0f", agw / 1000.f);
+    snprintf(g2, sizeof(g2), gridW >= 0 ? "do sieci +%s kW" : "z sieci %s kW", gv);
+  }
+  if (plex::width(plex::f13(), g2) > gAvail && gridW >= 0) {
+    snprintf(g2, sizeof(g2), "do sieci %s kW", gv);
+  }
+  plex::str(s, plex::f13(), g2, 141, 64, pvOld ? col::MUTE : (gridW >= 0 ? col::OK : col::GRID));
+
+  // --- DWA PASKI BILANSU DNIA (serce ukladu FusionSolar) ------------------------
+  // PASEK 1 "PV DZIŚ": ile z dzisiejszej produkcji zostalo W DOMU, a ile poszlo
+  // do sieci. Suma paska = produkcja dzienna Z REJESTRU 32114 (ta sama liczba, co
+  // "dziś" wyzej — jedna prawda na ekranie). "Zuzyte" = calka min(prod, pobor)
+  // z profilu doby (pvDayEnergy), "oddane" = rejestr − zuzyte. Te dwie wielkosci
+  // pochodza z ROZNYCH metod pomiaru (licznik falownika vs nasze probkowanie
+  // 10-minutowe), wiec roznica przy bledzie probkowania potrafi wyjsc ujemna —
+  // klamrujemy zuzyte do rejestru (oddane >= 0), bo licznik falownika jest
+  // wiarygodniejszy niz nasza calka. Procenty liczone z kWh, nie z mocy chwilowych.
+  const PvDayKwh de = pvDayEnergy(hist);
+  const float pvToday = pv.data.energyTodayKwh > 0.f ? pv.data.energyTodayKwh : 0.f;
+  const float selfPv = de.selfPv < pvToday ? de.selfPv : pvToday;   // klamra j.w.
+  const float expKwh = pvToday - selfPv;                            // >= 0 po klamrze
+  char t1v[12], la[12], lb[12], line1[48];
+  fmt1(t1v, sizeof(t1v), pvToday);
+  snprintf(line1, sizeof(line1), "PV DZIŚ %s kWh", t1v);
+  plex::str(s, plex::f11(), line1, grid::MARGIN, 88, cSec);
+  fmt1(la, sizeof(la), selfPv);
+  fmt1(lb, sizeof(lb), expKwh);
+  // Legenda po prawej w tym samym wierszu: najszersze "zużyte 99,9 · oddane 99,9"
+  // ma w f11 150 px (start x=163), a tytul "PV DZIŚ 99,9 kWh" konczy sie na x=107
+  // -> 56 px luzu. Kolejnosc slow = kolejnosc segmentow paska (lewy->prawy).
+  snprintf(line1, sizeof(line1), "zużyte %s · oddane %s", la, lb);
+  plex::strRight(s, plex::f11(), line1, grid::DATA_R, 88, cSec);
+  // Prog 0,05 kWh (nie ==0): rano/zima licznik dzienny potrafi dlugo stac na
+  // pojedynczych watogodzinach — pasek z procentami przy tak malej podstawie bylby
+  // szumem. Ponizej progu: pusty tor, bez segmentow i procentow (patrz dayBar).
+  dayBar(s, 92, pvToday > 0.05f ? selfPv / pvToday : 0.f, pvToday > 0.05f, pvOld,
+         col::OK, col::OK2, col::BG, col::PANEL);
+
+  // PASEK 2 "DOM DZIŚ": czym dom byl dzis zasilany. Obie czesci z TEJ SAMEJ calki
+  // profilu doby (z PV = min(prod, pobor), z sieci = max(pobor − prod, 0)), wiec
+  // suma i procenty sa wewnetrznie spojne. "z PV" tu = surowa calka (bez klamry
+  // z paska 1): przy bledzie probkowania oba paski moga sie roznic o ten blad,
+  // ale kazdy z osobna sumuje sie do wlasnego tytulu — to wazniejsze niz idealna
+  // zgodnosc miedzy paskami. UWAGA (komentarz przy pvDayEnergy): nocny pobor nie
+  // wchodzi, bo falownik w nocy nie odpowiada — "DOM DZIŚ" liczy czesc doby
+  // z dzialajacym Modbusem.
+  const float homeKwh = de.selfPv + de.fromGrid;
+  char t2v[12];
+  fmt1(t2v, sizeof(t2v), homeKwh);
+  snprintf(line1, sizeof(line1), "DOM DZIŚ %s kWh", t2v);
+  plex::str(s, plex::f11(), line1, grid::MARGIN, 116, cSec);
+  fmt1(la, sizeof(la), de.selfPv);
+  fmt1(lb, sizeof(lb), de.fromGrid);
+  // Najszersze "z PV 99,9 · z sieci 99,9" ma 126 px (start x=187), tytul "DOM DZIŚ
+  // 99,9 kWh" konczy sie na x=120 -> 67 px luzu.
+  snprintf(line1, sizeof(line1), "z PV %s · z sieci %s", la, lb);
+  plex::strRight(s, plex::f11(), line1, grid::DATA_R, 116, cSec);
+  dayBar(s, 120, homeKwh > 0.05f ? de.selfPv / homeKwh : 0.f, homeKwh > 0.05f, pvOld,
+         col::PV, col::GRID, col::PANEL, col::BG);
 
   // Wykres doby: WYPELNIONY (nie linia — na zywo linia byla nieczytelna). Sluply
   // POBORU domu (niebieski) jako tlo + PRODUKCJA (bursztyn) na wierzchu. Efekt:
   // wykres jest "pelny" o kazdej porze (dom zawsze cos ciagnie), a w dzien bursztyn
   // slonca narasta na niebieskim tle. Slupki maja pelna szerokosc slotu, bez przerw.
-  const int cx = grid::MARGIN, cy = 90, cw = grid::W - 2 * grid::MARGIN, ch = 84;
+  // (v164) Nizszy niz do v163 (bylo cy=90, ch=84): gorna polowa ekranu oddana
+  // paskom bilansu, wykres schodzi na y=140..204 — os godzin w dolnym pasie
+  // (v3PvBottom, y=216) zostaje na miejscu i teraz siedzi tuz pod podstawa.
+  const int cx = grid::MARGIN, cy = 140, cw = grid::W - 2 * grid::MARGIN, ch = 64;
   const int base = cy + ch;
   s.drawFastHLine(cx, base, cw, col::LINE);
   const uint16_t peak = hist.peak();
@@ -1313,8 +1462,7 @@ void v3Pv(TFT_eSPI& s, const PvModel& pv, const PvHistory& hist) {
   }
 }
 
-void v3PvBottom(TFT_eSPI& tft, const PvModel& pv) {
-  (void)pv;
+void v3PvBottom(TFT_eSPI& tft, const PvModel& pv, const PvHistory& hist) {
   tft.fillRect(0, 206, grid::W, 34, col::BG);
   // Osie godzin wykresu (wyrownane z v3Pv).
   const int cx = grid::MARGIN, cw = grid::W - 2 * grid::MARGIN;
@@ -1324,14 +1472,35 @@ void v3PvBottom(TFT_eSPI& tft, const PvModel& pv) {
     const int x = cx + (hh * cw) / 24;
     plex::strCenter(tft, plex::f10(), hb, x, 216, col::MUTE);
   }
-  // Legenda.
+  // Legenda scisnieta w lewo (bylo: probki na x=7 i x=120): po prawej wchodzi
+  // "autokonsumpcja NN%". USTAPILO "reszta doby" — podpis szarej linii 2 px
+  // przyszlych slotow; procent zuzycia wlasnego to informacja, a tamten podpis
+  // byl dekoracja (sama linia na wykresie zostaje). Trzech podpisow naraz nie
+  // zmiescimy: "produkcja"(54) + "pobór domu"(69) + "autokonsumpcja 100%"(128)
+  // + 2 probki po 10 px + odstepy > 306 px.
   tft.fillRect(grid::MARGIN, 226, 10, 8, col::PV);
   plex::str(tft, plex::f13(), "produkcja", grid::MARGIN + 14, 233, col::SECOND);
-  tft.fillRect(120, 226, 10, 8, col::SELF);   // próbka wypełniona, jak wykres (nie linia)
-  plex::str(tft, plex::f13(), "pobór domu", 134, 233, col::SECOND);
-  // "reszta doby" zamiast "reszta doby przed nami" — pelny napis naslo by na
-  // "pobór domu" (trzy podpisy w jednym pasku f13 nie miesczą sie w 296 px).
-  plex::strRight(tft, plex::f13(), "reszta doby", grid::W - grid::MARGIN, 233, col::MUTE);
+  tft.fillRect(85, 226, 10, 8, col::SELF);   // próbka wypełniona, jak wykres (nie linia)
+  plex::str(tft, plex::f13(), "pobór domu", 99, 233, col::SECOND);
+  // Autokonsumpcja = procent DZISIEJSZEJ produkcji zuzyty na miejscu — dokladnie
+  // udzial lewego segmentu paska "PV DZIŚ" (te same liczby: calka min(prod, pobor)
+  // z klamra do rejestru 32114, patrz v3Pv). Najszersze "autokonsumpcja 100%" ma
+  // 128 px (start x=185), "pobór domu" konczy sie na x=168 -> 17 px luzu.
+  // Trzy stany jak w v3Pv: bez odczytu / sen / produkcja ~0 -> bez napisu (procent
+  // z pustej podstawy to szum); dane stare -> liczba zostaje, kolor na MUTE.
+  const bool pvFresh = pv.online && freshMs(diag().pvOkAt, pv.asleep ? cfg::PV_STALE_NIGHT_MS
+                                                                     : cfg::PV_STALE_MS);
+  const bool pvOld = pv.data.valid && !pvFresh && !pv.asleep;
+  const float pvToday = pv.data.energyTodayKwh > 0.f ? pv.data.energyTodayKwh : 0.f;
+  if (pv.data.valid && !pv.asleep && pvToday > 0.05f) {
+    const PvDayKwh de = pvDayEnergy(hist);
+    const float selfPv = de.selfPv < pvToday ? de.selfPv : pvToday;
+    char ak[32];
+    snprintf(ak, sizeof(ak), "autokonsumpcja %d%%",
+             static_cast<int>(selfPv / pvToday * 100.f + 0.5f));
+    plex::strRight(tft, plex::f13(), ak, grid::W - grid::MARGIN, 233,
+                   pvOld ? col::MUTE : col::SECOND);
+  }
 }
 
 // ============================================================ POKOJE ===========
@@ -2476,7 +2645,8 @@ void WeatherUi::drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const Weath
 }
 
 void WeatherUi::drawV3Bottom(TFT_eSPI& tft, uint8_t view, const WeatherModel& w, const PvModel& pv,
-                             const FlightModel& fl, uint32_t nowMs, uint32_t heapNow) {
+                             const PvHistory& hist, const FlightModel& fl, uint32_t nowMs,
+                             uint32_t heapNow) {
   // Podczas planszy zdarzenia caly dolny pas jest ciemny (spojnie z drawV3Alert, zeby
   // stopka nie przeswitywala), z cienkim paskiem akcentu na dole. Niezalezne od widoku.
   if (alertActive_) {
@@ -2492,7 +2662,7 @@ void WeatherUi::drawV3Bottom(TFT_eSPI& tft, uint8_t view, const WeatherModel& w,
       v3DaysBottom(tft, w);
       break;
     case cfg::VIEW_PV:
-      v3PvBottom(tft, pv);
+      v3PvBottom(tft, pv, hist);
       break;
     case cfg::VIEW_HOME:
       v3HomeBottom(tft, roomModel_);   // legenda: kropki kolorow + biezace temperatury

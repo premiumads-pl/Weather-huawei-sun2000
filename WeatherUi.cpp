@@ -892,7 +892,7 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
   // sprite 206 px. (v160) Po usunieciu V1/V2 to JEDYNA sciezka dolnego pasa: stopka
   // PV (drawFooter) i HUD ekranu RETRO nalezaly do tamtych ukladow i zniknely razem
   // z nimi.
-  drawV3Bottom(tft_, view_, w, pv, fl, nowMs, heapNow);
+  drawV3Bottom(tft_, view_, w, pv, hist, fl, nowMs, heapNow);
   tickBacklight();
 
   if (cfg::PROFILE_FRAME) {
@@ -1459,7 +1459,7 @@ void WeatherUi::streamScreenshot(WiFiClient& client, const WeatherModel& w, cons
           }
           // Ten sam dolny pas co live-render i sciezka BMP — inaczej podglad
           // pokazywalby inny dol niz fizyczny ekran.
-          drawV3Bottom(shot, view_, w, pv, fl, nowMs, heapNow);
+          drawV3Bottom(shot, view_, w, pv, hist, fl, nowMs, heapNow);
           for (int y = top; y < top + SHOT_H && y < HT; ++y) {
             uint8_t* dst = rgb + static_cast<size_t>(y) * WD * 2;
             for (int x = 0; x < WD; ++x) {
@@ -1546,7 +1546,7 @@ void WeatherUi::streamScreenshot(WiFiClient& client, const WeatherModel& w, cons
     }
     // Ten sam dolny pas co live-render (drawV3Bottom): podglad w panelu ma pokazywac
     // dokladnie to, co fizyczny ekran.
-    drawV3Bottom(shot, view_, w, pv, fl, nowMs, heapNow);
+    drawV3Bottom(shot, view_, w, pv, hist, fl, nowMs, heapNow);
 
     for (int y = top + SHOT_H - 1; y >= top; --y) {
       for (int x = 0; x < WD; ++x) {

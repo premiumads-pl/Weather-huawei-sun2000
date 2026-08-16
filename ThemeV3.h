@@ -39,6 +39,13 @@ constexpr uint16_t RAIN2   = 0x5C7A;  // #5B8DD0
 constexpr uint16_t RAIN3   = 0x9DDB;  // #9DB8DD
 constexpr uint16_t RAIN4   = 0xBE3B;  // #B8C6DD (najslabszy)
 constexpr uint16_t OK      = 0x4CC9;  // #4D9A4D produkcja / stan OK / swieze
+// (v164) JEDYNY kolor dolozony dla paskow bilansu dnia na ekranie PRAD: energia
+// ODDANA do sieci. Ta sama rodzina co OK (energia PV zuzyta na miejscu), ale
+// rozjasniona (#4D9A4D -> #8CBF8C, L* ~58 -> ~73) — oddane to nadal "dobra"
+// energia sloneczna, tylko wyplywajaca z domu, wiec slabszy odcien tego samego
+// komunikatu. Paleta nie miala zadnej jasniejszej zieleni (OK jest jedyna),
+// a uzycie np. RAIN3/LINE klamaloby znaczeniem (niebieski=opad, szary=brak).
+constexpr uint16_t OK2     = 0x8DF1;  // #8CBF8C oddane do sieci (pasek PV DZIS)
 constexpr uint16_t SELF    = 0x3BD8;  // #3D78C4 zuzycie wlasne
 constexpr uint16_t GRID    = 0xC247;  // #C04A3A z sieci / alarm
 constexpr uint16_t SUN     = 0xF587;  // #F2B13A slonce
