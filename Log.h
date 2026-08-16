@@ -681,9 +681,16 @@ void pvRtcBegin();
 // adresem podzielnym przez 4, wiec zadnego dostepu bajtowego ani niewyrownanego".
 // Trzymam sie tej samej zasady, zeby nie otwierac pytania o dostep bajtowy do RTC.
 //
-// WSPOLBIEZNOSC: pisze WYLACZNIE netTask (jedno zadanie, jeden wyrownany uint32, czyli
-// zapis atomowy), czyta netStageBegin() w setup() — czyli PRZED startem netTask. Portal
-// (webTask) tego pola NIE czyta: czyta kopie z Diag. Zadnych blokad i zadnej potrzeby.
+// WSPOLBIEZNOSC: stageNow pisze WYLACZNIE netTask (jedno zadanie, jeden wyrownany uint32,
+// czyli zapis atomowy), czyta netStageBegin() w setup() — czyli PRZED startem netTask.
+// Od nadzorcy netTask czytaja to pole takze DWA inne zadania i oba bez blokady, swiadomie:
+//   - loop() (rdzen 1) — sprawdza, czy netTask nie stoi wlasnie na etapie OTA,
+//   - Portal/webTask — wystawia etap BIEZACY w /api/diag (reset.net_stage_now).
+// Wyrownany uint32 nie rozerwie sie w polowie, wiec najgorsze, co moze sie stac, to
+// odczyt etapu sprzed mikrosekundy — czyli dokladnie to samo, co daje kazda migawka
+// diagnostyczna w tym projekcie. Blokada kupilaby tu zero, a kosztowala ryzyko zakleszczenia
+// miedzy trzema zadaniami. stallRestarts pisze WYLACZNIE loop() i tylko raz, tuz przed
+// ESP.restart().
 //
 // KOLEJNOSC DEKLARACJI W .ino: gNetStage stoi NAD gPvRtc, czyli jest zadeklarowana JAKO
 // PIERWSZA z czworki i dostaje NAJWYZSZY adres — patrz wielki komentarz o kolejnosci
@@ -693,7 +700,11 @@ void pvRtcBegin();
 // Dolny bajt magica to WERSJA UKLADU POL — podbij przy KAZDEJ zmianie tej struktury
 // ORAZ przy zmianie znaczenia istniejacego numeru w enum NetStage. Inaczej po OTA nowy
 // kod odczytalby stara liczbe jako swoja i pokazal zly etap z pelnym przekonaniem.
-inline constexpr uint32_t NET_STAGE_RTC_MAGIC = 0x4E535401;  // 'N' 'S' 'T' + wersja (01)
+inline constexpr uint32_t NET_STAGE_RTC_MAGIC = 0x4E535402;  // 'N' 'S' 'T' + wersja (02)
+// wersja 02: doszlo pole stallRestarts (nadzorca netTask). Uklad pol sie zmienil, wiec
+// PIERWSZY start po tej aktualizacji musi zglosic "RTC z innego ukladu pol" i stracic
+// etap poprzedniej sesji — to jest cena poprawna i jednorazowa. Bez podbicia stary
+// obraz RTC czytalby sie jako nowy i licznik restartow wystartowalby od smiecia.
 
 struct NetStageRtc {
   uint32_t magic;      // po zaniku zasilania RTC to SMIECI — rozstrzyga znacznik, a nie
@@ -701,6 +712,13 @@ struct NetStageRtc {
   uint32_t stageNow;   // etap, ktory netTask wykonuje TERAZ, w TEJ sesji (NetStage).
                        // Wartosci z poprzedniej sesji szukaj w Diag::netStagePrevSession —
                        // tutaj jej JUZ NIE MA, netStageBegin() nadpisuje to pole na starcie.
+  // Ile razy nadzorca netTask (w loop(), pogoda-gdynia.ino) zrestartowal urzadzenie, bo
+  // zadanie sieci przestalo bic znacznik zycia. Licznik KUMULACYJNY, przezywa restart —
+  // i o to wlasnie chodzi: jedno zdarzenie to awaria sieci, a rosnaca liczba to blad w
+  // samym nadzorcy albo trwale za krotki prog. Bez tej roznicy nie da sie tego rozstrzygnac
+  // zdalnie, bo /api/log ginie przy kazdym restarcie. Zerowany tylko przy zimnym starcie
+  // (zly magic) w netStageBegin(); wystawiany w /api/diag jako reset.net_stall_restarts.
+  uint32_t stallRestarts;
 };
 
 // Definicja (z RTC_NOINIT_ATTR) siedzi w pogoda-gdynia.ino, tuz NAD gPvRtc.

@@ -231,6 +231,33 @@ RTC_NOINIT_ATTR PirRtc gPir;    // zostaje 0x50000200 — pilnuje automat w tool
 volatile uint32_t gPirRiseAt = 0;   // millis() otwartego impulsu (0 = zaden nie trwa)
 volatile uint32_t gPirFallAt = 0;   // millis() konca poprzedniego impulsu (0 = nie bylo)
 
+// --- ZNACZNIK ZYCIA netTask (nadzorca w loop(), patrz blok "NADZORCA netTask") ---
+//
+// netTask stawia tu millis() na POCZATKU kazdego obiegu swojej petli; loop() to czyta i
+// po dostatecznie dlugim bezruchu robi kontrolowany restart. Po co w ogole: 26 zadan HTTP
+// na jeden cykl mapy radaru idzie przez HTTPClient::writeToStreamDataBlock(), a ta funkcja
+// kreci sie `while (connected() && len > 0)` BEZ ZADNEGO timeoutu. Gdy punkt dostepowy
+// znika w polowie transferu, gniazdo zostaje na wpol otwarte (druga strona przepadla bez
+// RST, wiec lwIP dalej melduje "polaczony") i petla obraca sie w nieskonczonosc. Task
+// watchdog tego NIE zlapie: NetworkClient::readBytes() ma w srodku `delay(2)` ("Allow
+// other tasks to run"), wiec IDLE0 dostaje czas i watchdog jest karmiony. Urzadzenie sie
+// nie restartuje — zamiera po cichu (33 minuty, zmierzone).
+//
+// DRAM, nie RTC: to znacznik zywotnosci BIEZACEJ sesji. Po restarcie millis() zaczyna od
+// zera, wiec wartosc z poprzedniej sesji nie znaczylaby nic — a w RTC udawalaby, ze znaczy.
+//
+// WSPOLBIEZNOSC: jeden wyrownany uint32_t, JEDNO zadanie pisze (netTask, rdzen 0), JEDNO
+// czyta (loop(), rdzen 1). Zapis i odczyt sa atomowe, wiec zadnych blokad — najgorszy
+// przypadek to odczyt wartosci sprzed mikrosekundy. `volatile`, zeby kompilator nie
+// zwinal odczytu w loop() do jednego, zrobionego raz przed petla.
+//
+// 0 znaczy "netTask nie zdazyl jeszcze ANI RAZ" i nadzorca wtedy milczy. Ta wartosc jest
+// nieosiagalna jako prawdziwy stempel: setup() ma w sobie samo Serial.begin() + delay(200),
+// wiec pierwszy obieg netTask widzi millis() grubo powyzej zera. Jedyny wyjatek to jedna
+// milisekunda co ~49,7 dnia przy przekreceniu millis() — nadzorca po prostu odpuszcza ten
+// jeden obieg i zeruje odliczanie, co jest zachowaniem bezpiecznym.
+volatile uint32_t gNetBeatMs = 0;
+
 // Ile zbocz w gore loop() juz zaksiegowal w gPir.byHour. Seed w setup() z gPir.rises:
 // po OTA licznik w RTC jest juz duzy, a to zero — bez seeda pierwszy obrot loop()
 // wrzucilby CALA dotychczasowa historie w biezaca godzine i zmyslil pik.
@@ -332,9 +359,22 @@ void netStageBegin() {
     diag().netStagePrevSession = static_cast<uint8_t>(gNetStage.stageNow);
     LOG("netTask: poprzednia sesja skonczyla sie na etapie %lu (%s)\n",
         (unsigned long)gNetStage.stageNow, netStageName(diag().netStagePrevSession));
+    // Licznika restartow od nadzorcy NIE ruszamy — ma sie kumulowac przez cale zycie
+    // zasilania, bo dopiero jego PRZYROST odroznia jednorazowa awarie sieci od petli
+    // restartow. Melduje sie sam tylko wtedy, gdy jest niezerowy: przy zdrowej pracy
+    // ta linijka nigdy sie nie pojawi i jej obecnosc w /api/log cos znaczy.
+    if (gNetStage.stallRestarts != 0) {
+      LOG("netTask: nadzorca restartowal juz %lu raz(y) od ostatniego odlaczenia zasilania\n",
+          (unsigned long)gNetStage.stallRestarts);
+    }
   } else {
     diag().netStagePrevSession = NET_STAGE_UNKNOWN;
     gNetStage.magic = NET_STAGE_RTC_MAGIC;
+    // Zimny start albo INNY UKLAD POL (podbity magic po aktualizacji) — licznik z takiego
+    // obrazu RTC to smiec, a nie historia. Zerujemy go jawnie, bo RTC_NOINIT nie zeruje
+    // niczego samo; przy zerowaniu pol z tej struktury nie ma zadnego "0xFFFFFFFF = brak
+    // danych", wiec zero uczciwie znaczy "jeszcze sie nie zdarzylo".
+    gNetStage.stallRestarts = 0;
     LOG("netTask: RTC puste lub z innego ukladu pol — etapu poprzedniej sesji nie znam\n");
   }
   gNetStage.stageNow = NET_STAGE_IDLE;
@@ -818,6 +858,14 @@ static void netTask(void*) {
   bool firstWeather = false;
 
   for (;;) {
+    // ---- ZNACZNIK ZYCIA dla nadzorcy w loop() (patrz gNetBeatMs na gorze pliku) ----
+    // Stoi JAKO PIERWSZY w obiegu i PONAD wszystkimi "continue" ponizej: obieg bez WiFi
+    // albo z portalem w trakcie konfiguracji tez jest obiegiem, w ktorym zadanie zyje.
+    // Gdyby stal nizej, brak sieci wygladalby dla nadzorcy identycznie jak zawieszenie
+    // na gniezdzie — i kazda dluzsza awaria routera konczylaby sie restartem.
+    // Jeden zapis wyrownanego uint32, bez blokad — uzasadnienie przy deklaracji.
+    gNetBeatMs = millis();
+
     // Okres próbny po OTA. MUSI tykać w każdej iteracji — także wtedy, gdy nie ma
     // WiFi — bo brak sieci to jeden z powodów, dla których wersję trzeba cofnąć.
     // Dlatego stoi PRZED wszystkimi "continue" poniżej.
@@ -1733,6 +1781,123 @@ void loop() {
   }
 
   const uint32_t now = millis();
+
+  // =========================== NADZORCA netTask ===============================
+  // Zadanie sieci potrafi UMRZEC PO CICHU — i to nie jest teoria, tylko awaria zmierzona
+  // na tym urzadzeniu: netTask wisial 33 minuty (i wisialby bez konca) na polowie mapy
+  // radaru, gdy wlasciciel zaktualizowal firmware punktu dostepowego w trakcie transferu.
+  // Gniazdo zostalo na WPOL OTWARTE (druga strona przepadla bez RST, lwIP dalej meldowal
+  // "polaczony"), a HTTPClient::writeToStreamDataBlock() kreci sie w takiej sytuacji
+  // `while (connected() && len > 0)` BEZ ZADNEGO timeoutu. Task watchdog tego nie lapie,
+  // bo NetworkClient::readBytes() ma w petli `delay(2)` ("Allow other tasks to run"),
+  // wiec IDLE0 dostaje czas i watchdog jest karmiony. Dowod z /api/diag: dwie migawki
+  // w odstepie 91 s, w ktorych KAZDY licznik ok_ago_s urosl dokladnie o 91 — czyli ani
+  // jeden klient sie nie odezwal. Ekran i panel dzialaly, bo to inne zadania.
+  //
+  // DLACZEGO TU, A NIE W NOWYM ZADANIU: osobne zadanie to kolejne ~2 kB stosu i kolejna
+  // rzecz, ktora sama moze paść — a nadzor nie moze byc bardziej awaryjny od tego, co
+  // nadzoruje. loop() to gotowe zadanie arduinowe na rdzeniu 1, ktore chodzi caly czas
+  // i czesto (rysuje ekran), wiec kosztuje nas tu jedno porownanie na klatke.
+  //
+  // A GDYBY ZAWISL SAM loop()? Wtedy nadzoru nie ma i nikt tego nie wykryje — ale
+  // ZAMIERA EKRAN, czyli objaw widac golym okiem z drugiego konca lazienki. To jest cala
+  // roznica wobec cichej smierci netTask, ktora z zewnatrz wyglada IDENTYCZNIE jak
+  // poprawna praca (ekran rysuje, panel odpowiada, tylko dane stoja).
+  //
+  // MIEJSCE W loop(): PONAD wszystkimi wczesnymi return-ami (portal AP, ekran OTA, ekran
+  // IP, ekran startowy) — tak samo i z tego samego powodu, co bloki PIR/LDR nizej. Gdyby
+  // stal pod nimi, wystarczyloby, ze urzadzenie utknie na ktoryms z tych ekranow, zeby
+  // nadzor przestal istniec. Wykluczenie OTA robimy JAWNIE, warunkiem ponizej, a nie
+  // przez schowanie sie pod `return` z galezi OTA — warunek widac i da sie go przeczytac.
+  //
+  // TRZY POWODY, DLA KTORYCH NADZORCA MILCZY (kazdy zeruje odliczanie, nie tylko pomija
+  // sprawdzenie — patrz netExcusedAt):
+  //   1. AKTYWNOSC OTA. Pobranie 1,3 MB przez TLS plus zapis partycji trwa MINUTY i jest
+  //      w pelni legalnym bezruchem petli sieci. Restart w polowie zapisu partycji to
+  //      dokladnie ta katastrofa, przed ktora broni caly OtaGuard — a urzadzenie wisi
+  //      bez USB, wiec cegle da sie odkrecic tylko srubokretem. Sprawdzamy DWA zrodla:
+  //        - gNetStage.stageNow == NET_STAGE_OTA obejmuje CALE wywolanie
+  //          ota.checkAndUpdate() (sprawdzenie wersji, pobranie, zapis, delay przed
+  //          restartem) — takze te fazy, w ktorych otaStatus() stoi na IDLE/CHECKING;
+  //        - otaStatus().state != IDLE lapie stany OTA WIDZIANE OD STRONY UI, w tym ten
+  //          nieoczywisty: Ota.cpp ustawia DOWNLOADING takze po to, zeby wyprosic bufor
+  //          ekranu ("DOWNLOADING nie znaczy tu 'pobieram firmware' — to jedyny sposob,
+  //          zeby kazac UI oddac bufor"), oraz zostawia DONE/FAILED na czas delay(3000)
+  //          i delay(4000) tuz przed wlasnym ESP.restart().
+  //      Zaden z tych warunkow osobno nie pokrywa drugiego w calosci, a pomylka kosztuje
+  //      tu cegle — wiec sa oba, na OR.
+  //   2. KARENCJA PO STARCIE (kNetBootGraceMs). setup() bywa dlugi, netTask startuje na
+  //      jego koncu, a jego PIERWSZY obieg robi komplet pobran naraz.
+  //   3. ZNACZNIK JESZCZE NIE BITY (0). netTask nie zdazyl ani razu — nie ma czego pilnowac.
+  //
+  // PROG (kNetStallLimitMs) — POLICZONY Z KODU, NIE ZGADNIETY. Znacznik bije RAZ NA OBIEG,
+  // wiec prog musi przykryc SUME najgorszych przypadkow calego obiegu, a nie najdluzszy
+  // pojedynczy blok. Pesymistycznie, z timeoutow w kodzie:
+  //   - mapa radaru: 1 zadanie listy klatek + 13 klatek x 2 kafle = 27 zadan po 12 s
+  //     (RadarMap.cpp: http.setTimeout(12000)) = 324 s. Nieudany kafel przerywa TYLKO
+  //     swoja klatke (`frameOk = false; break;`), petla po klatkach leci dalej — wiec
+  //     te 13 x 12 s naprawde sie sumuje;
+  //   - piec przez chmure: odswiezenie tokena 15 s (postToken) + identyfikatory 25 s
+  //     + cechy 25 s (dwa razy apiGet) = 65 s;
+  //   - przeglad roamingowy: czekanie na blokade skanu do 20 s (portal::scanLock(20000))
+  //     + skan 13 kanalow po 250 ms ~3,3 s + ponowne laczenie 60 x 100 ms = 6 s -> ~30 s;
+  //   - pogoda 15 s, powietrze 12 s, radar punktowy 12 s, loty 12 s, bramka BLE 3 s,
+  //     nasluch BLE 4 s, Modbus 4 x 2,5 s = 10 s, MQTT ~2 s.
+  //   RAZEM ~490 s. To jest obieg, w ktorym KAZDY klient dochodzi do swojego timeoutu i
+  //   ZADEN nie wisi — czyli sytuacja fatalna, ale calkowicie legalna.
+  // Dlatego 300 s (pierwotny pomysl) jest ZA MALO: przekracza je sama mapa radaru.
+  // Bierzemy 900 s = 15 minut, czyli ~1,8x powyzej policzonego pesymizmu.
+  // Cena bledu jest skrajnie niesymetryczna i o tym decyduje: za dlugi prog kosztuje
+  // KWADRANS nieswiezych danych zamiast wiecznosci, a za krotki — restart w srodku
+  // obiegu, ktory dopiero na swoim KONCU dochodzi do sprawdzenia OTA. Urzadzenie, ktore
+  // restartuje sie przed sprawdzeniem OTA, nie da sie juz zaktualizowac zdalnie.
+  //
+  // Uwaga o granicach mozliwosci tego nadzoru: 12 s to timeout POJEDYNCZEGO ODCZYTU
+  // z gniazda, a nie calego zadania. Polaczenie, ktore saczy dane w nieskonczonosc
+  // (kilka bajtow tuz przed kazdym timeoutem), nie ma zadnego gornego ograniczenia i
+  // ZOSTANIE tu uznane za zawieszenie. Zadnym progiem sie tego nie rozroznia — jedynym
+  // pelnym lekiem jest wlasny limit CZASU CALEGO POBRANIA w kliencie HTTP.
+  {
+    constexpr uint32_t kNetStallLimitMs = 900000;   // 15 min — uzasadnienie wyzej
+    constexpr uint32_t kNetBootGraceMs = 120000;    // 2 min karencji po rozruchu
+
+    // millis() ostatniego obiegu, w ktorym nadzor byl WYLACZONY. Po co osobna zmienna,
+    // skoro mamy znacznik zycia: po kilkuminutowym OTA znacznik jest z zalozenia stary,
+    // a netTask zapisze swiezy dopiero na poczatku NASTEPNEGO obiegu — miedzy koncem
+    // ota.checkAndUpdate() a tym zapisem jest okno rzedu 250 ms, w ktorym sam znacznik
+    // meldowalby wielominutowy bezruch i nadzorca zrestartowalby urzadzenie TUZ PO
+    // udanym OTA. Warunek na obu roznicach naraz znaczy: po kazdym wykluczeniu liczymy
+    // pelen prog od nowa.
+    static uint32_t netExcusedAt = 0;
+
+    const uint32_t beat = gNetBeatMs;
+    const OtaStatus& otaNow = otaStatus();
+    const bool otaBusy = (otaNow.state != OtaState::IDLE) ||
+                         (gNetStage.stageNow == NET_STAGE_OTA);
+
+    if (otaBusy || beat == 0 || now < kNetBootGraceMs) {
+      netExcusedAt = now;
+    } else if ((now - beat) >= kNetStallLimitMs &&
+               (now - netExcusedAt) >= kNetStallLimitMs) {
+      // Licznik do RTC PRZED restartem — to jedyna rzecz, ktora go przezyje. /api/log
+      // ginie razem z DRAM, wiec wpis nizej zobaczy tylko ktos, kto akurat patrzy na
+      // zywo; po restarcie zostaje reset.net_stall_restarts i reset.net_stage_prev.
+      ++gNetStage.stallRestarts;
+      // OtaGuard NIE jest tu wolany celowo: to awaria SIECI, a nie wersji firmware.
+      // Zgloszenie tego jako bledu wersji cofnieloby dzialajace oprogramowanie z powodu
+      // padnietego routera. netStageBegin() po restarcie sam przeniesie stageNow do
+      // Diag, wiec /api/diag nazwie zablokowany blok bez zadnego dopisywania tutaj.
+      LOG("netTask ZAWISL na etapie %lu (%s) od %lu s — kontrolowany restart (%lu. raz)\n",
+          (unsigned long)gNetStage.stageNow,
+          netStageName(static_cast<uint8_t>(gNetStage.stageNow)),
+          (unsigned long)((now - beat) / 1000),
+          (unsigned long)gNetStage.stallRestarts);
+      // Chwila dla zadania web na dokonczenie odpowiedzi, ktora ma wlasnie w gniezdzie —
+      // przy tej skali czasu (kwadrans) 300 ms nic nie kosztuje.
+      delay(300);
+      ESP.restart();
+    }
+  }
 
   // --- czujniki v100 (LDR analog + PIR cyfrowy), surowo do /api/diag ---
   // Co 250 ms wystarczy: LDR jest wolnozmienny, a wlutowany PIR to AM312 — impuls ~2 s,

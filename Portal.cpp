@@ -2188,6 +2188,33 @@ void apiDiag() {
   // rozjechaloby sie z enumem przy pierwszym dolozeniu etapu — nazwa idzie z Log.h.
   rs["net_stage_prev_name"] = netStageName(d.netStagePrevSession);
 
+  // ETAP BIEZACY — czyli co netTask robi W TEJ CHWILI. Nazwy sa celowo inne niz
+  // net_stage_prev* powyzej i celowo NIE sa do siebie podobne: "prev" opisuje sesje,
+  // ktora juz nie zyje, "now" opisuje ta, ktora wlasnie trwa. Pomylenie tych dwoch
+  // znaczy postawienie diagnozy o zlym rozruchu.
+  //
+  // Tego pola brakowalo i to byl blad, ktory kosztowal pol godziny: 15.08.2026 netTask
+  // wisial 33 minuty na mapie radaru, a jedyna droga do nazwania zablokowanego bloku
+  // wiodla przez... RESTART urzadzenia (dopiero wtedy netStageBegin() przenosil etap do
+  // net_stage_prev). Czyli: zeby dowiedziec sie, co wisi, trzeba bylo skasowac dowod.
+  // Z tym polem ta sama diagnoza to jedno zapytanie, bez restartu — dwie migawki
+  // /api/diag w odstepie minuty pokazuja ten sam net_stage_now i wszystkie ok_ago_s
+  // rosnace o tyle samo.
+  //
+  // Czytamy WPROST z RTC (gNetStage), a nie z kopii w Diag — bo Diag trzyma z zalozenia
+  // wartosc POPRZEDNIEJ sesji. Bez blokady: wyrownany uint32, ktory pisze jedno zadanie
+  // (netTask), a najgorszy mozliwy skutek to etap sprzed mikrosekundy. Pelne uzasadnienie
+  // przy NetStageRtc w Log.h.
+  rs["net_stage_now"] = gNetStage.stageNow;
+  rs["net_stage_now_name"] = netStageName(static_cast<uint8_t>(gNetStage.stageNow));
+
+  // Ile razy nadzorca netTask (loop() w pogoda-gdynia.ino) zrestartowal urzadzenie, bo
+  // zadanie sieci przestalo bic znacznik zycia. Licznik siedzi w RTC, wiec przezywa te
+  // restarty — i o to chodzi: 1 to jednorazowa awaria sieci, a rosnaca liczba to sygnal,
+  // ze prog jest za krotki albo ze cos jest nie tak z samym nadzorca. Zeruje sie dopiero
+  // przy odlaczeniu zasilania (albo przy zmianie ukladu pol NetStageRtc).
+  rs["net_stall_restarts"] = gNetStage.stallRestarts;
+
   // Dotad `crashes_total` mowilo ILE razy padlo i na tym sie konczylo. Zrzut awaryjny
   // dokłada DLACZEGO: zadanie, adres upadku i backtrace — bez pobierania czegokolwiek
   // i bez USB. Same adresy i nazwa zadania, wiec ta sekcja jest bezpieczna do wklejenia
