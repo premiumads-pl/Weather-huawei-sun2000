@@ -94,13 +94,15 @@ void cloud(TFT_eSPI& g, int cx, int cy, int s, uint16_t body, uint16_t edge) {
   (void)edge;
 }
 
-// Slonce: tarcza + promienie. Albo ksiezyc: PRAWDZIWA faza z kalendarza.
+// Slonce: tarcza + promienie. Albo ksiezyc: PRAWDZIWA faza, policzona z efemerydy.
 //
 // Bylo tu dwa fillCircle robiace ozdobny sierp o STALYM ksztalcie — ikona nie miala nic
 // wspolnego z niebem: przy pelni i przy nowiu wygladala identycznie. Teraz faze liczy
-// moon::phase() (miesiac synodyczny, konwencja polkuli polnocnej: przybywajacy swieci z
-// PRAWEJ, ubywajacy z LEWEJ), a rysuje moon::draw() — ta sama matematyka, ktorej uzywaja
-// V1/V2, bez duplikowania jej tutaj.
+// moon::phase() (elongacja Ksiezyca wzgledem Slonca z szeregu Meeusa, blad ponizej 10 min
+// — patrz Moon.h; konwencja polkuli polnocnej: przybywajacy swieci z PRAWEJ, ubywajacy
+// z LEWEJ), a rysuje moon::draw() — ta sama matematyka, ktorej uzywaja V1/V2, bez
+// duplikowania jej tutaj. phase() ma WLASNY bufor (15 min), wiec wolanie go z kazdej
+// klatki nic nie kosztuje i sunOrMoon() nie musi niczego pamietac.
 //
 // KOLORY. Ksiezyc pojawia sie na DWOCH tlach, wiec trojke bierzemy z `onLight`:
 //   * ciemna kolumna kontekstu (PANEL): tarcza col::ONDARK (najjasniejszy tusz panelu —

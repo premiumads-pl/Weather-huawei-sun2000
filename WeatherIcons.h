@@ -3107,7 +3107,8 @@ inline void blit(TFT_eSPI& s, IconId id, int cx, int cy, int size) {
 //
 // Do v72 o polnocy swiecilo slonce — bo bitmapa "SUN" nie wie, ze jest noc.
 // Teraz przy nocy podmieniamy tarcze sloneczna na ksiezyc w AKTUALNEJ FAZIE
-// (liczonej z kalendarza), a przy zachmurzeniu czesciowym wsuwamy go za chmure.
+// (liczonej z efemerydy przez moon::phase — patrz Moon.h), a przy zachmurzeniu
+// czesciowym wsuwamy go za chmure.
 // Pozostale ikony (chmura, deszcz, snieg, mgla, burza) nie zawieraja slonca,
 // wiec dzialaja bez zmian o kazdej porze.
 inline void draw(TFT_eSPI& s, int code, int cx, int cy, int size, bool night = false,
