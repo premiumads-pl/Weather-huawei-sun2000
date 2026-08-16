@@ -139,14 +139,29 @@ SIZE=$(stat -f%z build/firmware.bin)
 SHA=$(shasum -a 256 build/firmware.bin | cut -d' ' -f1)
 echo "==> firmware.bin: ${SIZE} B"
 
-cat > build/version.json <<EOF
-{
-  "version": ${NEW},
-  "size": ${SIZE},
-  "sha256": "${SHA}",
-  "notes": "${NOTES}"
-}
-EOF
+# version.json budujemy Pythonem, NIE ręcznym heredoc: NOTES to dowolny tekst opisu
+# wydania i potrafi zawierać znaki łamiące JSON. v154 miało w opisie dosłowny ładunek
+# XSS-a (`nazwana "><img ...>`) — niescapowany cudzysłów rozerwał string "notes",
+# version.json przestał być poprawnym JSON-em, ArduinoJson na urządzeniu odrzucał go
+# ("zly JSON wersji") i OTA nie schodziło, mimo że firmware.bin był w porządku. Pobranie
+# (HTTP 200) się udawało — wykładało się dopiero PARSOWANIE. json.dumps escapuje wszystko.
+python3 - "$NEW" "$SIZE" "$SHA" "$NOTES" > build/version.json <<'PY'
+import json, sys
+new, size, sha, notes = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+print(json.dumps({
+    "version": int(new),
+    "size": int(size),
+    "sha256": sha,
+    "notes": notes,
+}, ensure_ascii=True, indent=2))
+PY
+# Bezpiecznik: jeśli z jakiegoś powodu wyszedł niepoprawny JSON, NIE publikujemy —
+# inaczej urządzenie znów dostałoby plik, którego nie sparsuje. Cofamy wersję.
+if ! python3 -c "import json,sys; json.load(open('build/version.json'))" 2>/dev/null; then
+  echo "!!! STOP: build/version.json nie jest poprawnym JSON-em. Cofam wersję."
+  sed -i '' "s/#define FW_VERSION ${NEW}/#define FW_VERSION ${CUR}/" Version.h
+  exit 1
+fi
 
 # --- commit + tag + release ---
 git add -A

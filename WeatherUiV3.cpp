@@ -124,9 +124,35 @@ void groupNum(char* out, size_t n, uint32_t v) {
   out[o] = 0;
 }
 
+// Przycina RUNTIME SSID (do 32 znakow) do budzetu pikseli w foncie f13: gdy cala nazwa
+// sie nie miesci, obcina od konca i dokleja "..." (Plex NIE ma glifu wielokropka U+2026,
+// wiec trzy zwykle kropki, szer. 12 px). `out` MUSI miec >= 40 B. Repo PUBLICZNE — helper
+// operuje na DLUGOSCI, nie na tresci; zadnych nazw sieci ani IP w kodzie. budgetPx <= 0
+// => sam wielokropek. O(n^2) po znakach (n <= 32) — bez znaczenia poza sciezka krytyczna.
+void fitSsid(char* out, size_t n, const char* ssid, int budgetPx) {
+  const pltxt::FontSet f = plex::f13();
+  if (plex::width(f, ssid) <= budgetPx) { snprintf(out, n, "%s", ssid); return; }
+  const int dots = plex::width(f, "...");
+  char tmp[36];
+  for (int len = static_cast<int>(strlen(ssid)); len > 0; --len) {
+    const int k = len < static_cast<int>(sizeof(tmp)) - 1 ? len : static_cast<int>(sizeof(tmp)) - 1;
+    memcpy(tmp, ssid, static_cast<size_t>(k));
+    tmp[k] = 0;
+    if (plex::width(f, tmp) + dots <= budgetPx) { snprintf(out, n, "%s...", tmp); return; }
+  }
+  snprintf(out, n, "...");
+}
+
 // Miesiace (dopelniacz) i dni tygodnia - DISPLAY, wiec z polskimi znakami.
 const char* kMonth[12] = {"stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca",
                           "lipca", "sierpnia", "września", "października", "listopada", "grudnia"};
+// SKROTY miesiecy TYLKO dla daty w ciemnej kolumnie ekranu glownego (v3Main). OSOBNA
+// tablica, bo kMonth (dopelniacz, pelne nazwy) nadal moze przydac sie gdzie indziej i
+// nie chcemy zmieniac jego semantyki. `const char* const` => tablica wskaznikow i
+// literaly leza w .rodata (flash), zero statycznego RAM-u. Najszersza data "pon 30 mar"
+// = 66 px @ f13 (x=10..76) miesci sie w kolumnie x=0..119 z duzym zapasem.
+static const char* const kMonthShort[12] = {"sty", "lut", "mar", "kwi", "maj", "cze",
+                                            "lip", "sie", "wrz", "paź", "lis", "gru"};
 const char* kDowLo[7] = {"ndz", "pon", "wt", "śr", "czw", "pt", "sob"};       // tm_wday 0=ndz
 const char* kDowHi[7] = {"NDZ", "PON", "WT", "ŚR", "CZW", "PT", "SOB"};
 
@@ -248,7 +274,7 @@ const char* cityOf(const char* iata) {
       {"TLL", "Tallinn"},  {"VNO", "Wilno"},     {"KUN", "Kowno"},    {"BER", "Berlin"},
       {"MUC", "Monachium"},{"FRA", "Frankfurt"}, {"AMS", "Amsterdam"},{"LHR", "Londyn"},
       {"STN", "Londyn"},   {"LTN", "Londyn"},    {"DUB", "Dublin"},   {"BLL", "Billund"},
-      {"GOT", "Göteborg"}, {"HAM", "Hamburg"},   {"DTM", "Dortmund"}, {"EIN", "Eindhoven"},
+      {"GOT", "Goteborg"}, {"HAM", "Hamburg"},   {"DTM", "Dortmund"}, {"EIN", "Eindhoven"},
   };
   if (!iata || !iata[0]) return "";
   for (const M& e : m)
@@ -374,7 +400,12 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top
   char big[16];
   fmt1(big, sizeof(big), (producing ? prod : load) / 1000.f);
   const int bwv = plex::str(s, plex::f20(), big, lx, top + 34, col::PANEL);
-  plex::str(s, plex::f13(), producing ? " kW produkcji" : " kW pobór domu",
+  // Podpis skrocony (" kW prod." / " kW pobór", bez "uksji"/"domu"): przy dwucyfrowej
+  // mocy (dom > 10 kW — indukcja+piekarnik) pelny "12,4 kW pobór domu" (edge x=266)
+  // nachodzil na prawa metryke "PV 0,0 kW" (left x=256). Teraz najszerszy lewy podpis
+  // konczy sie na x=230, a najwezsza prawa metryka ("dom 19,9 kW") zaczyna x=239 -> 9 px
+  // luzu. Sens obu metryk zachowany (druga metryka nizej pokazuje ten drugi przeplyw).
+  plex::str(s, plex::f13(), producing ? " kW prod." : " kW pobór",
             lx + bwv, top + 34, col::SECOND);
   // DRUGA metryka (prawy gorny wiersz): ten drugi przeplyw, zeby ZAWSZE bylo widac i
   // produkcje, i biezace ZUZYCIE domu (wlasciciel: brakowalo "ile zuzywamy"). Gdy
@@ -446,8 +477,12 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
       struct tm tmv{};
       localtime_r(&now, &tmv);
       char d[24];
-      snprintf(d, sizeof(d), "%s %d %s", kDowLo[tmv.tm_wday % 7], tmv.tm_mday, kMonth[tmv.tm_mon % 12]);
-      plex::str(s, plex::f13(), d, grid::MARGIN_CTX + 2, 52, col::ONDARK_DIM);
+      // Skrocony miesiac (kMonthShort) + baseline 48 (bylo 52): pelna data "pon 30
+      // października" (112 px) wystawala poza kolumne (x=10..122) I kolidowala z gornym
+      // promieniem slonca (CLEAR: r=19, srodek 62,86 -> promien siega y=51). Teraz data
+      // dolem konczy sie na y=48, a promien zaczyna y=51 -> 3 px odstepu.
+      snprintf(d, sizeof(d), "%s %d %s", kDowLo[tmv.tm_wday % 7], tmv.tm_mday, kMonthShort[tmv.tm_mon % 12]);
+      plex::str(s, plex::f13(), d, grid::MARGIN_CTX + 2, 48, col::ONDARK_DIM);
     }
   }
 
@@ -495,7 +530,7 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
     // GLIF NA WIERZCHU (po liczbie): chmura ~y60..108 (nad temperatura, ktorej gora
     // ~y107), a krople/gwiazdki spadaja z niej na sama gore liczby — zachodza delikatnie
     // i przezroczyscie, jak chcial wlasciciel.
-    wx::glyph(s, c.weatherCode, !c.isDay, 62, 84, 24, false);
+    wx::glyph(s, c.weatherCode, !c.isDay, 62, 86, 24, false);   // cy 84->86: gorny promien slonca schodzi pod date (patrz K3)
   } else {
     // Mockup 21: pogoda nie pobrana / nieaktualna - placeholder zamiast glifu i temperatury.
     s.drawRect(grid::MARGIN_CTX, 66, 60, 46, col::ONDARK_DIM);
@@ -507,7 +542,10 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
       plex::str(s, plex::f13(), "prognoza", grid::MARGIN_CTX, 176, col::ONDARK_DIM);
       plex::str(s, plex::f13(), "nieaktualna", grid::MARGIN_CTX, 194, col::MUTE);
     } else {
-      plex::str(s, plex::f13(), "czekam na prognozę", grid::MARGIN_CTX, 176, col::ONDARK_DIM);
+      // "czekam na prognozę" (f13 = 118 px) wychodzilo poza ciemna kolumne (x=8..119,
+      // budzet 111 px) — jasnoszary ogon na jasnym tle. Krotsze "czekam na dane" (93 px)
+      // miesci sie w jednej linii, a "brak internetu" (81 px) zostaje w drugiej.
+      plex::str(s, plex::f13(), "czekam na dane", grid::MARGIN_CTX, 176, col::ONDARK_DIM);
       plex::str(s, plex::f13(), "brak internetu", grid::MARGIN_CTX, 194, col::MUTE);
     }
   }
@@ -636,10 +674,18 @@ void v3MainNight(TFT_eSPI& s, const WeatherModel& w) {
 // startu — patrz drawV3Bottom. Adresy/SSID sa RUNTIME (jak na ekranie diag), nie w kodzie.
 void v3StartBottom(TFT_eSPI& tft) {
   tft.fillRect(0, 206, grid::W, grid::H - 206, col::PANEL);   // ciemny, techniczny
-  char b[64];
+  char b[96];
   if (WiFi.status() == WL_CONNECTED) {
-    snprintf(b, sizeof(b), "sieć: %s · %s · %d dBm", WiFi.SSID().c_str(),
-             WiFi.localIP().toString().c_str(), static_cast<int>(WiFi.RSSI()));
+    // Pasek LEWOSTRONNY (x=7) musi zmiescic sie do x=313. SSID + IP + dBm potrafi wyjsc
+    // poza szerokosc, wiec przycinamy SSID (fitSsid) do budzetu = 306 px - "sieć: " -
+    // niezmienna czesc " · IP · dBm". Realne SSID/IP tylko z runtime — nic w kodzie.
+    char tail[40];
+    snprintf(tail, sizeof(tail), " · %s · %d dBm", WiFi.localIP().toString().c_str(),
+             static_cast<int>(WiFi.RSSI()));
+    const int avail = (grid::W - grid::MARGIN) - grid::MARGIN - plex::width(plex::f13(), "sieć: ");
+    char ssid[40];
+    fitSsid(ssid, sizeof(ssid), WiFi.SSID().c_str(), avail - plex::width(plex::f13(), tail));
+    snprintf(b, sizeof(b), "sieć: %s%s", ssid, tail);
   } else {
     snprintf(b, sizeof(b), "sieć: łączę z Wi-Fi...");
   }
@@ -1755,12 +1801,20 @@ void v3Diag2(TFT_eSPI& s, uint32_t heapNow, float cpuTempC) {
   }
   y += 26;
 
-  // Siec.
+  // Siec. Realne SSID (do 32 znakow) + IP + dBm nie miescily sie w wierszu i wartosc
+  // (strRight od rx) zamalowywala etykiete "sieć". Budzet dla SSID = szerokosc od rx do
+  // prawej krawedzi etykiety (+8 px luzu), pomniejszony o niezmienna czesc " · IP · dBm";
+  // fitSsid obcina SSID wielokropkiem. Dlugosci liczone runtime — zero SSID/IP w kodzie.
   plex::str(s, plex::f13(), "sieć", lx, y, col::PANEL);
   {
-    char v[48];
-    snprintf(v, sizeof(v), "%s · %s · %d dBm", WiFi.SSID().c_str(),
-             WiFi.localIP().toString().c_str(), static_cast<int>(WiFi.RSSI()));
+    char tail[40];
+    snprintf(tail, sizeof(tail), " · %s · %d dBm", WiFi.localIP().toString().c_str(),
+             static_cast<int>(WiFi.RSSI()));
+    const int avail = rx - (lx + plex::width(plex::f13(), "sieć") + 8);
+    char ssid[40];
+    fitSsid(ssid, sizeof(ssid), WiFi.SSID().c_str(), avail - plex::width(plex::f13(), tail));
+    char v[80];
+    snprintf(v, sizeof(v), "%s%s", ssid, tail);
     plex::strRight(s, plex::f13(), v, rx, y, col::MUTE);
   }
   y += 22;
@@ -1784,7 +1838,9 @@ void v3Diag2Bottom(TFT_eSPI& tft, uint32_t nowMs) {
   fmtUptime(ut, sizeof(ut), nowMs / 1000);
   snprintf(m, sizeof(m), "praca %s", ut);
   plex::strCenter(tft, plex::f13(), m, grid::W / 2, 227, col::ONDARK_DIM);
-  plex::strRight(tft, plex::f13(), "stuknij 2× - wyjście", grid::W - grid::MARGIN, 227, col::ONDARK_DIM);
+  // ASCII "x", nie U+00D7 "×": Plex nie ma glifu mnozenia, a nieznany glif jest po
+  // cichu POMIJANY przy rysowaniu — "2×" wychodzilo na ekranie jako "2 - wyjście".
+  plex::strRight(tft, plex::f13(), "stuknij 2x - wyjście", grid::W - grid::MARGIN, 227, col::ONDARK_DIM);
 }
 
 // ============================================================ RUCH =============
