@@ -268,7 +268,6 @@ bool AirClient::fetch(AirModel& out) {
   // (HTTPClient.cpp:1318) wisi tak samo — to wlasnie na ZWYKLYM gniezdzie zdarzyla sie
   // awaria z 25.07. Cale uzasadnienie: SecureClient.h.
   GuardedPlainClient client;
-  client.setTimeout(12);
   client.armIdleGuard(netguard::kIdleMs, "powietrze");
   HTTPClient http;
   http.setTimeout(12000);

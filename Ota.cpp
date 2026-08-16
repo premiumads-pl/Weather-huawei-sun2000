@@ -179,7 +179,6 @@ void otaUiBufferFreed() {
 bool Ota::fetchRemoteVersion(OtaManifest& man) {
   YieldingSecureClient client;
   client.setInsecure();
-  client.setTimeout(15);
   client.setHandshakeTimeout(15);
   // v157: sprawdzenie wersji to zwykly, maleńki JSON — dostaje ZWYKLY termin (30 s),
   // a NIE luzniejszy termin OTA. Kierunek ryzyka jest tu odwrotny niz przy pobieraniu:
@@ -275,7 +274,6 @@ bool Ota::downloadAndFlash(const OtaManifest& man) {
 
   YieldingSecureClient client;
   client.setInsecure();
-  client.setTimeout(20);
   // v157: termin LUZNIEJSZY (60 s bezczynnosci) i BEZCZYNNOSCIOWY, nie calkowity —
   // 1,8 MB przez TLS przy slabym sygnale legalnie ciagnie sie minutami, a urzadzenie
   // nie ma USB, wiec ubicie POSTEPUJACEGO pobrania byloby awaria nie do naprawienia.

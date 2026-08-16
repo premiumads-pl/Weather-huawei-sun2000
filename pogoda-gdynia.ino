@@ -1101,8 +1101,14 @@ static void netTask(void*) {
         } else {
           // Blad sieci ALBO obie stacje bez swiezych danych — w obu przypadkach NIE
           // dotykamy gAir: ostatnia (nadal prawdziwa) probka ma zostac na ekranie,
-          // dokladnie jak przy pogodzie/PV wyzej. "Wiek danych" na ekranie sam
+          // dokladnie jak przy pogodzie wyzej. "Wiek danych" na ekranie sam
           // powie, jak bardzo sie zestarzala — to uczciwsze niz czarny ekran.
+          // (v161) Ten komentarz mowil "jak przy pogodzie/PV wyzej" i co do PV
+          // KLAMAL: blok fotowoltaiki robil wtedy `gPv = tmp` BEZ warunku, czyli
+          // dokladnie odwrotnie — kasowal ostatni dobry odczyt. Piec robil to samo
+          // przez `gVi.valid = false`. Oba zostaly naprawione w v161, wiec zdanie
+          // jest juz prawdziwe takze o nich; nazwa "pogoda" zostaje jako wzorzec,
+          // bo to ta sciezka byla poprawna od poczatku.
           strncpy(diag().airErr, tmp.errorMsg, sizeof(diag().airErr) - 1);
           LOG("Powietrze BLAD: %s\n", tmp.errorMsg);
           nextAirAt = millis() + 30000;
@@ -1124,8 +1130,8 @@ static void netTask(void*) {
       PvModel tmp{};
       const bool ok = pvClient.fetch(tmp, maySleep);
       xSemaphoreTake(gLock, portMAX_DELAY);
-      gPv = tmp;
       if (ok) {
+        gPv = tmp;
         const time_t t = time(nullptr);
         if (t > 1700000000) {
           struct tm tmv{};
@@ -1138,6 +1144,33 @@ static void netTask(void*) {
             nextStoreAt = 0;
           }
         }
+      } else {
+        // (v161) NIEUDANY ODCZYT NIE KASUJE OSTATNICH DOBRYCH DANYCH.
+        //
+        // Do v160 stalo tu bezwarunkowe `gPv = tmp;` PONAD tym `if (ok)`, a `tmp` po
+        // nieudanym PvClient::fetch() jest struktura PUSTA (PvClient.cpp: kazda galaz
+        // bledu robi `out.online = false` i `return false`, NIE dotykajac `out.data`,
+        // ktore zostaje wyzerowane z `PvModel tmp{}`). Skutek: JEDNA nieudana proba
+        // — jeden zgubiony pakiet Modbus, jeden reset sesji TCP — zamieniala ostatnia
+        // znana moc, zuzycie domu i bilans sieci w zera, a ekran PRAD w napis
+        // "Falownik nie odpowiada". Nie bylo juz CZEGO wyciszyc ani czym podpisac
+        // wieku, bo dane po prostu znikaly. Prognoza pogody kilkadziesiat linii wyzej
+        // od zawsze robila to odwrotnie (przy bledzie NIE dotyka gWeather) i to jest
+        // wzorzec, ktory tu doganiamy.
+        //
+        // Zostawiamy `gPv.data` NIETKNIETE, a zmieniamy WYLACZNIE trzy pola stanu,
+        // ktore opisuja OSTATNIA PROBE, a nie pomiar:
+        //   online   — false, czyli "ta proba sie nie udala";
+        //   asleep   — noc kontra awaria (ekran ma osobny, neutralny wyglad na sen);
+        //   errorMsg — tresc bledu dla ekranu i panelu.
+        // `gPv.data.valid` zostaje z ostatniego UDANEGO odczytu i pelni teraz role
+        // rozroznienia "nigdy nie bylo danych" (false po zimnym starcie) od "mamy
+        // stare" (true) — patrz trzy stany w v3Pv() / mainPvModule() w WeatherUiV3.cpp.
+        // Wiek tych danych liczy sie z diag().pvOkAt, ktory rusza sie WYLACZNIE po
+        // sukcesie (nizej), wiec ekran zawsze wie, jak bardzo sa stare.
+        gPv.online = false;
+        gPv.asleep = tmp.asleep;
+        memcpy(gPv.errorMsg, tmp.errorMsg, sizeof(gPv.errorMsg));
       }
       xSemaphoreGive(gLock);
 
@@ -1301,7 +1334,26 @@ static void netTask(void*) {
           }
         }
       } else {
-        gVi.valid = false;
+        // (v161) NIEUDANY ODCZYT NIE KASUJE OSTATNICH DOBRYCH DANYCH.
+        //
+        // Stalo tu `gVi.valid = false;` i to jedno przypisanie gasilo CALY ekran
+        // OGRZEWANIE: v3Boiler() zaczyna od `if (!bp || !bp->valid)` i wypisuje
+        // "Piec nie odpowiada", wiec temperatura CWU, nastawa, zasilanie i tryb
+        // znikaly po JEDNEJ nieudanej probie. A nieudana proba jest tu zjawiskiem
+        // NORMALNYM, nie awaria: chmura ViCare bywa zajeta, token trzeba odswiezyc
+        // co ~55 min, a odpowiedz bez cechy CWU jest przez Viessmann.cpp swiadomie
+        // odrzucana. Ponowienie leci po 120 s, wiec objaw trwal dwie minuty i wracal.
+        //
+        // gVi zostaje TERAZ NIETKNIETE — dokladnie jak gWeather przy bledzie pogody.
+        // `gVi.valid` znaczy odtad "byl juz kiedykolwiek udany odczyt" (po zimnym
+        // starcie false, bo gVi{} zeruje strukture), a wiek ostatniego sukcesu niesie
+        // `gVi.okAt` (millis, ustawiane w Viessmann.cpp WYLACZNIE na sciezce sukcesu,
+        // tuz przed `out = m`) i jego kopia diag().viOkAt. Na tej parze v3Boiler()
+        // rozroznia teraz trzy stany: nigdy / swieze / stare (prog cfg::VI_STALE_MS).
+        //
+        // Blad i tak nie ginie: leci do diag().viErr (panel, /api/diag) i do logu,
+        // a ekran pokazuje wiek. Zadne pole `gVi` nie klamie, ze jest biezace —
+        // o tym, ktore wartosci wolno pokazac jako stare, decyduje v3Boiler().
         snprintf(diag().viErr, sizeof(diag().viErr), "%s", tmp.err);
         LOG("Piec BLAD: %s", tmp.err);
       }

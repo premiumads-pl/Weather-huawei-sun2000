@@ -1076,9 +1076,36 @@ bool WeatherUi::needsFlights(uint32_t nowMs) const {
   if (view_ == cfg::VIEW_FLIGHTS) {
     return true;
   }
-  // prefetch tuz przed przejsciem na ekran lotow
-  const uint8_t prev =
-      static_cast<uint8_t>((cfg::VIEW_FLIGHTS + cfg::VIEW_COUNT - 1) % cfg::VIEW_COUNT);
+  // --- prefetch tuz przed przejsciem na ekran lotow ---------------------------
+  // ARYTMETYKA NA NUMERACH WIDOKOW JEST TU ZAKAZANA. Do v160 stalo w tym miejscu
+  //     (cfg::VIEW_FLIGHTS + cfg::VIEW_COUNT - 1) % cfg::VIEW_COUNT
+  // czyli "poprzedni ekran to ten o numer mniejszy". To jest nieprawda, i to z dwoch
+  // niezaleznych powodow:
+  //   1) NUMERY WIDOKOW TO NIE KOLEJNOSC. cfg::VIEW_* ma 13 pozycji i historyczna
+  //      numeracje (patrz Config.h), a petla V3 ma osiem ekranow w kolejnosci
+  //      PROJEKTOWEJ z kV3Loop. VIEW_FLIGHTS == 8, wiec arytmetyka wskazywala
+  //      VIEW_PV (7) — a w kV3Loop przed SAMOLOTAMI stoi POWIETRZE. PRAD jest
+  //      CZTERY pozycje wczesniej, wiec pobranie startowalo cztery ekrany za wczesnie
+  //      i tuz przed wejsciem na SAMOLOTY juz nikt nie odswiezal: wchodzac na ekran
+  //      widac bylo przez chwile stara liste.
+  //   2) "POPRZEDNI" NIE JEST STALY. Ekrany wypadaja z petli warunkowo (viewSkipped:
+  //      POWIETRZE bez danych, OGRZEWANIE bez autoryzacji, POKOJE bez czujnikow BLE,
+  //      RADAR gdy nie pada), wiec poprzednikiem SAMOLOTOW bywa POWIETRZE, OGRZEWANIE,
+  //      POKOJE albo PRAD — zaleznie od stanu urzadzenia w tej sekundzie. Zadna stala
+  //      tego nie opisze.
+  // Dlatego liczymy poprzednika z DOKLADNIE TEJ SAMEJ pary, ktorej uzywa rotacja
+  // (render()) i nawigacja dotykiem (touchTapV3()): kV3Loop + viewSkipped(). Jedno
+  // zrodlo prawdy o kolejnosci — inaczej prefetch znowu rozjedzie sie z rotacja przy
+  // pierwszej zmianie ukladu ekranow.
+  int idx = -1;
+  for (int i = 0; i < kV3LoopN; ++i)
+    if (kV3Loop[i] == cfg::VIEW_FLIGHTS) { idx = i; break; }
+  if (idx < 0) return false;   // SAMOLOTOW nie ma w petli — nie ma czego wyprzedzac
+  uint8_t prev = cfg::VIEW_FLIGHTS;
+  for (int step = 0; step < kV3LoopN; ++step) {
+    idx = (idx + kV3LoopN - 1) % kV3LoopN;   // krok WSTECZ po petli
+    if (!viewSkipped(kV3Loop[idx], air_)) { prev = kV3Loop[idx]; break; }
+  }
   if (view_ == prev && !transitioning_ && !alertActive_) {
     const uint32_t hold = holdFor(view_);
     const uint32_t el = nowMs - viewStart_;

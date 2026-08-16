@@ -69,7 +69,6 @@ bool routeApiBlocked() {
 int httpGetJson(const char* url, JsonDocument& doc, const JsonDocument* filter) {
   YieldingSecureClient client;
   client.setInsecure();
-  client.setTimeout(10);
   client.armIdleGuard(netguard::kIdleMs, "loty");   // v157 — patrz SecureClient.h
 
   HTTPClient http;

@@ -236,6 +236,29 @@ namespace netguard {
 // nieskonczonosci. Nadzorca netTask (900 s) nie ma juz szans do tego dojsc.
 constexpr uint32_t kIdleMs = 30000;
 
+// (v161) DLACZEGO PRZY ZADNYM KLIENCIE NIE MA JUZ `client.setTimeout(N)`.
+// W dziesieciu miejscach stalo `client.setTimeout(15)` / `(12)` / `(kTimeoutMs/1000)`
+// tuz nad `http.setTimeout(15000)`. Wygladalo to na "to samo, tylko w sekundach"
+// i taka byla intencja — ale to byla nieprawda i linia nie robila NICZEGO:
+//   * NetworkClient (= WiFiClient) i NetworkClientSecure NIE MAJA wlasnego
+//     setTimeout. Wolanie schodzilo do Stream::setTimeout(unsigned long)
+//     (cores/esp32/Stream.h:67, definicja Stream.cpp:86), ktory jest w
+//     MILISEKUNDACH — komentarz w naglowku rdzenia mowi to wprost
+//     ("sets maximum milliseconds to wait"). `setTimeout(15)` ustawialo 15 ms.
+//   * `NetworkClient::_timeout` (NetworkClient.h:43) to INNE pole niz
+//     `Stream::_timeout` (Stream.h:50) i to ono trafia do SO_RCVTIMEO w
+//     NetworkClient::read() (NetworkClient.cpp:491-499). Ustawia je
+//     setConnectionTimeout(), a nie setTimeout(). Dwa pola, mylaco podobne nazwy.
+//   * A i tak nie mialo znaczenia, bo HTTPClient::connect() nadpisuje te wartosc
+//     zaraz po nawiazaniu polaczenia: `_client->setTimeout(_tcpTimeout)`
+//     (HTTPClient.cpp:1115), czyli tym, co podalismy w http.setTimeout(...).
+// Poprawianie jednostki dalo by linie NADAL martwa, tylko wygladajaca na zywa —
+// czyli gorzej. Dlatego linie USUNIETE, a jedynym miejscem, gdzie ustawia sie
+// timeout odczytu, jest http.setTimeout(<ms>). NIE DOTYKAMY setHandshakeTimeout():
+// to prawdziwe API NetworkClientSecure i naprawde bierze SEKUNDY
+// (NetworkClientSecure.cpp:450-452 mnozy argument przez 1000).
+// Zaden realny timeout nie zostal ta zmiana ruszony.
+
 // TERMIN DLA POBIERANIA FIRMWARE'U OTA — 60 s, czyli dwa razy luzniej.
 // Uzasadnieniem jest asymetria kosztow, nie technika: urzadzenie nie ma USB, wiec
 // przedwczesne ubicie WLASNEJ aktualizacji jest awaria nie do naprawienia, a jedna

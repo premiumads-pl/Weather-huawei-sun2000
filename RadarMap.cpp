@@ -225,7 +225,6 @@ bool httpGet(const char* url, uint8_t** buf, size_t* len, String* text) {
   // TLS Task watchdog nawet nie zaszczeka (NetworkClient.cpp:535 karmi IDLE0). Cale
   // uzasadnienie i dobor wartosci: SecureClient.h.
   GuardedPlainClient client;
-  client.setTimeout(12);
   client.armIdleGuard(netguard::kIdleMs, "mapa radaru");
 
   HTTPClient http;

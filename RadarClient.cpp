@@ -153,7 +153,6 @@ bool httpGet(const char* url, uint8_t** buf, size_t* len, String* text) {
   // GuardedPlainClient (v157): ta sama baza WiFiClient, plus TERMIN BEZCZYNNOSCI.
   // Petla HTTPClient.cpp:1318 nie ma timeoutu takze bez TLS — patrz SecureClient.h.
   GuardedPlainClient client;
-  client.setTimeout(12);
   client.armIdleGuard(netguard::kIdleMs, "radar");
 
   HTTPClient http;

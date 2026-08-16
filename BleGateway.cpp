@@ -182,7 +182,6 @@ bool pollOne(int idx, const char* hostAddr) {
   // Bramka to urzadzenie w LAN — wlasnie takie ginie bez RST przy restarcie routera
   // albo samej bramki, czyli dokladnie scenariusz z 25.07. Patrz SecureClient.h.
   GuardedPlainClient client;
-  client.setTimeout(kTimeoutMs / 1000);
   client.armIdleGuard(netguard::kIdleMs, "bramka BLE");
   HTTPClient http;
   http.setConnectTimeout(kTimeoutMs);

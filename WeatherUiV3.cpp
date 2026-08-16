@@ -109,13 +109,22 @@ bool wxFresh() {
   return freshMs(diag().weatherOkAt, cfg::WEATHER_STALE_MS);
 }
 
-// Wiek pogody w SEKUNDACH (0, gdy nigdy nie pobrano) — do dopisku "sprzed X min"
-// przy nieswiezej prognozie. Ten sam idiom ze znakiem, co freshMs.
-uint32_t wxAgeS() {
-  const uint32_t okAt = diag().weatherOkAt;
+// Wiek DOWOLNEGO stempla millis() w SEKUNDACH (0, gdy stempel jest zerowy, czyli
+// "nigdy nie bylo udanego pobrania"). Ten sam idiom ze znakiem, co freshMs: roznice
+// liczymy na int32, bo uint32 przekreca sie po ~49 dniach pracy, a stemple pisze
+// netTask — inny watek niz rysowanie.
+// (v161) Wydzielone z wxAgeS(), bo tej samej liczby potrzebuja teraz takze ekrany
+// PRAD i OGRZEWANIE (podpis wieku przy starych danych). Jedno miejsce zamiast trzech.
+uint32_t okAgeS(uint32_t okAt) {
   if (okAt == 0) return 0;
   const int32_t ageMs = static_cast<int32_t>(millis() - okAt);
   return ageMs > 0 ? static_cast<uint32_t>(ageMs) / 1000u : 0u;
+}
+
+// Wiek pogody w SEKUNDACH (0, gdy nigdy nie pobrano) — do dopisku "sprzed X min"
+// przy nieswiezej prognozie.
+uint32_t wxAgeS() {
+  return okAgeS(diag().weatherOkAt);
 }
 
 // Stan swiezosci pogody dla kropki freshDot: UNKNOWN gdy nigdy nie pobrano, OK gdy
@@ -405,7 +414,23 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top
   const int lx = grid::DATA_L;
   plex::str(s, plex::f11(), "PRĄD", lx, top, col::SECOND);
 
-  if (!pv.online && !pv.asleep) {
+  // (v161) Te same trzy stany, co na ekranie PRAD (v3Pv) i z tego samego zrodla.
+  // ZMIANA ZNACZENIA GALEZI "JUTRO": do v160 wchodzila przy KAZDYM nieudanym
+  // odczycie, bo netTask kasowal wtedy gPv — czyli jedna zgubiona ramka Modbus
+  // zamieniala modul PRAD w prognoze na jutro i z powrotem. Teraz warunkiem jest
+  // `!pv.data.valid`, czyli "nie bylo jeszcze ANI JEDNEGO odczytu" — a to jest
+  // dokladnie sytuacja, dla ktorej ta galaz powstala (makieta 17 "minimalna
+  // instalacja": urzadzenie bez falownika). Przy chwilowej awarii modul zostaje
+  // modulem PRAD, tylko wyciszonym i podpisanym wiekiem.
+  const uint32_t pvAge = okAgeS(diag().pvOkAt);
+  const bool pvEver = pv.data.valid;
+  const bool pvFresh = pv.online && freshMs(diag().pvOkAt, pv.asleep ? cfg::PV_STALE_NIGHT_MS
+                                                                    : cfg::PV_STALE_MS);
+  // `!pv.asleep` — jak w v3Pv: sen ma wlasna, prawdziwa galaz nizej i nie jest
+  // przeterminowaniem.
+  const bool pvOld = pvEver && !pvFresh && !pv.asleep;
+
+  if (!pvEver && !pv.asleep) {
     // Brak falownika (mockup 17 "minimalna instalacja") - pokazujemy JUTRO.
     plex::strRight(s, plex::f13(), "prognoza", grid::DATA_R, top, col::MUTE);
     plex::str(s, plex::f11(), "JUTRO", lx, top, col::SECOND);   // nadpisz etykiete
@@ -445,23 +470,40 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top
   const int gridW = pv.data.gridPowerW;   // >0 oddajemy, <0 pobor
   const bool producing = prod >= load && prod > 120;
 
-  char today[16];
-  fmt1(today, sizeof(today), pv.data.energyTodayKwh);
+  // (v161) Wyciszenie i wiek — wzorzec z v158 (ekran glowny, wiersz "odczuwalna"
+  // ustepujacy miejsca wiekowi). ZERO NOWYCH WIERSZY: prawy gorny wiersz modulu
+  // istnial i tak, tylko zamiast "dziś 12,3 kWh" niesie teraz "sprzed 14 min"
+  // w col::WARN, czyli w kolorze, ktory paleta V3 opisuje wprost jako "nieswieze".
+  // "dziś X kWh" celowo ustepuje: to licznik NARASTAJACY (przy starym odczycie
+  // zanizony, ale nigdy zawyzony), a wiek jest w tej chwili wazniejsza informacja.
+  // Najszerszy wariant wieku "sprzed 89 min" ma 80 px w f13, a "dziś 12,3 kWh" 88 px
+  // — napis wyrownany do prawej (DATA_R = 313), wiec krotszy tekst nie moze nikomu
+  // wjechac w lewo.
+  const uint16_t cMain = pvOld ? col::MUTE : col::PANEL;
+  const uint16_t cSec = pvOld ? col::MUTE : col::SECOND;
+
   char todayL[24];
-  snprintf(todayL, sizeof(todayL), "dziś %s kWh", today);
-  plex::strRight(s, plex::f13(), todayL, grid::DATA_R, top, col::MUTE);
+  if (pvOld) {
+    agoWords(todayL, sizeof(todayL), pvAge);
+    plex::strRight(s, plex::f13(), todayL, grid::DATA_R, top, col::WARN);
+  } else {
+    char today[16];
+    fmt1(today, sizeof(today), pv.data.energyTodayKwh);
+    snprintf(todayL, sizeof(todayL), "dziś %s kWh", today);
+    plex::strRight(s, plex::f13(), todayL, grid::DATA_R, top, col::MUTE);
+  }
 
   // Wielka liczba = przeplyw DOMINUJACY (produkcja gdy produkujemy, inaczej pobor domu).
   char big[16];
   fmt1(big, sizeof(big), (producing ? prod : load) / 1000.f);
-  const int bwv = plex::str(s, plex::f20(), big, lx, top + 34, col::PANEL);
+  const int bwv = plex::str(s, plex::f20(), big, lx, top + 34, cMain);
   // Podpis skrocony (" kW prod." / " kW pobór", bez "uksji"/"domu"): przy dwucyfrowej
   // mocy (dom > 10 kW — indukcja+piekarnik) pelny "12,4 kW pobór domu" (edge x=266)
   // nachodzil na prawa metryke "PV 0,0 kW" (left x=256). Teraz najszerszy lewy podpis
   // konczy sie na x=230, a najwezsza prawa metryka ("dom 19,9 kW") zaczyna x=239 -> 9 px
   // luzu. Sens obu metryk zachowany (druga metryka nizej pokazuje ten drugi przeplyw).
   plex::str(s, plex::f13(), producing ? " kW prod." : " kW pobór",
-            lx + bwv, top + 34, col::SECOND);
+            lx + bwv, top + 34, cSec);
   // DRUGA metryka (prawy gorny wiersz): ten drugi przeplyw, zeby ZAWSZE bylo widac i
   // produkcje, i biezace ZUZYCIE domu (wlasciciel: brakowalo "ile zuzywamy"). Gdy
   // produkujemy -> "dom {pobor}"; gdy pobieramy -> "PV {produkcja}".
@@ -492,11 +534,17 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top
   if (span > 0) {
     int sw = static_cast<int>(barW * (selfUse / static_cast<float>(span)) + 0.5f);
     if (sw < 0) sw = 0; else if (sw > barW) sw = barW;   // twardy clamp — pasek nigdy poza tor
-    if (sw > 0) s.fillRect(barX, barY, sw, barH, col::SELF);
+    // (v161) Przy starym odczycie WSZYSTKIE segmenty schodza na col::MUTE. Kolor
+    // jest tu calym komunikatem (niebieski = z PV do domu, zielony = oddajemy,
+    // czerwony = dobieramy z sieci), wiec przy danych po progu bylby stwierdzeniem
+    // o kierunku przeplywu, ktorego akurat NIE mierzymy. Proporcje zostaja — one
+    // opisuja ostatni znany stan i sa uczciwe pod podpisem "sprzed X min".
+    // col::MUTE, nie col::LINE: tor paska JEST col::LINE, wiec pasek by zniknal.
+    if (sw > 0) s.fillRect(barX, barY, sw, barH, pvOld ? col::MUTE : col::SELF);
     if (expW > 0) {
-      s.fillRect(barX + sw, barY, barW - sw, barH, col::OK);
+      s.fillRect(barX + sw, barY, barW - sw, barH, pvOld ? col::MUTE : col::OK);
     } else if (impW > 0) {
-      s.fillRect(barX + sw, barY, barW - sw, barH, col::GRID);
+      s.fillRect(barX + sw, barY, barW - sw, barH, pvOld ? col::MUTE : col::GRID);
     }
   }
 
@@ -515,8 +563,9 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top
   fmtKw(vc, sizeof(vc), (exporting ? expW : impW) / 1000.f);
   snprintf(sb, sizeof(sb), "z PV %s", vb);
   snprintf(sc, sizeof(sc), "%s %s", exporting ? "→sieć" : "z sieci", vc);
-  plex::str(s, plex::f11(), sb, barX, top + 66, col::SELF);
-  plex::strRight(s, plex::f11(), sc, grid::DATA_R, top + 66, exporting ? col::OK : col::GRID);
+  plex::str(s, plex::f11(), sb, barX, top + 66, pvOld ? col::MUTE : col::SELF);
+  plex::strRight(s, plex::f11(), sc, grid::DATA_R, top + 66,
+                 pvOld ? col::MUTE : (exporting ? col::OK : col::GRID));
   (void)producing;
   (void)gridW;
 }
@@ -1115,31 +1164,61 @@ void v3DaysBottom(TFT_eSPI& tft, const WeatherModel& w) {
 
 void v3Pv(TFT_eSPI& s, const PvModel& pv, const PvHistory& hist) {
   s.fillRect(0, 0, grid::W, 206, col::BG);
-  char hr[20] = "";
-  {
+
+  // (v161) TRZY STANY, DOKLADNIE TE Z v158 — teraz mozliwe takze tutaj.
+  // Do v160 netTask przy bledzie NADPISYWAL caly gPv pustym modelem (`gPv = tmp`
+  // bez warunku), wiec "mamy stare dane" po prostu nie istnialo: ostatnia znana moc
+  // znikala razem z pierwsza nieudana proba. Od v161 blok PV w pogoda-gdynia.ino
+  // zostawia `gPv.data` nietkniete i zmienia tylko online/asleep/errorMsg, wiec:
+  //   (a) !pv.data.valid            -> NIGDY nie bylo udanego odczytu ("nie odpowiada"
+  //                                    jest tu PRAWDA i zostaje);
+  //   (b) online && wiek < prog     -> dane biezace, pelne kolory;
+  //   (c) mamy dane, ale stare      -> te same liczby, ale WYCISZONE i podpisane
+  //                                    wiekiem — wzorzec ekranu glownego z v158.
+  // Prog z Config.h: cfg::PV_STALE_MS (90 s) w dzien, cfg::PV_STALE_NIGHT_MS (15 min)
+  // gdy falownik spi. Wiek liczony od diag().pvOkAt, ktore rusza sie WYLACZNIE po
+  // udanym odczycie.
+  const uint32_t pvAge = okAgeS(diag().pvOkAt);
+  const bool pvEver = pv.data.valid;
+  const bool pvFresh = pv.online && freshMs(diag().pvOkAt, pv.asleep ? cfg::PV_STALE_NIGHT_MS
+                                                                    : cfg::PV_STALE_MS);
+  // `!pv.asleep` w definicji "stare": sen falownika to stan NEUTRALNY, nie awaria
+  // i nie przeterminowanie. Ma wlasny, prawdziwy ekran ("śpi") kilka linii nizej,
+  // a nocna produkcja NAPRAWDE wynosi zero — pokazanie tam wyciszonej mocy sprzed
+  // zachodu byloby dokladnie tym klamstwem, ktore to wydanie usuwa.
+  const bool pvOld = pvEver && !pvFresh && !pv.asleep;
+
+  // Dopisek w naglowku. Przy starych danych — WIEK (jak "sprzed 52 min" na ekranie
+  // glownym), przy swiezych — godzina odczytu.
+  // (v161) "odczyt HH:MM" bralo dotad time(nullptr) W CHWILI RYSOWANIA, czyli
+  // pokazywalo BIEZACY zegar podpisany slowem "odczyt" — przy zawieszonym netTasku
+  // ten napis szedl do przodu co minute, choc nowych danych nie bylo od godziny.
+  // Teraz odejmujemy wiek: to jest naprawde godzina ostatniego UDANEGO odczytu.
+  char hr[24] = "";
+  if (pvOld) {
+    agoWords(hr, sizeof(hr), pvAge);
+  } else if (pvEver) {
     const time_t now = time(nullptr);
     if (now > 1700000000) {
+      const time_t readAt = now - static_cast<time_t>(pvAge);
       struct tm tmv{};
-      localtime_r(&now, &tmv);
+      localtime_r(&readAt, &tmv);
       snprintf(hr, sizeof(hr), "odczyt %02d:%02d", tmv.tm_hour, tmv.tm_min);
     }
   }
-  // (v158) `pv.online` mowi tylko tyle, ze OSTATNI odczyt sie udal — nie mowi, kiedy
-  // to bylo. Dokladamy wiek: falownik odpytywany co 30 s (w nocy co 5 min), wiec
-  // odczyt starszy niz cfg::PV_STALE_MS (90 s) / cfg::PV_STALE_NIGHT_MS (15 min)
-  // znaczy, ze netTask nie doszedl do tego bloku — a wtedy "odczyt 14:32" bez ostrzezenia
-  // wygladalo na biezaca moc. Kropka OK dostaje wiec dodatkowy warunek.
-  // UWAGA: to nie jest pelne rozroznienie trzech stanow, bo netTask przy bledzie
-  // NADPISUJE caly gPv pustym modelem (`gPv = tmp` w pogoda-gdynia.ino) — ostatnia
-  // znana moc po prostu nie przezywa nieudanego odczytu. Zmiana tego to ruszanie
-  // watku danych, nie warstwy rysowania, wiec zostaje poza tym wydaniem.
-  const bool pvFresh = freshMs(diag().pvOkAt,
-                               pv.asleep ? cfg::PV_STALE_NIGHT_MS : cfg::PV_STALE_MS);
-  lightHeader(s, "PRĄD", pv.online ? hr : (pv.asleep ? "śpi - noc" : "offline"),
-              (pv.online && pvFresh) ? Fresh::OK
-                                     : (pv.asleep ? Fresh::UNKNOWN : Fresh::STALE));
+  // Kolejnosc wazna i CELOWO taka: sen > wiek > godzina odczytu > "offline".
+  // Puste `hr` (mamy dane, ale NTP jeszcze nie dal czasu, wiec nie umiemy podac
+  // godziny) NIE MOZE zjechac do "offline" — falownik wtedy odpowiada, milczy zegar.
+  const char* right = nullptr;
+  if (pv.asleep) right = "śpi - noc";
+  else if (hr[0]) right = hr;
+  else if (!pvEver) right = "offline";
+  lightHeader(s, "PRĄD", right,
+              pvFresh ? Fresh::OK : (pv.asleep || !pvEver ? Fresh::UNKNOWN : Fresh::STALE));
 
-  if (!pv.online && !pv.asleep) {
+  // Stan (a): nigdy nie bylo odczytu. Falownik nieskonfigurowany, zly adres, pierwsze
+  // sekundy po starcie — tu naprawde nie ma czego pokazac i napis jest prawda.
+  if (!pvEver && !pv.asleep) {
     plex::strCenter(s, plex::f20(), "Falownik nie odpowiada", grid::W / 2, 96, col::MUTE);
     plex::strCenter(s, plex::f13(), diag().pvErr[0] ? diag().pvErr : "sprawdź połączenie",
                     grid::W / 2, 120, col::MUTE);
@@ -1152,26 +1231,36 @@ void v3Pv(TFT_eSPI& s, const PvModel& pv, const PvHistory& hist) {
     return;
   }
 
+  // (v161) Wyciszenie stanu (c). Moc, pobor domu i bilans sieci to wielkosci
+  // CHWILOWE — dlatego ich prog swiezosci to 90 s, a nie kwadrans. Gdy sa stare,
+  // pokazujemy je nadal (to wciaz jedyne, co o instalacji wiemy), ale ZDEJMUJEMY
+  // im kolor: kolor niesie tu znaczenie ("oddajemy do sieci" na zielono, "dobieramy"
+  // na czerwono), a przy danych sprzed pol godziny bylby obietnica bez pokrycia.
+  // Zostaje ksztalt i liczba, znika sugestia, ze to dzieje sie TERAZ. Dokladnie ta
+  // sama decyzja, co przy slupkach opadu w v158 (precipChart, parametr `muted`).
+  const uint16_t cMain = pvOld ? col::MUTE : col::PANEL;
+  const uint16_t cSec = pvOld ? col::MUTE : col::SECOND;
+
   // Wielka moc.
   const int prod = pv.data.powerAcW;
   const int load = pv.data.houseLoadW;
   const int gridW = pv.data.gridPowerW;
   char big[16];
   fmt1(big, sizeof(big), prod / 1000.f);
-  const int bw = plex::str(s, plex::f52(), big, grid::MARGIN, 70, col::PANEL);
-  plex::str(s, plex::f20(), "kW", grid::MARGIN + bw + 6, 66, col::SECOND);
+  const int bw = plex::str(s, plex::f52(), big, grid::MARGIN, 70, cMain);
+  plex::str(s, plex::f20(), "kW", grid::MARGIN + bw + 6, 66, cSec);
 
   // Srodek: dom / siec.
   char l[24];
   fmt1(l, sizeof(l), load / 1000.f);
   char l2[24];
   snprintf(l2, sizeof(l2), "dom %s kW", l);
-  plex::str(s, plex::f13(), l2, 150, 48, col::PANEL);
+  plex::str(s, plex::f13(), l2, 150, 48, cMain);
   char g[24];
   fmt1(g, sizeof(g), (gridW < 0 ? -gridW : gridW) / 1000.f);
   char g2[28];
   snprintf(g2, sizeof(g2), gridW >= 0 ? "do sieci +%s kW" : "z sieci −%s kW", g);
-  plex::str(s, plex::f13(), g2, 150, 66, gridW >= 0 ? col::OK : col::GRID);
+  plex::str(s, plex::f13(), g2, 150, 66, pvOld ? col::MUTE : (gridW >= 0 ? col::OK : col::GRID));
 
   // Prawa: energia.
   char e[16];
@@ -1464,6 +1553,12 @@ void v3HomeBottom(TFT_eSPI& tft, const RoomModel* rmp) {
 void v3Boiler(TFT_eSPI& s, const vi::Model* bp, const BurnerHistory* bhp) {
   s.fillRect(0, 0, grid::W, 206, col::BG);
 
+  // (v161) STAN (a): NIGDY nie bylo udanego odczytu. Do v160 netTask przy KAZDYM
+  // bledzie robil `gVi.valid = false`, wiec ten warunek lapal takze "mielismy dane
+  // trzy minuty temu" — i caly ekran gasl po jednej nieudanej probie. Teraz netTask
+  // gVi przy bledzie NIE DOTYKA, wiec `valid == false` znaczy dokladnie to, co pisze:
+  // od wlaczenia urzadzenia piec nie odpowiedzial ANI RAZU (brak autoryzacji, zly
+  // token, martwa chmura). Wtedy "Piec nie odpowiada" jest PRAWDA i zostaje.
   if (!bp || !bp->valid) {
     lightHeader(s, "OGRZEWANIE", nullptr, Fresh::UNKNOWN);
     plex::strCenter(s, plex::f20(), "Piec nie odpowiada", grid::W / 2, 110, col::MUTE);
@@ -1472,6 +1567,14 @@ void v3Boiler(TFT_eSPI& s, const vi::Model* bp, const BurnerHistory* bhp) {
     return;
   }
   const vi::Model& b = *bp;
+
+  // STAN (b) kontra (c): swieze kontra stare. Prog cfg::VI_STALE_MS = 8 min, czyli
+  // 2,5 kadencji odpytu (180 s) — jedno nieudane pobranie NIE robi z danych starych,
+  // trzecie z rzedu juz tak (ponowienie po bledzie leci co 120 s). Stempel `b.okAt`
+  // jest WLASNOSCIA modelu i ustawia go Viessmann.cpp wylacznie na sciezce sukcesu,
+  // tuz przed `out = m` — nie ma jak drgnac po bledzie.
+  const uint32_t viAge = okAgeS(b.okAt);
+  const bool viOld = !freshMs(b.okAt, cfg::VI_STALE_MS);
 
   // Naglowek + plakietka wygasania autoryzacji.
   plex::str(s, plex::f11(), "OGRZEWANIE", grid::MARGIN, 22, col::SECOND);
@@ -1484,6 +1587,18 @@ void v3Boiler(TFT_eSPI& s, const vi::Model* bp, const BurnerHistory* bhp) {
       const int bx = grid::W - grid::MARGIN - tw - 14;
       s.fillRoundRect(bx, 8, tw + 14, 18, 4, col::WARNBG);
       plex::str(s, plex::f13(), badge, bx + 7, 21, col::WARN);
+    } else if (viOld) {
+      // (v161) WIEK zamiast "dostęp N dni" — ten sam wiersz, ktory i tak tam byl
+      // (wzorzec v158 z ekranu glownego: wiek wchodzi w miejsce mniej pilnej tresci,
+      // zadnego nowego elementu). Kolejnosc jest swiadoma: plakietka "odnów dostęp"
+      // WYGRYWA z wiekiem, bo wygasajaca autoryzacja jest zwykle PRZYCZYNA tego, ze
+      // dane sa stare, i jako jedyna mowi wlascicielowi, co ma zrobic.
+      // Szerokosc: najdluzszy wariant "sprzed 89 min" = 80 px w f13, wyrownany do
+      // prawej na x=313, czyli zaczyna sie na x=233; etykieta "OGRZEWANIE" (f11)
+      // konczy sie ponizej x=80. Zero kolizji.
+      char ago[24];
+      agoWords(ago, sizeof(ago), viAge);
+      plex::strRight(s, plex::f13(), ago, grid::W - grid::MARGIN, 22, col::WARN);
     } else if (dl >= 0) {
       snprintf(badge, sizeof(badge), "dostęp %d dni", dl);
       plex::strRight(s, plex::f13(), badge, grid::W - grid::MARGIN, 22, col::MUTE);
@@ -1491,21 +1606,57 @@ void v3Boiler(TFT_eSPI& s, const vi::Model* bp, const BurnerHistory* bhp) {
   }
   s.drawFastHLine(grid::MARGIN, 30, grid::W - 2 * grid::MARGIN, col::LINE);
 
+  // (v161) DECYZJA PER POLE — najwazniejsza czesc tej zmiany, wiec stoi wprost tu.
+  // Nie wszystko, co przyszlo z pieca, wolno pokazac jako "stare, ale nasze":
+  //
+  //   POKAZUJEMY (wyciszone + wiek w naglowku):
+  //     * temperatura CWU — zbiornik z woda ma ogromna bezwladnosc cieplna; 8 minut
+  //       to dla niego pojedyncze stopnie, wiec ostatnia znana wartosc nadal odpowiada
+  //       na pytanie "czy jest ciepla woda";
+  //     * nastawa CWU i tryb (komfort/eko/wyłączona) — to KONFIGURACJA, nie pomiar.
+  //       Zmienia sie recznie, raz na tygodnie. Stara wartosc jest tu praktycznie
+  //       zawsze aktualna;
+  //     * temperatura zasilania — pomiar chwilowy, ale wielkosc CIAGLA i zmieniajaca
+  //       sie w skali minut przy 100-litrowej instalacji; wyciszona i podpisana
+  //       wiekiem niesie wiecej niz pusty ekran.
+  //
+  //   NIE POKAZUJEMY:
+  //     * "teraz: włączony / teraz: wyłączony" (b.burnerActive). To stan DWUSTANOWY
+  //       o zyciu krotszym niz nasza wlasna kadencja — Viessmann.h opisuje to wprost:
+  //       cykl grzania CWU potrafi zaczac sie i skonczyc MIEDZY dwoma odpytami co
+  //       3 minuty. Slowo "teraz" przy wartosci sprzed kwadransa jest po prostu
+  //       nieprawda, a wyciszenie jej nie naprawia: czytelnik przeczyta "palnik
+  //       pracuje", nie "palnik pracowal kiedys". Brak odczytu jest tu UCZCIWSZY niz
+  //       stara wartosc — i mamy juz na to gotowy, prawdziwy napis ("brak odczytu"),
+  //       uzywany dotad przy braku cechy hasBurnerState.
+  //     * modulacja palnika — z tego samego powodu; na ekranie i tak nie ma jej jako
+  //       liczby, wchodzi wylacznie do WYKRESU doby, a ten jest odporny z definicji
+  //       (kazdy slupek to wlasny slot czasu, brak nowych probek = brak nowych slupkow,
+  //       a nie stary slupek udajacy biezacy).
+  //
+  //   LICZNIKI NARASTAJACE (godziny palnika, liczba startow, gaz dzisiaj) sa osobnym
+  //   przypadkiem i traktujemy je osobno: stara wartosc licznika jest ZANIZONA, ale
+  //   nigdy zawyzona — nie klamie o kierunku. Gaz z dolnego pasa ma wlasna obsluge
+  //   w v3BoilerBottom (razem z pulapka polnocy). Godzin i startow ten ekran nie
+  //   pokazuje wcale — sa tylko w /api/diag.
+  const uint16_t cMain = viOld ? col::MUTE : col::PANEL;
+  const uint16_t cSec = viOld ? col::MUTE : col::SECOND;
+
   // Wielka CWU.
   char big[12];
   snprintf(big, sizeof(big), b.hasDhwTemp ? "%.0f°" : "-", b.dhwTempC);
-  const int bw = plex::str(s, plex::f52(), big, grid::MARGIN, 74, col::PANEL);
+  const int bw = plex::str(s, plex::f52(), big, grid::MARGIN, 74, cMain);
   char sub[32];
   if (b.hasDhwTarget) snprintf(sub, sizeof(sub), "ciepła woda · zadane %.0f°", b.dhwTargetC);
   else snprintf(sub, sizeof(sub), "ciepła woda");
-  plex::str(s, plex::f13(), sub, grid::MARGIN, 92, col::SECOND);
+  plex::str(s, plex::f13(), sub, grid::MARGIN, 92, cSec);
   (void)bw;
 
   // Prawa: zasilanie + tryb.
   if (b.hasSupplyTemp) {
     char sup[20];
     snprintf(sup, sizeof(sup), "zasilanie %.0f°", b.supplyTempC);
-    plex::strRight(s, plex::f13(), sup, grid::DATA_R, 50, col::PANEL);
+    plex::strRight(s, plex::f13(), sup, grid::DATA_R, 50, cMain);
   }
   {
     const char* mode = strcmp(b.dhwMode, "comfort") == 0   ? "komfort"
@@ -1515,14 +1666,18 @@ void v3Boiler(TFT_eSPI& s, const vi::Model* bp, const BurnerHistory* bhp) {
                                                            : "-";
     char tr[24];
     snprintf(tr, sizeof(tr), "tryb: %s", mode);
-    plex::strRight(s, plex::f13(), tr, grid::DATA_R, 68, col::SECOND);
+    plex::strRight(s, plex::f13(), tr, grid::DATA_R, 68, cSec);
   }
 
   // Wykres palnika (modulacja doby).
   plex::str(s, plex::f11(), "PALNIK DZIŚ", grid::MARGIN, 120, col::SECOND);
   {
-    const char* st = !b.hasBurnerState ? "brak odczytu" : (b.burnerActive ? "teraz: włączony" : "teraz: wyłączony");
-    plex::strRight(s, plex::f13(), st, grid::DATA_R, 120, b.burnerActive ? col::PV : col::MUTE);
+    // "teraz: ..." WYLACZNIE przy swiezym odczycie — patrz decyzja per pole wyzej.
+    const char* st = (viOld || !b.hasBurnerState)
+                         ? "brak odczytu"
+                         : (b.burnerActive ? "teraz: włączony" : "teraz: wyłączony");
+    plex::strRight(s, plex::f13(), st, grid::DATA_R, 120,
+                   (!viOld && b.burnerActive) ? col::PV : col::MUTE);
   }
   const int cx = grid::MARGIN, cy = 130, cw = grid::W - 2 * grid::MARGIN, ch = 44;
   const int base = cy + ch;
@@ -1549,12 +1704,54 @@ void v3BoilerBottom(TFT_eSPI& tft, const vi::Model* bp) {
   tft.drawFastHLine(grid::MARGIN, 210, grid::W - 2 * grid::MARGIN, col::LINE);
   plex::str(tft, plex::f11(), "GAZ · DZIŚ", grid::MARGIN, 228, col::SECOND);
   if (bp && bp->valid && bp->hasGas) {
-    char g[48];
-    snprintf(g, sizeof(g), "%.1f m³ · woda %.1f / grzanie %.1f",
-             bp->gasDhwM3 + bp->gasHeatM3, bp->gasDhwM3, bp->gasHeatM3);
-    for (char* p = g; *p; ++p)
-      if (*p == '.') *p = ',';
-    plex::strRight(tft, plex::f13(), g, grid::W - grid::MARGIN, 228, col::PANEL);
+    // (v161) Zuzycie gazu to licznik NARASTAJACY w obrebie doby — stary odczyt jest
+    // zanizony, nigdy zawyzony, wiec wolno go pokazac. Ale ma DWIE pulapki i obie sa
+    // tu obsluzone, bo to dokladnie ten rodzaj bledu, ktory to wydanie usuwa:
+    //
+    //  1) POLNOC. Licznik `currentDay` z pieca zeruje sie o polnocy. Odczyt sprzed
+    //     polnocy pokazany pod naglowkiem "GAZ · DZIŚ" o 00:30 to WCZORAJSZE zuzycie
+    //     podpisane slowem "dziś" — ta sama klasa klamstwa, co wczorajsza krzywa PV
+    //     pod napisem "DZIS" (patrz blok polnocy w netTask). Sprawdzamy to bez ani
+    //     jednego nowego pola: wiek odczytu w sekundach kontra liczba sekund, ktore
+    //     uplynely od lokalnej polnocy. Wiek wiekszy => odczyt jest z poprzedniej
+    //     doby => liczby NIE POKAZUJEMY WCALE.
+    //  2) WIEK. Poza tym przypadkiem liczba zostaje, ale gdy jest starsza niz
+    //     cfg::VI_STALE_MS, rozbicie "woda / grzanie" ustepuje miejsca wiekowi.
+    //     Zaden nowy wiersz: to ten sam wiersz, tylko z inna, wazniejsza trescia.
+    //     Szerokosc: "12,3 m³ · sprzed 89 min" jest KROTSZE od dotychczasowego
+    //     najdluzszego "12,3 m³ · woda 5,4 / grzanie 6,9", wiec pas na pewno mieści.
+    const uint32_t age = okAgeS(bp->okAt);
+    const bool old = !freshMs(bp->okAt, cfg::VI_STALE_MS);
+    bool crossedMidnight = false;
+    {
+      const time_t now = time(nullptr);
+      if (now > 1700000000) {
+        struct tm tmv{};
+        localtime_r(&now, &tmv);
+        const uint32_t sinceMidnight = static_cast<uint32_t>(tmv.tm_hour) * 3600u +
+                                       static_cast<uint32_t>(tmv.tm_min) * 60u +
+                                       static_cast<uint32_t>(tmv.tm_sec);
+        crossedMidnight = age > sinceMidnight;
+      }
+    }
+    if (crossedMidnight) {
+      plex::strRight(tft, plex::f13(), "licznik sprzed północy", grid::W - grid::MARGIN, 228,
+                     col::WARN);
+    } else {
+      char g[52];
+      if (old) {
+        char ago[24];
+        agoWords(ago, sizeof(ago), age);
+        snprintf(g, sizeof(g), "%.1f m³ · %s", bp->gasDhwM3 + bp->gasHeatM3, ago);
+      } else {
+        snprintf(g, sizeof(g), "%.1f m³ · woda %.1f / grzanie %.1f",
+                 bp->gasDhwM3 + bp->gasHeatM3, bp->gasDhwM3, bp->gasHeatM3);
+      }
+      for (char* p = g; *p; ++p)
+        if (*p == '.') *p = ',';
+      plex::strRight(tft, plex::f13(), g, grid::W - grid::MARGIN, 228,
+                     old ? col::MUTE : col::PANEL);
+    }
   } else {
     plex::strRight(tft, plex::f13(), "brak licznika gazu", grid::W - grid::MARGIN, 228, col::MUTE);
   }

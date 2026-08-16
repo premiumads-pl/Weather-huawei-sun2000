@@ -172,7 +172,18 @@ bool PvClient::ensureConnected() {
     return false;
   }
   gSock.setNoDelay(true);
-  gSock.setTimeout(kTimeoutMs / 1000);
+  // (v161) USUNIETE: `gSock.setTimeout(kTimeoutMs / 1000)`. Ta linia nie robila tego,
+  // co obiecywala, i to podwojnie. WiFiClient (= NetworkClient) NIE MA wlasnego
+  // setTimeout — wolanie schodzilo do Stream::setTimeout(unsigned long), a ten liczy
+  // w MILISEKUNDACH (cores/esp32/Stream.h:67, Stream.cpp:86). Dzielenie przez 1000
+  // robilo wiec z 2500 ms nie "2,5 s", tylko 2 MILISEKUNDY. I tak nie mialo skutku,
+  // bo Stream::_timeout czyta wylacznie readBytes()/readStringUntil()/parseInt(),
+  // a Modbus czyta przez recvExact() -> gSock.read(buf, n) z WLASNYM terminem
+  // (`deadline = millis() + kTimeoutMs` w readRegs). NetworkClient::read() bierze
+  // SO_RCVTIMEO ze swojego pola `_timeout`, ktore ustawia setConnectionTimeout(),
+  // a nie setTimeout() — to dwa rozne pola o mylaco podobnych nazwach.
+  // setConnectionTimeout() CELOWO tu nie wolamy: to zmienialoby realny timeout
+  // gniazda, a zadanie bylo odwrotne — usunac mylaca linie bez zmiany zachowania.
   delay(400);
 
   if (!warmUp()) {
