@@ -976,6 +976,47 @@ static void netTask(void*) {
     gWifiOk = true;
     const uint32_t now = millis();
 
+    // ---- OTA (jedyne miejsce, gdzie dotykamy obiektu Update) ----
+    // (v157) STOI JAKO PIERWSZY BLOK SIECIOWY W OBIEGU, a nie jako ostatni, i to jest
+    // decyzja o mozliwosci naprawy tego urzadzenia, nie o kolejnosci dla porzadku.
+    // Urzadzenie jest TYLKO-OTA (bez USB), wiec sprawdzenie aktualizacji jest jedyna
+    // droga naprawy CZEGOKOLWIEK. Dopoki blok stal na koncu obiegu, kazda awaria
+    // w blokach powyzej (pogoda, powietrze, PV, radar, mapa radaru, piec, BLE, roaming,
+    // loty) odbierala te droge: obieg do OTA po prostu nie dochodzil, a nadzorca
+    // z v153 restartowal urzadzenie po kwadransie — czyli w kolko przed sprawdzeniem
+    // wersji. Teraz sprawdzenie wypada ZANIM cokolwiek innego zdazy zawisnac.
+    //
+    // CO TEN BLOK POTRZEBUJE I DLACZEGO WSZYSTKO JUZ TU JEST (sprawdzone linia po linii,
+    // nie zalozone):
+    //   * gWifiOk == true i faktyczne WL_CONNECTED — ustawione w linii bezposrednio
+    //     nad tym komentarzem;
+    //   * millis() — blok liczy czas WYLACZNIE przez millis(), nie przez lokalne `now`,
+    //     wiec przeniesienie nie zmienia mu ani jednej wartosci (`now` jest wyzej tak
+    //     czy tak, dla blokow ponizej);
+    //   * gNetStage.stageNow — pole RTC, zapis bez zaleznosci od czegokolwiek wyzej;
+    //   * otaGuardTick() — TYKA JUZ NA SAMEJ GORZE obiegu, ponad wszystkimi `continue`,
+    //     wiec okres probny po OTA jest obsluzony PRZED tym blokiem, tak jak dotad;
+    //   * gNetBeatMs (znacznik dla nadzorcy) — bity jako pierwsza instrukcja obiegu;
+    //   * gLock — ten blok go NIE bierze (Ota.cpp nie dotyka struktur pod blokada),
+    //     wiec nie ma tu nowego ryzyka zakleszczenia z rdzeniem 1;
+    //   * settings() / takeOtaRequest() — dostepne od setup(), bez zwiazku z kolejnoscia.
+    //
+    // HARMONOGRAM PO PRZENIESIENIU JEST NIEZMIENIONY, sprawdzone: nextOtaAt startuje
+    // z 45000 (deklaracja na poczatku netTask, tuz nad petla), a nextWeatherAt z 0.
+    // W PIERWSZYM obiegu millis() jest rzedu sekund, wiec warunek OTA jest FALSZYWY
+    // i sterowanie leci od razu do pogody — ekran po wlaczeniu dostaje dane tak samo
+    // szybko jak przed zmiana. Tego opoznienia startowego celowo NIE ruszam; siedzi
+    // w `uint32_t nextOtaAt = 45000;` na poczatku netTask().
+    const bool otaAsked = takeOtaRequest();
+    if (settings().otaEnabled &&
+        (otaAsked || static_cast<int32_t>(millis() - nextOtaAt) >= 0)) {
+      gNetStage.stageNow = NET_STAGE_OTA;
+      // otaAsked = kliknięcie w panelu; tylko wtedy wolno wymusić wersję, która
+      // wcześniej nie przeżyła okresu próbnego.
+      ota.checkAndUpdate(otaAsked);  // przy sukcesie restartuje urządzenie
+      nextOtaAt = millis() + cfg::OTA_CHECK_MS;
+    }
+
     // ---- MQTT: utrzymanie sesji + telemetria urzadzenia ----
     // Brak brokera nie moze zatrzymac reszty: proby laczenia maja krotki timeout
     // i backoff, wiec ta linijka albo kosztuje mikrosekundy, albo raz na jakis
@@ -1485,16 +1526,13 @@ static void netTask(void*) {
       }
     }
 
-    // ---- OTA (jedyne miejsce, gdzie dotykamy obiektu Update) ----
-    const bool otaAsked = takeOtaRequest();
-    if (settings().otaEnabled &&
-        (otaAsked || static_cast<int32_t>(millis() - nextOtaAt) >= 0)) {
-      gNetStage.stageNow = NET_STAGE_OTA;
-      // otaAsked = kliknięcie w panelu; tylko wtedy wolno wymusić wersję, która
-      // wcześniej nie przeżyła okresu próbnego.
-      ota.checkAndUpdate(otaAsked);  // przy sukcesie restartuje urządzenie
-      nextOtaAt = millis() + cfg::OTA_CHECK_MS;
-    }
+    // ---- (v157) BLOK OTA STAL TUTAJ, JAKO OSTATNI W OBIEGU ----
+    // Przeniesiony na POCZATEK obiegu, zaraz za `gWifiOk = true` — patrz tam. Powod:
+    // dopoki stal na koncu, kazdy restart nadzorcy (i kazde zawieszenie w blokach
+    // powyzej) mogl trafic urzadzenie ZANIM dojdzie do sprawdzenia aktualizacji, czyli
+    // odebrac jedyna droge zdalnej naprawy. Ten komentarz zostaje, zeby ktos szukajacy
+    // OTA na koncu petli (bo tak jest w starszych wydaniach i w ARCHITEKTURA.md) wiedzial,
+    // gdzie patrzec — a nie uznal, ze blok zniknal.
 
     if (firstWeather && gBooting) {
       gBooting = false;
@@ -1880,14 +1918,33 @@ void loop() {
   // Bierzemy 900 s = 15 minut, czyli ~1,8x powyzej policzonego pesymizmu.
   // Cena bledu jest skrajnie niesymetryczna i o tym decyduje: za dlugi prog kosztuje
   // KWADRANS nieswiezych danych zamiast wiecznosci, a za krotki — restart w srodku
-  // obiegu, ktory dopiero na swoim KONCU dochodzi do sprawdzenia OTA. Urzadzenie, ktore
-  // restartuje sie przed sprawdzeniem OTA, nie da sie juz zaktualizowac zdalnie.
+  // legalnego, dlugiego obiegu.
+  //
+  // UWAGA (v157) — TO ZDANIE ZOSTALO POPRAWIONE, BO PRZESTALO BYC PRAWDA. Do v156 stalo
+  // tu, ze za krotki prog restartuje urzadzenie, "ktore dopiero na swoim KONCU dochodzi
+  // do sprawdzenia OTA". Blok OTA NIE STOI JUZ NA KONCU obiegu: w v157 zostal przeniesiony
+  // na jego POCZATEK, jako pierwszy blok sieciowy zaraz za `gWifiOk = true` (patrz netTask).
+  // Argument "restart odbiera zdalna aktualizacje" NIE jest wiec juz uzasadnieniem progu —
+  // po przeniesieniu urzadzenie, ktore w ogole zestawia WiFi, dochodzi do sprawdzenia OTA
+  // w kazdym obiegu, ZANIM cokolwiek innego zdazy zawisnac. Prawdziwym i jedynym
+  // uzasadnieniem 900 s zostaje policzony wyzej pesymizm calego obiegu (~490 s), w ktorym
+  // najdluzszy pojedynczy legalny fragment to mapa radaru: 13 klatek x 12 s timeoutu na
+  // pierwszym kaflu = 324 s. To dlatego 300 s jest za malo, a 900 s daje ~1,8x zapasu.
+  // Wiedza z tamtego zdania nie ginie — przenosi sie do komentarza przy samym bloku OTA,
+  // bo tam jest jej wlasciwe miejsce.
   //
   // Uwaga o granicach mozliwosci tego nadzoru: 12 s to timeout POJEDYNCZEGO ODCZYTU
   // z gniazda, a nie calego zadania. Polaczenie, ktore saczy dane w nieskonczonosc
   // (kilka bajtow tuz przed kazdym timeoutem), nie ma zadnego gornego ograniczenia i
-  // ZOSTANIE tu uznane za zawieszenie. Zadnym progiem sie tego nie rozroznia — jedynym
-  // pelnym lekiem jest wlasny limit CZASU CALEGO POBRANIA w kliencie HTTP.
+  // ZOSTANIE tu uznane za zawieszenie. Zadnym progiem sie tego nie rozroznia.
+  // Co sie zmienilo w v157, a co NIE: klienci HTTP maja teraz wlasny TERMIN
+  // BEZCZYNNOSCI (SecureClient.h, 30 s / 60 s dla OTA), wiec przypadek z 25.07 —
+  // gniazdo na wpol otwarte, z ktorego NIE PRZYCHODZI JUZ NIC — konczy sie teraz
+  // w kilkadziesiat sekund i do nadzorcy w ogole nie dochodzi. Ale to termin
+  // BEZCZYNNOSCIOWY (celowo — inaczej zabijalby wlasne pobranie OTA), wiec polaczenie
+  // saczace po bajcie odswieza go w nieskonczonosc i nadal nie ma na nie leku poza tym
+  // nadzorca. Ten blok NIE staje sie wiec zbedny; robi sie siecia bezpieczenstwa
+  // ostatniej instancji, czyli tym, czym mial byc.
   {
     constexpr uint32_t kNetStallLimitMs = 900000;   // 15 min — uzasadnienie wyzej
     constexpr uint32_t kNetBootGraceMs = 120000;    // 2 min karencji po rozruchu

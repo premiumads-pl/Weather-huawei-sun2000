@@ -7,6 +7,8 @@
 #include <cstring>
 #include <ctime>
 
+#include "SecureClient.h"   // GuardedPlainClient — termin bezczynnosci (patrz tam)
+
 namespace {
 
 // Zwykly HTTP (bez TLS) — zweryfikowane przez wlasciciela na tym konkretnym API, nie
@@ -261,8 +263,13 @@ bool AirClient::fetch(AirModel& out) {
            kHost, kPath, start, end);
 
   // WiFiClient zwykly (bez TLS) — patrz uzasadnienie kHost/kPath wyzej.
-  WiFiClient client;
+  // GuardedPlainClient, a nie goly WiFiClient: baza jest ta sama (WiFiClient), doklada
+  // sie TERMIN BEZCZYNNOSCI (v157). Bez TLS petla bez timeoutu w rdzeniu
+  // (HTTPClient.cpp:1318) wisi tak samo — to wlasnie na ZWYKLYM gniezdzie zdarzyla sie
+  // awaria z 25.07. Cale uzasadnienie: SecureClient.h.
+  GuardedPlainClient client;
   client.setTimeout(12);
+  client.armIdleGuard(netguard::kIdleMs, "powietrze");
   HTTPClient http;
   http.setTimeout(12000);
   http.setReuse(false);

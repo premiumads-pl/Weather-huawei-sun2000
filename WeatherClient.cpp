@@ -181,6 +181,9 @@ bool WeatherClient::fetch(WeatherModel& out) {
 
   YieldingSecureClient client;
   client.setInsecure();
+  // Termin bezczynnosci (v157). Bez niego pol-otwarte gniazdo wiesza
+  // writeToStreamDataBlock() bez konca — cale uzasadnienie w SecureClient.h.
+  client.armIdleGuard(netguard::kIdleMs, "pogoda");
   HTTPClient http;
   http.setTimeout(15000);
   http.setReuse(false);

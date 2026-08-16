@@ -1,6 +1,7 @@
 #include "RadarMap.h"
 
 #include "Log.h"
+#include "SecureClient.h"   // GuardedPlainClient — termin bezczynnosci (patrz tam)
 
 // heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) — przedbieg przed alokacja
 // buforow (patrz allocateBuffers). Sam ps_calloc() z Arduino.h nie odpowiada na
@@ -218,8 +219,14 @@ class PngSink : public Stream {
 };
 
 bool httpGet(const char* url, uint8_t** buf, size_t* len, String* text) {
-  WiFiClient client;
+  // GuardedPlainClient (v157) — TERMIN BEZCZYNNOSCI. To jest TO MIEJSCE: 25.07 netTask
+  // wisial tu 33 minuty na kaflu mapy, bo punkt dostepowy zniknal w polowie transferu
+  // i gniazdo zostalo na wpol otwarte. Petla HTTPClient.cpp:1318 nie ma timeoutu, a bez
+  // TLS Task watchdog nawet nie zaszczeka (NetworkClient.cpp:535 karmi IDLE0). Cale
+  // uzasadnienie i dobor wartosci: SecureClient.h.
+  GuardedPlainClient client;
   client.setTimeout(12);
+  client.armIdleGuard(netguard::kIdleMs, "mapa radaru");
 
   HTTPClient http;
   http.setTimeout(12000);

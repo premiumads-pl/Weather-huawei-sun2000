@@ -149,6 +149,7 @@ bool postToken(const String& body, JsonDocument& doc, char* errOut, size_t errLe
   YieldingSecureClient client;
   client.setInsecure();
   client.setTimeout(15);
+  client.armIdleGuard(netguard::kIdleMs, "piec/token");   // v157 — patrz SecureClient.h
 
   HTTPClient http;
   http.setTimeout(15000);
@@ -266,6 +267,7 @@ bool apiPost(const String& path, const String& body, char* errOut, size_t errLen
   YieldingSecureClient client;
   client.setInsecure();
   client.setTimeout(20);
+  client.armIdleGuard(netguard::kIdleMs, "piec/post");   // v157 — patrz SecureClient.h
 
   HTTPClient http;
   http.setTimeout(20000);
@@ -315,6 +317,9 @@ bool apiGet(const String& path, JsonDocument& doc, JsonDocument* filter) {
   YieldingSecureClient client;
   client.setInsecure();
   client.setTimeout(25);
+  // v157: 25 s to najdluzszy timeout POJEDYNCZEGO odczytu w calym projekcie i wlasnie
+  // od niego odbita jest wartosc netguard::kIdleMs (30 s) — patrz SecureClient.h.
+  client.armIdleGuard(netguard::kIdleMs, "piec/get");
 
   HTTPClient http;
   http.setTimeout(25000);

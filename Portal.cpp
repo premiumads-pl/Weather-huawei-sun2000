@@ -1732,6 +1732,10 @@ void apiGeo() {
   // wyszedlby wiec tak samo, tylko z innego zadania.
   YieldingSecureClient client;
   client.setInsecure();
+  // Termin bezczynnosci (v157). Tutaj chroni ZADANIE WEB, nie netTask: zawieszenie
+  // w writeToStreamDataBlock() trzymaloby portal (i nadzorca netTask by tego nie
+  // zobaczyl, bo pilnuje innego zadania). Uzasadnienie wartosci: SecureClient.h.
+  client.armIdleGuard(netguard::kIdleMs, "geokoder");
   HTTPClient http;
   http.setTimeout(10000);
   if (!http.begin(client, url)) {

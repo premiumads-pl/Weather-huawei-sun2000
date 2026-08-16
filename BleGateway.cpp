@@ -2,6 +2,7 @@
 
 #include "BleSensors.h"
 #include "Log.h"
+#include "SecureClient.h"   // GuardedPlainClient — termin bezczynnosci (patrz tam)
 #include "Settings.h"
 
 #include <Arduino.h>
@@ -177,8 +178,12 @@ bool claim(int idx, const char* mac, int8_t rssi) {
 }
 
 bool pollOne(int idx, const char* hostAddr) {
-  WiFiClient client;
+  // GuardedPlainClient (v157): ta sama baza WiFiClient, plus TERMIN BEZCZYNNOSCI.
+  // Bramka to urzadzenie w LAN — wlasnie takie ginie bez RST przy restarcie routera
+  // albo samej bramki, czyli dokladnie scenariusz z 25.07. Patrz SecureClient.h.
+  GuardedPlainClient client;
   client.setTimeout(kTimeoutMs / 1000);
+  client.armIdleGuard(netguard::kIdleMs, "bramka BLE");
   HTTPClient http;
   http.setConnectTimeout(kTimeoutMs);
   http.setTimeout(kTimeoutMs);

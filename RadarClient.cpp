@@ -10,6 +10,7 @@
 #include <new>
 
 #include "Log.h"
+#include "SecureClient.h"   // GuardedPlainClient — termin bezczynnosci (patrz tam)
 #include "Settings.h"
 
 namespace {
@@ -149,8 +150,11 @@ class PngSink : public Stream {
 // RainViewer serwuje wszystko po zwyklym HTTP. Rezygnacja z TLS oszczedza ~40 kB
 // sterty — dokladnie tyle, ile brakowalo dekoderowi PNG.
 bool httpGet(const char* url, uint8_t** buf, size_t* len, String* text) {
-  WiFiClient client;
+  // GuardedPlainClient (v157): ta sama baza WiFiClient, plus TERMIN BEZCZYNNOSCI.
+  // Petla HTTPClient.cpp:1318 nie ma timeoutu takze bez TLS — patrz SecureClient.h.
+  GuardedPlainClient client;
   client.setTimeout(12);
+  client.armIdleGuard(netguard::kIdleMs, "radar");
 
   HTTPClient http;
   http.setTimeout(12000);

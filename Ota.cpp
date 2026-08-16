@@ -181,6 +181,11 @@ bool Ota::fetchRemoteVersion(OtaManifest& man) {
   client.setInsecure();
   client.setTimeout(15);
   client.setHandshakeTimeout(15);
+  // v157: sprawdzenie wersji to zwykly, maleńki JSON — dostaje ZWYKLY termin (30 s),
+  // a NIE luzniejszy termin OTA. Kierunek ryzyka jest tu odwrotny niz przy pobieraniu:
+  // sprawdzenie, ktore wisi, NIE aktualizuje niczego, wiec szybkie poddanie sie
+  // i ponowienie za kwadrans (cfg::OTA_CHECK_MS) POMAGA zdalnej naprawie, a nie szkodzi.
+  client.armIdleGuard(netguard::kIdleMs, "OTA wersja");
 
   HTTPClient http;
   http.setTimeout(15000);
@@ -271,6 +276,14 @@ bool Ota::downloadAndFlash(const OtaManifest& man) {
   YieldingSecureClient client;
   client.setInsecure();
   client.setTimeout(20);
+  // v157: termin LUZNIEJSZY (60 s bezczynnosci) i BEZCZYNNOSCIOWY, nie calkowity —
+  // 1,8 MB przez TLS przy slabym sygnale legalnie ciagnie sie minutami, a urzadzenie
+  // nie ma USB, wiec ubicie POSTEPUJACEGO pobrania byloby awaria nie do naprawienia.
+  // UCZCIWA UWAGA: na sam transfer ciala ten termin i tak nie ma wplywu, bo
+  // Update.writeStream() czyta ze strumienia z pominieciem HTTPClient::connected();
+  // tam pilnuje wlasny bezpiecznik rdzenia (Updater.cpp:902-912, ~30 s). Tu
+  // zabezpieczamy faze zadania i naglowkow. Pelne wyjasnienie: SecureClient.h.
+  client.armIdleGuard(netguard::kOtaIdleMs, "OTA firmware");
 
   HTTPClient http;
   http.setTimeout(20000);
