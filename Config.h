@@ -172,6 +172,89 @@ constexpr uint32_t FRAME_IDLE_MS = 50;   // 20 fps na statycznym ekranie (pasek 
 // Serial. Przydatne po zmianie na dwa pasy — domyślnie wyłączone, bo to tylko log.
 constexpr bool PROFILE_FRAME = false;
 
+// ---------- PROGI SWIEZOSCI DANYCH (v158) — JEDNO miejsce dla calego projektu ----
+// Do v157 kazdy ekran i panel mial WLASNA liczbe, wpisana na miejscu: pogoda 2x
+// WEATHER_REFRESH_MS (WeatherUiV3.cpp), radar 1200 s, loty 60 s, pokoje 900 s,
+// panel 900 s dla WSZYSTKIEGO w liscie "swiezosc zrodel" i 1800 s dla falownika
+// w dwoch innych miejscach. Efekt byl dokladnie taki, jak zglosil wlasciciel: piec
+// (kadencja 3 min) wygladal na swiezy jeszcze 15 minut po zamilknieciu, a loty
+// (kadencja 15 s) migaly na "nieaktualne" po jednym poslizgu.
+//
+// REGULA (jedna, jawna): prog = 2,5 x pelna kadencja odpytywania danego zrodla,
+// zaokraglone W GORE do czytelnej wartosci. Skad 2,5: JEDNA nieudana proba ma sie
+// jeszcze zmiescic w progu (zrodlo nie miga na czerwono przy kazdym poslizgu
+// cudzego serwera), DWIE pod rzad juz nie. Wyjatki od reguly sa opisane przy
+// swoich stalych — NIE naginamy reguly, tylko piszemy wprost, ze przypadek jest
+// inny i dlaczego.
+//
+// UWAGA, ktora zmienia arytmetyke: po BLEDZIE netTask ponawia SZYBCIEJ niz wynosi
+// kadencja (pogoda/powietrze 30 s, radar 60 s, mapa 120 s, piec 120 s, loty 20 s —
+// patrz netTask w pogoda-gdynia.ino). Prog "2,5 kadencji" w praktyce oznacza wiec
+// nie "dwie proby", tylko "kadencja + kilka nieudanych ponowien", czyli trwaly
+// brak lacznosci z danym API, a nie pojedyncza czkawka. Liczby ponizej licza sie
+// od OSTATNIEGO UDANEGO pobrania (diag().*OkAt), wiec ponowienia nie przesuwaja
+// zegara — przesuwa go dopiero sukces.
+constexpr uint32_t WEATHER_STALE_MS = 40UL * 60UL * 1000UL;
+// ^ kadencja 15 min (WEATHER_REFRESH_MS) -> 2,5 x 15 = 37,5 min -> 40 min.
+//   Bylo: 2 x WEATHER_REFRESH_MS = 30 min, wpisane wprost w wxFresh() (WeatherUiV3.cpp).
+constexpr uint32_t AIR_FETCH_STALE_MS = 40UL * 60UL * 1000UL;
+// ^ kadencja 15 min (AIR_REFRESH_MS) -> ta sama liczba, co pogoda. To wiek NASZEGO
+//   pobrania, NIE wiek probki ze stacji — te dwie rzeczy sa rozne i obie sa widoczne
+//   (/api/diag: ok_ago_s vs sample_age_s).
+constexpr uint32_t AIR_SAMPLE_STALE_S = 3UL * 3600UL;
+// ^ INNA kadencja, ta sama regula: ARMAAG publikuje srednie GODZINOWE, wiec kadencja
+//   ZRODLA to 60 min, a 2,5 x 60 = 150 min -> zaokraglone w gore do 3 h. Ta sama
+//   liczba sluzy AirClientowi do decyzji GA17 -> GA24 (AirData.h::AIR_STALE_S).
+constexpr uint32_t RADAR_STALE_MS = 15UL * 60UL * 1000UL;
+// ^ kadencja 5 min (RADAR_REFRESH_MS) -> 2,5 x 5 = 12,5 min -> 15 min.
+//   Bylo: 1200 s (20 min) wpisane liczba w naglowku ekranu RADAR.
+constexpr uint32_t RADAR_MAP_STALE_S = 30UL * 60UL;
+// ^ klatki RainViewera powstaja co 10 min (RADAR_MAP_REFRESH_MS jest pod to dobrane)
+//   -> 2,5 x 10 = 25 min -> 30 min. Liczone od frameEpoch (czas KLATKI, nie pobrania):
+//   swiezo pobrana mapa potrafi miec 10-minutowa klatke — zmierzone na urzadzeniu
+//   16.08.2026: radar.ok_ago_s = 24 s przy frame_age_s = 610 s.
+constexpr uint32_t PV_STALE_MS = 90UL * 1000UL;
+// ^ kadencja 30 s (PV_REFRESH_MS) -> 2,5 x 30 = 75 s -> 90 s.
+constexpr uint32_t PV_STALE_NIGHT_MS = 15UL * 60UL * 1000UL;
+// ^ ta sama regula przy nocnej kadencji 5 min (PV_REFRESH_NIGHT_MS): 2,5 x 5 = 12,5
+//   -> 15 min. Osobna stala, bo falownik spi po zachodzie i jednym progiem nie da sie
+//   uczciwie opisac obu tempa.
+constexpr uint32_t VI_STALE_MS = 8UL * 60UL * 1000UL;
+// ^ kadencja 3 min (nextViAt = +180000 w netTask; limit Viessmanna 1450 zapytan/dobe
+//   nie pozwala szybciej) -> 2,5 x 3 = 7,5 min -> 8 min. Ponowienie po bledzie to
+//   120 s, wiec 8 min = trzecia nieudana proba z rzedu.
+constexpr uint32_t FLIGHT_STALE_MS = 45UL * 1000UL;
+// ^ kadencja 15 s (FLIGHT_REFRESH_MS) -> 2,5 x 15 = 37,5 s -> 45 s. WAZNE: loty sa
+//   odpytywane TYLKO gdy ekran SAMOLOTY jest na wierzchu albo zaraz na niego wejdziemy
+//   (gFlightsNeeded z WeatherUi::needsFlights), wiec MIEDZY pokazami wiek rosnie do
+//   minut i to jest normalne. Prog opisuje wiec sensownie tylko czas SPEDZONY na tym
+//   ekranie — i tak ma byc: samolot w 45 s przelatuje ~10 km, stara ramka klamie.
+constexpr uint32_t FLIGHT_LIST_STALE_MS = 10UL * 60UL * 1000UL;
+// ^ TO SAMO zrodlo, INNE pytanie, wiec INNA liczba — i to jest drugi swiadomy wyjatek.
+//   FLIGHT_STALE_MS wyzej ocenia wiersze NA EKRANIE SAMOLOTY. Ta stala ocenia pozycje
+//   "samoloty" na LISCIE ZRODEL (ekran diagnostyki, panel), gdzie 45 s bylo by alarmem
+//   o niczym: poza ekranem SAMOLOTY netTask lotow w ogole nie odpytuje. Skad 10 min:
+//   pelny obrot rotacji to 8 ekranow x dwellS (domyslnie 9 s, Settings.h) + dluzsze
+//   przystanki radaru (20 s) i lotow (15 s) — okolo 1,5 min, wiec przy wlaczonej
+//   rotacji ekran SAMOLOTY wraca mniej wiecej co poltorej minuty, czyli w 10 minutach
+//   dostaje ze szesc-siedem podejsc. 10 min bez ANI JEDNEGO udanego pobrania znaczy wiec
+//   albo wylaczona rotacje i brak dotkniec (sytuacja normalna, ale wtedy lista i tak
+//   nie klamie: pisze wiek), albo trwaly blad API. Nie da sie tego wyprowadzic z
+//   kadencji, bo kadencji tu po prostu nie ma — i tak to jest opisane, zamiast udawac.
+constexpr uint32_t BLE_STALE_MS = 15UL * 60UL * 1000UL;
+// ^ WYJATEK OD REGULY, celowy. Kadencja NASZEGO nasluchu to 4 s skanu co 20 s (netTask),
+//   czyli 2,5 x 20 s = 50 s — i taki prog bylby klamstwem, bo o tym, kiedy przyjdzie
+//   ramka, decyduje CZUJNIK, nie my. Zmierzone na zywo 16.08.2026 (/api/ble): wieki
+//   22, 23, 24 i 78 s — czyli pojedynczy czujnik potrafi milczec przez kilka naszych
+//   okien skanu przy zupelnie zdrowej baterii. 15 min to ~11x najgorszy zmierzony wiek:
+//   pokoj gasnie dopiero wtedy, gdy czujnik naprawde zamilkl. Liczba jest ta sama,
+//   co dotad wpisana w v3Home (900), tylko przeniesiona tutaj razem z uzasadnieniem.
+constexpr uint32_t MQTT_STALE_MS = 3UL * 60UL * 1000UL;
+// ^ kadencja 60 s: telemetria urzadzenia (kDevPublishMs w MqttClient.cpp) idzie co
+//   minute NIEZALEZNIE od tego, czy cokolwiek sie zmienilo, wiec to ona wyznacza
+//   rytm. 2,5 x 60 s = 150 s -> 3 min. Bylo: 900 s w panelu, czyli 15 pominietych
+//   publikacji z rzedu wygladalo na zdrowe polaczenie.
+
 constexpr int VIEW_COUNT = 13;  // RETRO / TERAZ / GODZINY / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / POWIETRZE / PAMIEC / RUCH / STATYSTYKI
 // v114: RETRO wszedl PIERWSZY w rotacji (wyrazne zyczenie wlasciciela — ma je
 // widziec zaraz po starcie, przed TERAZ). To przesuwa WSZYSTKIE pozostale numery

@@ -257,6 +257,16 @@ class WeatherUi {
   // co klatke; czyta touchTapV3/touchDoubleV3 — pierwszy dotyk w nocy ma WYBUDZIC na Glowny
   // (jasnosc kNightWakeBl), a nie przeskoczyc ekranu. Patrz render()/isNightNow().
   bool nightAsleep_ = false;
+  // (v158) true, gdy OSTATNIE pojedyncze stukniecie posluzylo do WYBUDZENIA ekranu
+  // nocnego (a nie do nawigacji). Potrzebne, odkad touch::poll() zglasza SINGLE
+  // natychmiast: dla gestu podwojnego przychodzi teraz SINGLE, a zaraz po nim
+  // DOUBLE, wiec bez tej flagi podwojne stukniecie w nocy najpierw budzilo ekran,
+  // a potem od razu wchodzilo w diagnostyke — czyli lamalo ustalenie wlasciciela
+  // "pierwsza interakcja w nocy TYLKO wybudza". Kasowana przez touchDoubleV3()
+  // (ktore wtedy nic wiecej nie robi) i przez kolejne stukniecie juz wybudzonego
+  // ekranu. Sam bool wystarczy — DOUBLE moze przyjsc wylacznie w oknie kDoubleMs
+  // po tym SINGLE, wiec nie ma czego przeterminowywac czasem.
+  bool v3WokeByTap_ = false;
   uint32_t viewStart_ = 0;
   uint32_t enterStart_ = 0;
   uint32_t transStart_ = 0;

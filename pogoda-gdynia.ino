@@ -2143,6 +2143,14 @@ void loop() {
   // widokow, 2x = wejscie/wyjscie z diagnostyki, powrot na GLOWNY po 60 s ciszy
   // (to ostatnie zalatwia render()). V1/V2 zostaja przy STARYM zachowaniu:
   // restartHold (odliczanie od nowa) / prevView (poprzedni) + auto-rotacja.
+  // (v158) SINGLE przychodzi teraz NATYCHMIAST po zboczu, a dla gestu podwojnego leci
+  // SINGLE, a zaraz po nim DOUBLE (patrz Touch.cpp). Ten switch NIE wymagal z tego
+  // powodu zadnej zmiany logiki, i to nie przypadek, tylko sprawdzona wlasciwosc obu
+  // sciezek: touchDoubleV3() ustawia widok BEZWZGLEDNIE (STATS albo GLOWNY), a
+  // prevView() (V1/V2) cofa o jeden wzgledem stanu PO restartHold(), ktore widoku nie
+  // rusza. W obu wygladach drugie zbocze wiec poprawnie NADPISUJE skutek pierwszego.
+  // Zmienil sie tylko log: dla gestu podwojnego stoja w nim teraz DWIE linie, i tak ma
+  // byc — widac wtedy, ze urzadzenie uslyszalo oba stukniecia, a nie jedno.
   const bool v3nav = settings().theme == 3;
   switch (touch::poll()) {
     case touch::Tap::SINGLE:
@@ -2150,16 +2158,19 @@ void loop() {
       else       { ui.restartHold();   LOG("Dotyk: odliczanie ekranu od nowa"); }
       break;
     case touch::Tap::DOUBLE:
-      if (v3nav) { ui.touchDoubleV3(); LOG("Dotyk V3 x2: diagnostyka"); }
+      if (v3nav) { ui.touchDoubleV3(); LOG("Dotyk V3 x2: diagnostyka (nadpisuje krok 1x)"); }
       else       { ui.prevView();      LOG("Dotyk x2: poprzedni ekran"); }
       break;
     default:
       break;
   }
-  // Kropka feedbacku V3: zapal ja NATYCHMIAST po surowym dotyku elektrody, zanim
-  // minie okno 550 ms rozroznienia 1x/2x. touch::pressedRaw() zwraca stan policzony
-  // w poll() wyzej (bez dodatkowego odczytu ADC). Tylko V3 rysuje kropke, wiec tylko
-  // tu ustawiamy znacznik — rawTouchMs_ w V1/V2 zostaje martwy.
+  // Kropka feedbacku V3: zapala sie na CZAS TRZYMANIA palca na elektrodzie. Do v157
+  // niosla takze role "cos sie dzieje, czekaj" — bo SINGLE szlo dopiero po 550 ms;
+  // teraz reakcja jest natychmiastowa, a kropka zostaje jako potwierdzenie kontaktu
+  // (przydatne, gdy palec lezy na pinie za dlugo i leci tylko jedno zbocze).
+  // touch::pressedRaw() zwraca stan policzony w poll() wyzej (bez dodatkowego odczytu
+  // ADC). Tylko V3 rysuje kropke, wiec tylko tu ustawiamy znacznik — rawTouchMs_
+  // w V1/V2 zostaje martwy.
   if (v3nav && touch::pressedRaw()) ui.noteRawTouch();
 
   // --- autotest diody RGB przy starcie (3 x 500 ms) ---

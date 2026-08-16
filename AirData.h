@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "Config.h"   // cfg::AIR_SAMPLE_STALE_S — prog swiezosci probki (jedno miejsce)
+
 // Jakosc powietrza — miejska siec czujnikow Gdyni (ARMAAG/sensorbox.pl).
 //
 // GA17 (Sandomierska 3, Maly Kack) to stacja GLOWNA — tam mieszka wlasciciel i o TA
@@ -13,8 +15,10 @@
 // Powyzej tego wieku probki PM z GA17 uznajemy stacje glowna za "milczaca" i
 // przelaczamy sie na GA24. ~3 h, bo dane to srednie GODZINOWE (nowa probka raz na
 // godzine) — dwie-trzy nieudane godziny z rzedu to juz realny problem stacji, nie
-// zwykly poslizg publikacji.
-constexpr uint32_t AIR_STALE_S = 3UL * 3600UL;
+// zwykly poslizg publikacji. (v158) Sama LICZBA przeniesiona do Config.h, do bloku
+// progow swiezosci — ta sama granica ocenia teraz probke w AirClient (GA17 -> GA24),
+// na ekranie POWIETRZE i w panelu, wiec ma stac w jednym miejscu razem z regula.
+constexpr uint32_t AIR_STALE_S = cfg::AIR_SAMPLE_STALE_S;
 
 struct AirModel {
   // false, dopoki ZADNA z dwoch stacji nie dala nic uzytecznego (ani jednej swiezej

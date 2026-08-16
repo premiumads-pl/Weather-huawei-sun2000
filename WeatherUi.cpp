@@ -2388,6 +2388,16 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
     uint32_t sig = 2166136261u;
     auto mix = [&](uint32_t x) { sig = (sig ^ x) * 16777619u; };
     mix(view_);
+    // (v158) Licznik "x z y" w lewym gornym rogu (drawV3). Mianownik zmienia sie SAM,
+    // bez zmiany widoku: przestaje padac -> RADAR wypada z petli, znika ostatni czujnik
+    // BLE -> wypadaja POKOJE. Bez tej linii pomijanie klatek trzymaloby na ekranie stary
+    // mianownik az do nastepnego taktu minuty (mix(nt/60) nizej), czyli licznik klamalby
+    // do 60 s. Koszt: osiem wywolan viewSkipped() na klatke, same odczyty pol.
+    {
+      int pcur = 0, ptot = 0;
+      v3ProgressPos(pcur, ptot);
+      mix(static_cast<uint32_t>(pcur + 1) | (static_cast<uint32_t>(ptot) << 8));
+    }
     const time_t nt = time(nullptr);
     mix(nt > 1700000000 ? static_cast<uint32_t>(nt / 60) : 0u);   // minuta (zegar)
     mix(blTarget_);                                               // dzien / polmrok / noc
@@ -4495,9 +4505,11 @@ void WeatherUi::touchTapV3() {
   // nawiguja normalnie. Decyzja "pierwszy dotyk budzi, nie skacze" — wg ustalen wlasciciela.
   if (nightAsleep_) {
     nightAsleep_ = false;
+    v3WokeByTap_ = true;   // gdyby zaraz przyszlo DOUBLE — ma tylko dokonczyc wybudzenie
     setViewV3(static_cast<uint8_t>(cfg::VIEW_NOW));
     return;
   }
+  v3WokeByTap_ = false;
   // W diagnostyce 1x przelacza STATS <-> MEM, nie rusza petli glownej (spec 7a).
   if (view_ == cfg::VIEW_STATS || view_ == cfg::VIEW_MEM) {
     setViewV3(view_ == cfg::VIEW_STATS ? cfg::VIEW_MEM : cfg::VIEW_STATS);
@@ -4528,6 +4540,14 @@ void WeatherUi::touchDoubleV3() {
   if (nightAsleep_) {
     nightAsleep_ = false;
     setViewV3(static_cast<uint8_t>(cfg::VIEW_NOW));
+    return;
+  }
+  // (v158) Ten sam gest, drugie zbocze: SINGLE juz poszlo i to ONO wybudzilo ekran
+  // (v3WokeByTap_). Bez tego warunku podwojne stukniecie w nocy budzilo i w tej samej
+  // chwili wchodzilo w diagnostyke — a ustalenie brzmi "pierwsza interakcja w nocy
+  // tylko wybudza". Konsumujemy flage i wychodzimy: ekran zostaje na GLOWNYM.
+  if (v3WokeByTap_) {
+    v3WokeByTap_ = false;
     return;
   }
   // 2x w diagnostyce wychodzi na GLOWNY; poza nia 2x wchodzi w diagnostyke (STATS).

@@ -39,6 +39,7 @@
 #include "GasMeter.h"
 #include "RadarMap.h"
 #include "SecureClient.h"   // YieldingSecureClient — geokoder w apiGeo() (patrz tam)
+#include "Touch.h"          // liczniki gestow -> /api/diag.touch (v158)
 #include "Viessmann.h"
 #include "Settings.h"
 #include "Version.h"
@@ -764,8 +765,9 @@ async function liveTick(){
  const s=d.sensors||{},pv=d.pv||{};
  const motion=s.pir?'● TERAZ':agoTxt(s.pir_last_s);
  let inv='—',invC='';
+ // (v158) prog z urzadzenia (pv.stale_s), a nie zaszyte 1800 s — patrz cfg::PV_STALE_MS.
  if(pv.asleep){inv='uśpiony (noc)';invC='hot';}
- else if(pv.ok_ago_s>=0&&pv.ok_ago_s<1800){inv='połączony';}
+ else if(pv.ok_ago_s>=0&&pv.ok_ago_s<(pv.stale_s==null?90:pv.stale_s)){inv='połączony';}
  else{inv='brak łączności';invC='bad';}
  // "Prad" (moc chwilowa) NIE jest w /api/diag — pokazujemy stan lacznosci falownika.
  const cards=[
@@ -781,13 +783,28 @@ async function liveTick(){
   const gw=x.gw?' · przez bramkę':'';
   return `<div class=frow><span class=fk>${esc(x.name)}</span><span>${stt} <span style="color:var(--mute)">(${agoTxt(x.age_s)}${gw})</span></span></div>`;
  }).join(''):'<div class=gnote>Brak nazwanych czujników (nadaj nazwy w zakładce „Czujniki”).</div>';
- const fresh=[['Pogoda',d.weather&&d.weather.ok_ago_s],['Falownik',pv.ok_ago_s],
-  ['Piec Viessmann',d.vi&&d.vi.ok_ago_s],['Powietrze',d.air&&d.air.ok_ago_s],
-  ['Radar opadów',d.radar&&d.radar.ok_ago_s],['Samoloty',d.flights&&d.flights.ok_ago_s],
-  ['MQTT',d.mqtt&&d.mqtt.ok_ago_s]];
- $('liveFresh').innerHTML=fresh.map(f=>{const v=(f[1]==null?-1:f[1]);
-  const c=v<0?'var(--mute)':(v<900?'var(--ok)':'var(--warn)');
-  return `<div class=frow><span class=fk>${f[0]}</span><span style="color:${c}">${agoTxt(v)}</span></div>`;}).join('');
+ // (v158) TRZY STANY i PROG Z URZADZENIA, nie jedna liczba na wszystko.
+ // Bylo: `v<900` dla kazdej z siedmiu pozycji — jeden kwadrans dla falownika
+ // odpytywanego co 30 s i dla pogody odpytywanej co 15 minut. Teraz prog przychodzi
+ // w polu stale_s z /api/diag (wyliczony z kadencji w Config.h), a stany sa trzy:
+ //   ok_ago_s < 0        -> "nigdy" (jeszcze nie pobrano), kolor wyciszony,
+ //   wiek < stale_s      -> zielony,
+ //   wiek >= stale_s     -> bursztynowy + jawnie dopisane "prog: N".
+ // Dopisek progu jest tu celowo: bez niego "12 min temu" na bursztynowo wyglada
+ // jak usterka panelu, a nie jak przekroczona granica, ktora ma konkretna wartosc.
+ const src=[['Pogoda',d.weather],['Falownik',pv],['Piec Viessmann',d.vi],
+  ['Powietrze',d.air],['Radar opadów',d.radar],['Samoloty',d.flights],['MQTT',d.mqtt]];
+ $('liveFresh').innerHTML=src.map(f=>{
+  const o=f[1]||{};
+  const v=(o.ok_ago_s==null?-1:o.ok_ago_s);
+  const lim=(o.stale_s==null?900:o.stale_s);
+  const old=v>=0&&v>=lim;
+  const c=v<0?'var(--mute)':(old?'var(--warn)':'var(--ok)');
+  // Prog piszemy WLASNYM formatem, nie przez agoTxt(): agoTxt mowi "przed chwilą"
+  // dla wszystkiego ponizej minuty, a prog 45 s to konkretna liczba, nie odczucie.
+  const lt=lim<60?lim+' s':(lim<3600?Math.round(lim/60)+' min':Math.round(lim/3600)+' h');
+  const note=old?` <span style="color:var(--mute)">(próg ${lt})</span>`:'';
+  return `<div class=frow><span class=fk>${f[0]}</span><span style="color:${c}">${agoTxt(v)}${note}</span></div>`;}).join('');
  if($('liveDot'))$('liveDot').textContent='● odświeżono '+new Date().toLocaleTimeString('pl-PL');
 }
 // --- OBECNOSC · SWIATLO · RUCH (integracja prototypu): logika i wyglad z prototypu, dane
@@ -1025,9 +1042,12 @@ async function diagPills(){
   $('up').textContent=fmtUptime(d.uptime_s||0);
   if(d.reset)$('stab').textContent=d.reset.was_crash?'po awarii':'stabilna';
   if(d.pv){
-   const p=d.pv;let t='❌ brak łączności',c='err';
+   // (v158) Bylo 1800 s (pol godziny!) przy kadencji 30 s — falownik milczacy od
+   // 25 minut mial w pasku status "✓ połączony". Teraz prog przychodzi z urzadzenia
+   // (pv.stale_s = 90 s w dzien, 15 min gdy asleep) — patrz cfg::PV_STALE_MS.
+   const p=d.pv,plim=(p.stale_s==null?90:p.stale_s);let t='❌ brak łączności',c='err';
    if(p.asleep){t='uśpiony (noc)';c='warn';}
-   else if(p.ok_ago_s>=0&&p.ok_ago_s<1800){t='✓ połączony';c='ok';}
+   else if(p.ok_ago_s>=0&&p.ok_ago_s<plim){t='✓ połączony';c='ok';}
    $('sInv').textContent=t;$('sInv').className='sig '+c;
   }
  }catch(e){}
@@ -1306,14 +1326,19 @@ async function fails(){
   let pt='Falownik nie połączył się '+cf+' '+razy(cf)+' (brak sesji), '
    +'milczał '+sf+' '+razy(sf)+' (sesja żyła, rejestry nie odpowiadały)';
   if(mr>0)pt+=', brakowało rejestru mocy '+mr+' '+razy(mr);
+  // (v158) Te same progi z urzadzenia, co w liscie swiezosci wyzej i w pasku statusu
+  // — do v157 staly tu wpisane 1800 (falownik) i 900 (piec), czyli 60 i 5 kadencji.
+  const pvLim=(pv.stale_s==null?90:pv.stale_s);
+  const pvOk=pv.ok_ago_s>=0&&pv.ok_ago_s<pvLim;
   pt+='. Nocą falownik bywa uśpiony (Huawei wyłącza Modbus) — to normalne. Teraz: '
-   +(pv.ok_ago_s>=0&&pv.ok_ago_s<1800?'połączony.':(pv.asleep?'uśpiony (noc).':'brak łączności.'));
-  h+=fblock('Falownik (Modbus)',pt,(pv.ok_ago_s>=0&&pv.ok_ago_s<1800)||pv.asleep?'ok':'warn');
+   +(pvOk?'połączony.':(pv.asleep?'uśpiony (noc).':'brak łączności.'));
+  h+=fblock('Falownik (Modbus)',pt,(pvOk||pv.asleep)?'ok':'warn');
   const vi=d.vi;
   if(vi){
+   const viLim=(vi.stale_s==null?480:vi.stale_s);
    const t=(vi.ok_ago_s<0?'Jeszcze nieodpytywany. ':('Ostatni odczyt '+agoTxt(vi.ok_ago_s)+'. '))
     +(vi.err?('Ostatni błąd: '+vi.err+'.'):'Bez błędów.');
-   h+=fblock('Piec Viessmann (chmura)',t,vi.ok_ago_s>=0&&vi.ok_ago_s<900?'ok':'warn');
+   h+=fblock('Piec Viessmann (chmura)',t,vi.ok_ago_s>=0&&vi.ok_ago_s<viLim?'ok':'warn');
   }
   o.innerHTML=h;
  }catch(e){o.innerHTML='<div class="hint err">Nie udało się odczytać stanu.</div>';}
@@ -2081,12 +2106,23 @@ void apiDiag() {
   w["channel"] = WiFi.channel();
   w["roams"] = d.wifiRoams;
 
+  // (v158) Kazde zrodlo dostaje obok wieku SWOJ PROG SWIEZOSCI w sekundach
+  // (stale_s). To NIE jest ozdobnik: do v157 panel malowal wszystkie siedem pozycji
+  // listy "swiezosc zrodel" jednym progiem 900 s, przez co falownik (kadencja 30 s)
+  // uchodzil za zdrowy po 14 minutach milczenia, a pogoda (kadencja 15 min) robila
+  // sie czerwona po jednym poslizgu. Wysylanie progu z urzadzenia zamiast wpisania
+  // go do JavaScriptu zostawia JEDNO zrodlo prawdy — Config.h — i sprawia, ze
+  // zmiana progu nie wymaga pamietania o drugim pliku.
   JsonObject we = j["weather"].to<JsonObject>();
   we["ok_ago_s"] = ago(d.weatherOkAt);
+  we["stale_s"] = cfg::WEATHER_STALE_MS / 1000;
   we["err"] = d.weatherErr;
 
   JsonObject pv = j["pv"].to<JsonObject>();
   pv["ok_ago_s"] = ago(d.pvOkAt);
+  // Prog falownika zalezy od pory doby — po zachodzie netTask sam schodzi z 30 s na
+  // 5 min (PV_REFRESH_NIGHT_MS), wiec nocny odczyt sprzed 4 minut jest zdrowy.
+  pv["stale_s"] = (d.pvAsleep ? cfg::PV_STALE_NIGHT_MS : cfg::PV_STALE_MS) / 1000;
   pv["err"] = d.pvErr;
   pv["asleep"] = d.pvAsleep;   // noc: Huawei wyłącza Modbus TCP — to nie awaria
 
@@ -2157,6 +2193,7 @@ void apiDiag() {
   // (Viessmann.h) i lokalna zmienna zaslonilaby ja w calej tej funkcji.
   JsonObject pc = j["vi"].to<JsonObject>();
   pc["ok_ago_s"] = ago(d.viOkAt);
+  pc["stale_s"] = cfg::VI_STALE_MS / 1000;
   pc["err"] = d.viErr;
   pc["dhw"] = d.viDhwC;
   pc["sup"] = d.viSupplyC;
@@ -2232,6 +2269,7 @@ void apiDiag() {
 
   JsonObject r = j["radar"].to<JsonObject>();
   r["ok_ago_s"] = ago(d.radarOkAt);
+  r["stale_s"] = cfg::RADAR_STALE_MS / 1000;
   r["level"] = d.radarLevel;
   r["frame_age_s"] = d.radarAgeSec;
   r["skips_low_ram"] = d.radarSkips;
@@ -2268,6 +2306,10 @@ void apiDiag() {
 
   JsonObject f = j["flights"].to<JsonObject>();
   f["ok_ago_s"] = ago(d.flightOkAt);
+  // Prog LISTY ZRODEL (10 min), a nie ekranu SAMOLOTY (45 s) — poza tym ekranem loty
+  // nie sa odpytywane w ogole, wiec 45 s w panelu bylo by alarmem o niczym. Patrz
+  // uzasadnienie przy obu stalych w Config.h.
+  f["stale_s"] = cfg::FLIGHT_LIST_STALE_MS / 1000;
   f["total"] = d.flightsTotal;
   f["err"] = d.flightErr;
 
@@ -2283,6 +2325,12 @@ void apiDiag() {
   // ostatnie prawdziwe.
   JsonObject air = j["air"].to<JsonObject>();
   air["ok_ago_s"] = ago(d.airOkAt);
+  // DWA rozne progi dla dwoch roznych wiekow, bo to dwa rozne pytania:
+  // stale_s dotyczy NASZEGO pobrania (ok_ago_s, kadencja 15 min), a sample_stale_s
+  // wieku PROBKI ze stacji (sample_age_s, srednie godzinowe). Mozna miec swieze
+  // pobranie i trzygodzinna probke — i to nie jest sprzecznosc, tylko cudzy serwer.
+  air["stale_s"] = cfg::AIR_FETCH_STALE_MS / 1000;
+  air["sample_stale_s"] = cfg::AIR_SAMPLE_STALE_S;
   air["err"] = d.airErr;
   air["fallback"] = d.airFallback;      // true = na ekranie GA24 (Halicka)
   air["station"] = d.airStation;        // "SANDOMIERSKA" / "HALICKA" / ""
@@ -2441,9 +2489,33 @@ void apiDiag() {
   m["port"] = settings().mqttPort;
   m["prefix"] = settings().mqttPrefix;
   m["ok_ago_s"] = ago(d.mqttOkAt);
+  // Prog liczony od telemetrii urzadzenia, ktora leci co 60 s niezaleznie od reszty
+  // (kDevPublishMs w MqttClient.cpp) — to ona wyznacza rytm, a nie publikacje
+  // zdarzeniowe. Patrz cfg::MQTT_STALE_MS.
+  m["stale_s"] = cfg::MQTT_STALE_MS / 1000;
   m["connects"] = d.mqttConnects;
   m["published"] = d.mqttPublished;
   m["err"] = d.mqttErr;
+
+  // --- DOTYK GPIO7: ile gestow policzylismy i ile ODRZUCILISMY ---
+  // (v158) Do v157 nie bylo TU NICZEGO, a w logu widac bylo wylacznie stukniecia
+  // UDANE ("Dotyk V3: nastepny ekran"). Zgloszenie "pojedyncze stukniecia nie zawsze
+  // przelaczaja ekran" bylo wiec nieweryfikowalne: nie istnial ani jeden licznik,
+  // ktory rosl by przy stuknieciu zignorowanym. Teraz sa trzy:
+  //   taps    — zbocza przyjete jako gest (kazde daje SINGLE),
+  //   doubles — z tego zamkniete jako gest podwojny (w oknie kDoubleMs),
+  //   bounced — zbocza ODRZUCONE przez debounce kHoldOffMs (120 ms).
+  // Rosnace `bounced` przy niezmiennym `taps` = elektroda drga albo palec odbija;
+  // rosnace `doubles` przy skargach na nawigacje = wlasciciel stuka szybciej, niz
+  // chcialby, zeby urzadzenie liczylo. Do wglad w /api/diag, nic nie zajmuje na ekranie.
+  JsonObject tch = j["touch"].to<JsonObject>();
+  tch["taps"] = touch::taps();
+  tch["doubles"] = touch::doubles();
+  tch["bounced"] = touch::bounced();
+  tch["double_ms"] = touch::doubleWindowMs();   // okno na drugie stukniecie
+  tch["holdoff_ms"] = touch::holdOffMs();       // debounce
+  tch["raw"] = touch::raw();
+  tch["baseline"] = touch::baseline();
 
   // --- czujniki v100 (surowy odczyt do testu) ---
   // ldr_raw rosnie z jasnoscia (dzielnik: jasno => R_LDR male => napiecie wyzsze).
@@ -3226,7 +3298,11 @@ void apiViState() {
   // "czy dane sa aktualne". Dopiero brak swiezosci = odswiezanie realnie zawodzi.
   const int32_t dms = static_cast<int32_t>(millis() - d.viOkAt);
   const int okAgo = d.viOkAt == 0 ? -1 : (dms < 0 ? 0 : dms / 1000);
-  o["ok"] = okAgo >= 0 && okAgo < 900;   // 15 min = 5 nieudanych cykli z rzedu
+  // (v158) Prog przeniesiony do Config.h jako cfg::VI_STALE_MS (8 min = 2,5 x kadencja
+  // 3 min, czyli trzecia nieudana proba z rzedu przy ponowieniu co 120 s). Bylo 900 s
+  // wpisane tutaj i osobno 900 w JavaScripcie panelu — dwie kopie tej samej decyzji.
+  o["ok"] = okAgo >= 0 && static_cast<uint32_t>(okAgo) < cfg::VI_STALE_MS / 1000;
+  o["stale_s"] = cfg::VI_STALE_MS / 1000;
   o["ok_ago_s"] = okAgo;
   o["err"] = d.viErr;                    // ostatni blad — do pokazania, gdy dane stare
   o["dhw"] = d.viDhwC;

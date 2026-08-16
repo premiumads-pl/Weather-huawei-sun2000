@@ -72,18 +72,50 @@ using tv3::scale5;
 
 float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
-// Pogoda "swieza": pobrana i nie starsza niz 2 cykle odswiezania (2 x WEATHER_REFRESH_MS
-// = 30 min). Po zaniku sieci netTask NIE nadpisuje gWeather — ostatnia prognoza zostaje z
+// --- TRZY STANY SWIEZOSCI (v158) ----------------------------------------------
+// Do v157 ekrany mialy tylko DWA stany do dyspozycji: "sa dane" i "nie ma danych",
+// przez co "jeszcze nie pobrano" (swiezy start) wygladalo dokladnie tak samo jak
+// "mamy dane sprzed godziny". Ponizsza para helperow rozdziela to na trzy:
+//   (a) okAt == 0            -> Fresh::UNKNOWN  — nigdy nie pobrano
+//   (b) wiek < prog          -> Fresh::OK       — dane biezace
+//   (c) wiek >= prog         -> Fresh::STALE    — mamy dane, ale przeterminowane
+// Progi ida WYLACZNIE z cfg::*_STALE_MS (Config.h) — zaden ekran nie ma juz prawa
+// wpisac wlasnej liczby.
+//
+// Wiek liczymy ZE ZNAKIEM na int32: znaczniki to millis() pisany przez netTask,
+// a uint32 przekreca sie po ~49 dniach pracy. Ujemna roznica (chwila po przekrece
+// albo znacznik z przyszlosci przy wyscigu odczytu) ma znaczyc "swieze", a nie
+// "starsze niz wszechswiat" — ten sam idiom, co ago() w Portal.cpp.
+// Stan (a) i (b)/(c) rozdziela sam WOLAJACY — kazdy ekran ma dla "nigdy nie pobrano"
+// wlasny napis ("czekam na dane", "nieodpytywane", "- czekam"), wiec wspolnego
+// freshState() zwracajacego Fresh::UNKNOWN NIE MA: bylby funkcja bez ani jednego
+// uzytkownika, a takie w tym repo nie zostaja (patrz notatki przy skasowanych stalych
+// w Config.h). Tu liczymy wylacznie granice miedzy (b) a (c).
+bool freshMs(uint32_t okAt, uint32_t staleMs) {
+  if (okAt == 0) return false;
+  return static_cast<int32_t>(millis() - okAt) < static_cast<int32_t>(staleMs);
+}
+
+// Pogoda "swieza": pobrana i nie starsza niz cfg::WEATHER_STALE_MS (40 min = 2,5 kadencji
+// 15-minutowej; regula i wyliczenie stoja przy stalej w Config.h — do v157 bylo tu wpisane
+// wprost 2 x WEATHER_REFRESH_MS, czyli 30 min, i byla to JEDYNA definicja swiezosci pogody
+// w calym projekcie). Po zaniku sieci netTask NIE nadpisuje gWeather — ostatnia prognoza zostaje z
 // ready==true, wiec sam `ready` NIE odroznia swiezej prognozy od godzinami nieaktualnej.
 // Trzeba spojrzec na wiek ostatniego udanego pobrania: diag().weatherOkAt (millis) pisze
 // netTask, odczyt uint32 jest atomowy, a ageMs liczymy ZE ZNAKIEM (idiom ago() z
 // Portal.cpp — po ~49 dniach uint32 sie przekreca, ujemny wiek traktujemy jak "swiezy").
-// TEN SAM wzor, co interpolacja chmur radaru w pogoda-gdynia.ino. Gdy nieswieza, ekrany
-// rysuja "—"/placeholder (makieta 21) zamiast starych liczb — spojnie z Fresh::STALE.
+// TEN SAM wzor, co interpolacja chmur radaru w pogoda-gdynia.ino.
 bool wxFresh() {
+  return freshMs(diag().weatherOkAt, cfg::WEATHER_STALE_MS);
+}
+
+// Wiek pogody w SEKUNDACH (0, gdy nigdy nie pobrano) — do dopisku "sprzed X min"
+// przy nieswiezej prognozie. Ten sam idiom ze znakiem, co freshMs.
+uint32_t wxAgeS() {
   const uint32_t okAt = diag().weatherOkAt;
+  if (okAt == 0) return 0;
   const int32_t ageMs = static_cast<int32_t>(millis() - okAt);
-  return okAt != 0 && ageMs < static_cast<int32_t>(2 * cfg::WEATHER_REFRESH_MS);
+  return ageMs > 0 ? static_cast<uint32_t>(ageMs) / 1000u : 0u;
 }
 
 // Stan swiezosci pogody dla kropki freshDot: UNKNOWN gdy nigdy nie pobrano, OK gdy
@@ -92,6 +124,22 @@ bool wxFresh() {
 Fresh wxFreshState(const WeatherModel& w) {
   if (!w.ready) return Fresh::UNKNOWN;
   return wxFresh() ? Fresh::OK : Fresh::STALE;
+}
+
+// Powietrze ma DWA rozne wieki i mylenie ich jest latwe: wiek NASZEGO pobrania
+// (diag().airOkAt, prog cfg::AIR_FETCH_STALE_MS) i wiek PROBKI ze stacji
+// (a.sampleEpoch, prog cfg::AIR_SAMPLE_STALE_S). Dla patrzacego na ekran liczy sie
+// ten drugi: mozemy odpytywac ARMAAG co kwadrans z pelnym powodzeniem, a stacja i tak
+// oddaje ta sama trzygodzinna srednia. Dlatego ekrany pytaja o probke — a pobranie
+// widac w /api/diag i na ekranie diagnostyki.
+// sampleEpoch to EPOCH (nie millis!), wiec wymaga czasu z NTP; bez niego nie mamy jak
+// policzyc wieku i nie udajemy, ze mamy — zwracamy false (czyli "stara"), bo brak
+// zegara to takze brak dowodu na swiezosc.
+bool airSampleFresh(const AirModel& a) {
+  const time_t now = time(nullptr);
+  if (now <= 1700000000 || a.sampleEpoch == 0) return false;
+  const time_t se = static_cast<time_t>(a.sampleEpoch);
+  return se <= now && (now - se) < static_cast<time_t>(cfg::AIR_SAMPLE_STALE_S);
 }
 
 // "%.1f" z polskim przecinkiem dziesietnym (mockupy: "3,2 kW", "22,4 st").
@@ -306,7 +354,13 @@ void darkHeader(TFT_eSPI& s, const char* label, const char* right) {
 // Makieta 01 (warianty 06/09/17/21). Dwie kolumny: ciemny kontekst + jasne dane.
 
 // Rysuje maly wykres opadu 12 h w kolumnie danych.
-void precipChart(TFT_eSPI& s, const WeatherModel& w, int x, int y, int wdt, int hgt) {
+// `muted` = prognoza przeterminowana: slupki rysujemy nadal (to wciaz jedyne, co
+// wiemy o najblizszych godzinach), ale WSZYSTKIE w kolorze linii pomocniczej, bez
+// niebieskiej skali intensywnosci. Kolor niesie tu znaczenie ("mocny opad"), a przy
+// starych danych bylby obietnica, ktorej nie mamy czym pokryc — ksztalt zostaje,
+// obietnica znika. To ten sam zabieg, co "-" zamiast liczb na ekranie 5 DNI.
+void precipChart(TFT_eSPI& s, const WeatherModel& w, int x, int y, int wdt, int hgt,
+                 bool muted) {
   const int n = WX_HOURS;
   const int pitch = wdt / n;
   const int bw = pitch - 4 > 3 ? pitch - 4 : 3;
@@ -325,7 +379,8 @@ void precipChart(TFT_eSPI& s, const WeatherModel& w, int x, int y, int wdt, int 
     if (bh <= 0) {
       s.drawFastHLine(bx, base - 1, bw, col::LINE);
     } else {
-      const uint16_t cc = h.precipMm >= 0.5f ? col::RAIN : (prob >= 50 ? col::RAIN2 : col::RAIN3);
+      const uint16_t cc = muted ? col::LINE
+                        : (h.precipMm >= 0.5f ? col::RAIN : (prob >= 50 ? col::RAIN2 : col::RAIN3));
       s.fillRect(bx, base - bh, bw, bh, cc);
     }
   }
@@ -486,10 +541,20 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
     }
   }
 
-  // haveWx wymaga TAKZE swiezosci (wxFresh): po zaniku sieci gWeather.ready zostaje
-  // true ze starymi liczbami — bez wxFresh ekran pokazywalby nieaktualna temperature
-  // jako biezaca. Nieswieza/niepobrana -> galaz placeholdera (makieta 21), nie liczby.
-  const bool haveWx = w.ready && w.current.valid && wxFresh();
+  // (v158) TRZY STANY, NIE DWA. Do v157 haveWx wymagalo TAKZE swiezosci, wiec
+  // prognoza starsza niz prog znikala z ekranu razem z glifem i temperatura, a na jej
+  // miejsce wchodzil placeholder "prognoza / nieaktualna". To bylo uczciwe (nic nie
+  // klamalo), ale WYRZUCALO informacje, ktora nadal cos znaczy: 20 minut po progu
+  // temperatura sprzed godziny to wciaz lepsza odpowiedz na pytanie "ile jest na
+  // dworze" niz pusty prostokat. Teraz stara wartosc ZOSTAJE, ale jest wyraznie
+  // oznaczona: caly blok schodzi na ONDARK_DIM (zamiast pelnego ONDARK), a linia
+  // "odczuwalna X°" ustepuje miejsca wiekowi ("sprzed 52 min") w col::WARN — kolorze,
+  // ktory paleta V3 opisuje wprost jako "nieswieze / uwaga". Zero nowych wierszy:
+  // wiek zajmuje wiersz, ktory i tak tam byl.
+  // Placeholder (makieta 21) zostaje dla stanu, w ktorym danych NIE MA WCALE.
+  const bool haveWx = w.ready && w.current.valid;
+  const bool wxOld = haveWx && !wxFresh();
+  const uint16_t wxMain = wxOld ? col::ONDARK_DIM : col::ONDARK;
   if (haveWx) {
     const auto& c = w.current;
 
@@ -501,18 +566,27 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
     // sie nad nia, a na sama gore liczby spadaly tylko krople.
     char big[12];
     snprintf(big, sizeof(big), "%.0f°", c.tempC);
-    plex::str(s, plex::f52(), big, grid::MARGIN_CTX, 156, col::ONDARK);
+    plex::str(s, plex::f52(), big, grid::MARGIN_CTX, 156, wxMain);
 
+    // Ten sam wiersz (baseline 178) niesie DWIE rozne prawdy zaleznie od stanu:
+    // swieza prognoza -> odczuwalna; przeterminowana -> jej wiek. Szerokosci w f13
+    // policzone: "odczuwalna -12°" = 91 px, najdluzszy wariant wieku "sprzed 89 min"
+    // = 80 px; kolumna kontekstu daje 104 px (od MARGIN_CTX=8 do CTX_W-8=112).
     char feels[24];
-    snprintf(feels, sizeof(feels), "odczuwalna %.0f°", c.feelsC);
-    plex::str(s, plex::f13(), feels, grid::MARGIN_CTX, 178, col::ONDARK_DIM);
+    if (wxOld) {
+      agoWords(feels, sizeof(feels), wxAgeS());
+      plex::str(s, plex::f13(), feels, grid::MARGIN_CTX, 178, col::WARN);
+    } else {
+      snprintf(feels, sizeof(feels), "odczuwalna %.0f°", c.feelsC);
+      plex::str(s, plex::f13(), feels, grid::MARGIN_CTX, 178, col::ONDARK_DIM);
+    }
 
     // Opis pogody - zawijany do dwoch linii, gdy nie miesci sie w kolumnie. Nawet dluzszy
     // ("Częściowe zachmurzenie") miesci sie: druga linia na y=208 (<240).
     const char* desc = wxico::labelForCode(c.weatherCode, !c.isDay);
     const int maxw = grid::CTX_W - 2 * grid::MARGIN_CTX;
     if (plex::width(plex::f13(), desc) <= maxw) {
-      plex::str(s, plex::f13(), desc, grid::MARGIN_CTX, 196, col::ONDARK);
+      plex::str(s, plex::f13(), desc, grid::MARGIN_CTX, 196, wxMain);
     } else {
       char l1[32] = {}, l2[32] = {};
       const char* sp = strrchr(desc, ' ');
@@ -523,8 +597,8 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
       } else {
         snprintf(l1, sizeof(l1), "%s", desc);
       }
-      plex::str(s, plex::f13(), l1, grid::MARGIN_CTX, 194, col::ONDARK);
-      if (l2[0]) plex::str(s, plex::f13(), l2, grid::MARGIN_CTX, 208, col::ONDARK);
+      plex::str(s, plex::f13(), l1, grid::MARGIN_CTX, 194, wxMain);
+      if (l2[0]) plex::str(s, plex::f13(), l2, grid::MARGIN_CTX, 208, wxMain);
     }
 
     // GLIF NA WIERZCHU (po liczbie): chmura ~y60..108 (nad temperatura, ktorej gora
@@ -532,15 +606,19 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
     // i przezroczyscie, jak chcial wlasciciel.
     wx::glyph(s, c.weatherCode, !c.isDay, 62, 86, 24, false);   // cy 84->86: gorny promien slonca schodzi pod date (patrz K3)
   } else {
-    // Mockup 21: pogoda nie pobrana / nieaktualna - placeholder zamiast glifu i temperatury.
+    // Mockup 21: pogoda nie pobrana - placeholder zamiast glifu i temperatury.
     s.drawRect(grid::MARGIN_CTX, 66, 60, 46, col::ONDARK_DIM);
     s.drawFastHLine(grid::MARGIN_CTX + 8, 130, 40, col::ONDARK_DIM);
     s.fillCircle(grid::MARGIN_CTX + 48, 130, 4, col::ONDARK_DIM);
-    // Rozroznienie stanu: mielismy prognoze i sie zestarzala (STALE) vs nigdy nie doszla
-    // (UNKNOWN). "brak internetu" bylby klamstwem, gdy siec dziala, a milczy tylko API.
+    // (v158) Ta galaz obsluguje juz TYLKO brak danych — przeterminowana prognoza idzie
+    // wyzej, ze swoja ostatnia wartoscia i wiekiem. Zostaly dwa przypadki i oba maja
+    // WLASNY napis, bo to dwie rozne usterki: odpowiedz przyszla, ale bez biezacego
+    // pomiaru (w.ready, current.valid == false — Open-Meteo potrafi oddac same
+    // prognozy godzinowe) kontra nie doszlo nic (swiezy start, brak sieci).
+    // "brak internetu" bylby klamstwem, gdy siec dziala, a milczy tylko API.
     if (w.ready) {
       plex::str(s, plex::f13(), "prognoza", grid::MARGIN_CTX, 176, col::ONDARK_DIM);
-      plex::str(s, plex::f13(), "nieaktualna", grid::MARGIN_CTX, 194, col::MUTE);
+      plex::str(s, plex::f13(), "bez pomiaru", grid::MARGIN_CTX, 194, col::MUTE);
     } else {
       // "czekam na prognozę" (f13 = 118 px) wychodzilo poza ciemna kolumne (x=8..119,
       // budzet 111 px) — jasnoszary ogon na jasnym tle. Krotsze "czekam na dane" (93 px)
@@ -566,7 +644,10 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
       }
     char hint[24];
     if (!w.ready) snprintf(hint, sizeof(hint), "jeszcze nie pobrany");
-    else if (!wxFresh()) snprintf(hint, sizeof(hint), "nieaktualna");
+    // (v158) Zamiast slowa "nieaktualna" — WIEK. Slowo mowilo tylko tyle, ze cos jest
+    // nie tak; liczba mowi, czy chodzi o kwadrans (siec sie zacina) czy o pol dnia
+    // (API padlo albo router stoi). Kropka obok i tak jest juz bursztynowa.
+    else if (!wxFresh()) agoWords(hint, sizeof(hint), wxAgeS());
     else if (bestProb >= 20 && bestHour >= 0)
       snprintf(hint, sizeof(hint), "~%d:00 · %d%%", bestHour, bestProb);
     else snprintf(hint, sizeof(hint), "sucho");
@@ -575,7 +656,7 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
     rx -= 12;
     plex::strRight(s, plex::f13(), hint, rx, 26, col::MUTE);
   }
-  precipChart(s, w, grid::DATA_L, 40, grid::DATA_W - 2 * grid::MARGIN, 34);
+  precipChart(s, w, grid::DATA_L, 40, grid::DATA_W - 2 * grid::MARGIN, 34, !wxFresh());
 
   moduleSep(s, 92);
 
@@ -590,7 +671,13 @@ void v3MainBottom(TFT_eSPI& tft, const AirModel* air) {
   // Trzeci modul: POWIETRZE (mockup 01/09/17/21).
   plex::str(tft, plex::f11(), "POWIETRZE", grid::DATA_L, 226, col::SECOND);
   if (air && air->ready) {
-    const uint16_t bc = airCol(air->index);
+    // (v158) Stan (c) dla powietrza: probka starsza niz cfg::AIR_SAMPLE_STALE_S (3 h)
+    // dostaje plakietke w kolorze linii zamiast w kolorze klasy. Klasa ("BARDZO DOBRE")
+    // zostaje — nadal jest to ostatnia znana prawda — ale traci kolor, ktory na tym
+    // ekranie jest calym komunikatem (zielony = mozna otworzyc okno). Zaden nowy
+    // element sie nie pojawia: ta sama pigulka, inne wypelnienie.
+    const bool airOld = !airSampleFresh(*air);
+    const uint16_t bc = airOld ? col::LINE : airCol(air->index);
     // Sama KLASA jakosci, bez "· liczba". Wlasciciel pytal, skad ta kropka i po co —
     // to byl separator przed wartoscia PM, ktora i tak jest na ekranie POWIETRZE.
     // Bez niej plakietka jest czysta i nie ma sierocego "·".
@@ -600,7 +687,9 @@ void v3MainBottom(TFT_eSPI& tft, const AirModel* air) {
     // Plakietka wyrownana do linii "POWIETRZE": tekst na baseline 226 (jak etykieta),
     // pigulka wysrodkowana wzgledem niego — wczesniej tekst byl 2 px nizej.
     tft.fillRoundRect(bx, 215, tw + 14, 17, 5, bc);
-    plex::str(tft, plex::f11(), nm, bx + 7, 226, col::BG);
+    // Na wyszarzonej pigulce jasny napis (col::BG) znika — LINE to #BCBFB6, czyli
+    // niemal ta sama jasnosc. Stary napis dostaje wiec ciemny tekst panelu.
+    plex::str(tft, plex::f11(), nm, bx + 7, 226, airOld ? col::PANEL : col::BG);
   } else {
     freshDot(tft, grid::DATA_R - 3, 222, Fresh::UNKNOWN);
     plex::strRight(tft, plex::f13(), "brak danych", grid::DATA_R - 12, 226, col::MUTE);
@@ -714,7 +803,11 @@ void v3Radar(TFT_eSPI& s, const WeatherModel& w, const RadarViewModel* rmp) {
         char full[40];
         snprintf(full, sizeof(full), "pomiar punktowy %s", r);
         int rx = grid::W - grid::MARGIN;
-        freshDot(s, rx - 3, 16, w.radarAgeSec < 1200 ? Fresh::OK : Fresh::STALE);
+        // (v158) Bylo: 1200 (20 min) wpisane liczba. Teraz cfg::RADAR_STALE_MS (15 min
+        // = 2,5 x kadencja 5 min). radarAgeSec to wiek POMIARU RainViewera, wiec
+        // porownujemy sekundy z sekundami.
+        freshDot(s, rx - 3, 16,
+                 w.radarAgeSec < cfg::RADAR_STALE_MS / 1000 ? Fresh::OK : Fresh::STALE);
         rx -= 12;
         plex::strRight(s, plex::f13(), full, rx, 20, col::ONDARK_DIM);
       }
@@ -798,19 +891,31 @@ void v3Radar(TFT_eSPI& s, const WeatherModel& w, const RadarViewModel* rmp) {
 
   {
     // Wiek najnowszej klatki (frameEpoch) - "pomiar sprzed X min".
+    // (v158) BLAD DO NAPRAWY, nie kosmetyka: kropka stanu pokazywala `rm.hasRain`,
+    // czyli "czy na mapie jest opad", a nie "czy mapa jest swieza". W praktyce
+    // znaczyla wiec: sucho -> bursztynowa (alarm o niczym), ulewa sprzed dwoch
+    // godzin -> zielona (klamstwo). Zielona kropka ma znaczyc JEDNO: dane sa
+    // biezace. Teraz liczy sie od frameEpoch, tak samo jak napis obok, i przez ten
+    // sam prog cfg::RADAR_MAP_STALE_S (30 min = 2,5 x klatka 10-minutowa).
+    // frameEpoch == 0 albo brak NTP = nie wiemy, ile ma lat -> UNKNOWN (brak kropki),
+    // a nie zgadywanie w ktoras strone.
     char age[28] = "pomiar";
+    Fresh mapFresh = Fresh::UNKNOWN;
     if (rm.frameEpoch > 0) {
       const time_t now = time(nullptr);
       if (now > 1700000000 && now >= static_cast<time_t>(rm.frameEpoch)) {
+        const uint32_t ageS = static_cast<uint32_t>(now - static_cast<time_t>(rm.frameEpoch));
         char a[24];
-        agoWords(a, sizeof(a), static_cast<uint32_t>(now - static_cast<time_t>(rm.frameEpoch)));
+        agoWords(a, sizeof(a), ageS);
         snprintf(age, sizeof(age), "pomiar %s", a);
+        mapFresh = ageS < cfg::RADAR_MAP_STALE_S ? Fresh::OK : Fresh::STALE;
       }
     }
     int rx = grid::W - grid::MARGIN;
-    freshDot(s, rx - 3, 16, rm.hasRain ? Fresh::OK : Fresh::STALE);
+    freshDot(s, rx - 3, 16, mapFresh);
     rx -= 12;
-    plex::strRight(s, plex::f13(), age, rx, 20, col::ONDARK_DIM);
+    plex::strRight(s, plex::f13(), age, rx, 20,
+                   mapFresh == Fresh::STALE ? col::WARN : col::ONDARK_DIM);
   }
   plex::str(s, plex::f13(), "brzeg · polilinia · Gdynia ~300 km", grid::MARGIN, 36, col::BORDER);
 
@@ -1019,8 +1124,20 @@ void v3Pv(TFT_eSPI& s, const PvModel& pv, const PvHistory& hist) {
       snprintf(hr, sizeof(hr), "odczyt %02d:%02d", tmv.tm_hour, tmv.tm_min);
     }
   }
+  // (v158) `pv.online` mowi tylko tyle, ze OSTATNI odczyt sie udal — nie mowi, kiedy
+  // to bylo. Dokladamy wiek: falownik odpytywany co 30 s (w nocy co 5 min), wiec
+  // odczyt starszy niz cfg::PV_STALE_MS (90 s) / cfg::PV_STALE_NIGHT_MS (15 min)
+  // znaczy, ze netTask nie doszedl do tego bloku — a wtedy "odczyt 14:32" bez ostrzezenia
+  // wygladalo na biezaca moc. Kropka OK dostaje wiec dodatkowy warunek.
+  // UWAGA: to nie jest pelne rozroznienie trzech stanow, bo netTask przy bledzie
+  // NADPISUJE caly gPv pustym modelem (`gPv = tmp` w pogoda-gdynia.ino) — ostatnia
+  // znana moc po prostu nie przezywa nieudanego odczytu. Zmiana tego to ruszanie
+  // watku danych, nie warstwy rysowania, wiec zostaje poza tym wydaniem.
+  const bool pvFresh = freshMs(diag().pvOkAt,
+                               pv.asleep ? cfg::PV_STALE_NIGHT_MS : cfg::PV_STALE_MS);
   lightHeader(s, "PRĄD", pv.online ? hr : (pv.asleep ? "śpi - noc" : "offline"),
-              pv.online ? Fresh::OK : (pv.asleep ? Fresh::UNKNOWN : Fresh::STALE));
+              (pv.online && pvFresh) ? Fresh::OK
+                                     : (pv.asleep ? Fresh::UNKNOWN : Fresh::STALE));
 
   if (!pv.online && !pv.asleep) {
     plex::strCenter(s, plex::f20(), "Falownik nie odpowiada", grid::W / 2, 96, col::MUTE);
@@ -1193,7 +1310,10 @@ void v3Home(TFT_eSPI& s, const RoomModel* rmp, const RoomHistory* rhp, uint32_t 
     for (int i = 0; i < rm.count && i < 4; ++i) {
       const RoomRow& r = rm.rows[i];
       const int cx = colX[i / 2], row = i % 2;
-      const bool stale = r.ageS >= 900;
+      // (v158) Bylo 900 wpisane liczba; ta sama wartosc stoi teraz w Config.h jako
+      // cfg::BLE_STALE_MS razem z pomiarem, z ktorego wynika (wieki 22-78 s na zywo).
+      // r.ageS jest w sekundach, prog w ms — stad dzielenie.
+      const bool stale = r.ageS >= cfg::BLE_STALE_MS / 1000;
       const uint16_t dotC = (r.slot >= 0 && r.slot < RoomHistory::ROOMS) ? kRoomColors[r.slot % 6] : col::MUTE;
       s.fillCircle(cx + 3, nameBase[row] - 4, 3, dotC);
       plex::str(s, plex::f13(), r.name ? r.name : "-", cx + 11, nameBase[row],
@@ -1468,12 +1588,17 @@ void v3Air(TFT_eSPI& s, const AirModel* ap) {
       localtime_r(&se, &tmv);
       snprintf(smp, sizeof(smp), "próbka %02d:%02d", tmv.tm_hour, tmv.tm_min);
     }
-    const bool fresh = now > 1700000000 && a.sampleEpoch > 0 &&
-                       (now - static_cast<time_t>(a.sampleEpoch)) < static_cast<time_t>(AIR_STALE_S);
+    // (v158) Ten sam warunek co dotad, ale liczony przez airSampleFresh() — jedna
+    // definicja swiezosci probki dla ekranu POWIETRZE, plakietki na ekranie glownym
+    // i AirClienta (przelaczanie GA17 -> GA24). Prog: cfg::AIR_SAMPLE_STALE_S.
+    const bool fresh = airSampleFresh(a);
     int rx = grid::W - grid::MARGIN;
     freshDot(s, rx - 3, 18, fresh ? Fresh::OK : Fresh::STALE);
     rx -= 12;
-    plex::strRight(s, plex::f13(), smp, rx, 22, col::MUTE);
+    // Stara probka: dopisek w col::WARN zamiast col::MUTE (ten sam kolor "nieswieze",
+    // co wiek pogody na ekranie glownym). Napis sie NIE zmienia i nie przybywa —
+    // godzina probki i tak juz tam stala.
+    plex::strRight(s, plex::f13(), smp, rx, 22, fresh ? col::MUTE : col::WARN);
   }
   s.drawFastHLine(grid::MARGIN, 30, grid::W - 2 * grid::MARGIN, col::LINE);
 
@@ -1561,7 +1686,13 @@ void v3Flights(TFT_eSPI& s, const FlightModel& fl, uint32_t nowMs) {
     snprintf(hr, sizeof(hr), "nieodpytywane");
   } else {
     const uint32_t ageS = (nowMs - diag().flightOkAt) / 1000;
-    fresh = ageS < 60 ? Fresh::OK : Fresh::STALE;
+    // (v158) Bylo 60 s wpisane liczba; teraz cfg::FLIGHT_STALE_MS (45 s = 2,5 x
+    // kadencja 15 s). Krocej, nie dluzej, i to celowo: przez 45 s samolot w rejsie
+    // przesuwa sie o ~10 km, wiec wiersz starszy niz to juz nie opisuje nieba,
+    // w ktore patrzy wlasciciel. Zaraz po wejsciu na ten ekran wiek bywa wiekszy
+    // (loty odpytujemy TYLKO gdy ekran jest na wierzchu — patrz needsFlights),
+    // wiec bursztynowa kropka przez pierwsza sekunde jest prawda, nie usterka.
+    fresh = ageS < cfg::FLIGHT_STALE_MS / 1000 ? Fresh::OK : Fresh::STALE;
     if (ageS < 90) snprintf(hr, sizeof(hr), "odświeżono %lu s temu", static_cast<unsigned long>(ageS));
     else snprintf(hr, sizeof(hr), "odświeżono %lu min temu", static_cast<unsigned long>(ageS / 60));
   }
@@ -1659,19 +1790,33 @@ void v3Diag1(TFT_eSPI& s, uint32_t nowMs, const AirModel* ap) {
   char airName[24] = "powietrze";
   if (ap && ap->stationName[0]) snprintf(airName, sizeof(airName), "powietrze %s", ap->stationName);
 
+  // (v158) KAZDE ZRODLO MA WLASNY PROG. Do v157 ta lista miala jeden warunek —
+  // "okAt != 0" — i malowala na zielono godzine ostatniego udanego odczytu BEZ WZGLEDU
+  // NA TO, ILE MIALA LAT. Piec (kadencja 3 min) wygladal wiec identycznie po minucie
+  // i po dobie milczenia, a to jest dokladnie ten ekran, na ktory patrzy sie wtedy,
+  // gdy cos nie dziala. Progi ida z Config.h (cfg::*_STALE_MS), po jednym na zrodlo,
+  // bo kadencje roznia sie o dwa rzedy wielkosci: 30 s (falownik) do 15 min (pogoda).
   struct Src {
     const char* name;
     uint32_t okAt;
+    uint32_t staleMs;
     bool off;
     const char* note;
   };
   const Src src[6] = {
-      {"pogoda", d.weatherOkAt, false, ""},
-      {airName, d.airOkAt, false, ""},
-      {"radar", d.radarOkAt, false, ""},
-      {"falownik", d.pvOkAt, d.pvAsleep, "śpi - noc"},
-      {"piec", d.viOkAt, !settings().hasViessmann(), "wyłączony"},
-      {"samoloty", d.flightOkAt, false, "nieodpytywane"},
+      {"pogoda", d.weatherOkAt, cfg::WEATHER_STALE_MS, false, ""},
+      {airName, d.airOkAt, cfg::AIR_FETCH_STALE_MS, false, ""},
+      {"radar", d.radarOkAt, cfg::RADAR_STALE_MS, false, ""},
+      // Falownik: prog zalezy od pory — po zachodzie netTask sam schodzi na 5 min
+      // (PV_REFRESH_NIGHT_MS), wiec nocny odczyt sprzed 3 min jest zupelnie zdrowy.
+      {"falownik", d.pvOkAt, d.pvAsleep ? cfg::PV_STALE_NIGHT_MS : cfg::PV_STALE_MS,
+       d.pvAsleep, "śpi - noc"},
+      {"piec", d.viOkAt, cfg::VI_STALE_MS, !settings().hasViessmann(), "wyłączony"},
+      // Loty: NIE cfg::FLIGHT_STALE_MS (45 s) — ten prog opisuje wiersze na ekranie
+      // SAMOLOTY, a nie te liste. Poza tym ekranem netTask lotow w ogole nie odpytuje
+      // (gFlightsNeeded), wiec kilkuminutowy wiek jest tu NORMALNY. Stad osobna stala
+      // cfg::FLIGHT_LIST_STALE_MS z wlasnym uzasadnieniem (Config.h).
+      {"samoloty", d.flightOkAt, cfg::FLIGHT_LIST_STALE_MS, false, "nieodpytywane"},
   };
 
   const int y0 = 50, pitch = 25;
@@ -1689,14 +1834,33 @@ void v3Diag1(TFT_eSPI& s, uint32_t nowMs, const AirModel* ap) {
       plex::strRight(s, plex::f13(), n, grid::W - grid::MARGIN, y, col::WARN);
     } else {
       // Znacznik czasu na zegar scienny: teraz minus wiek.
-      char hm[12] = "OK";
+      // (v158) Trzeci stan: gdy wiek przekroczyl prog TEGO zrodla, godzina zostaje
+      // (nadal jest prawdziwa i nadal chce sie ja znac), ale zmienia kolor na WARN
+      // i traci "✓" — zamiast niego dostaje WIEK, bo przy szukaniu usterki liczy sie
+      // "od ilu" bardziej niz "od kiedy". Szerokosci w f13: "12:34 ✓" = 46 px,
+      // najszerszy wariant przeterminowany "12:34 · 45 min" = 82 px, a wiersz ma do
+      // dyspozycji 306 px (od MARGIN=7 do W-MARGIN=313). Najdluzsza nazwa zrodla to
+      // "powietrze SANDOMIERSKA" = 150 px, wiec 150 + 82 = 232 px i zostaje 74 px
+      // przerwy — napisy nie maja jak sie zejsc.
+      const uint32_t ageS = (nowMs - src[i].okAt) / 1000;
+      const bool fresh = freshMs(src[i].okAt, src[i].staleMs);
+      char hm[24] = "OK";
       if (now > 1700000000) {
-        const time_t okEpoch = now - static_cast<time_t>((nowMs - src[i].okAt) / 1000);
+        const time_t okEpoch = now - static_cast<time_t>(ageS);
         struct tm tmv{};
         localtime_r(&okEpoch, &tmv);
-        snprintf(hm, sizeof(hm), "%02d:%02d ✓", tmv.tm_hour, tmv.tm_min);
+        if (fresh) {
+          snprintf(hm, sizeof(hm), "%02d:%02d ✓", tmv.tm_hour, tmv.tm_min);
+        } else if (ageS < 5400) {
+          snprintf(hm, sizeof(hm), "%02d:%02d · %lu min", tmv.tm_hour, tmv.tm_min,
+                   static_cast<unsigned long>(ageS / 60));
+        } else {
+          snprintf(hm, sizeof(hm), "%02d:%02d · %lu h", tmv.tm_hour, tmv.tm_min,
+                   static_cast<unsigned long>(ageS / 3600));
+        }
       }
-      plex::strRight(s, plex::f13(), hm, grid::W - grid::MARGIN, y, col::OK);
+      plex::strRight(s, plex::f13(), hm, grid::W - grid::MARGIN, y,
+                     fresh ? col::OK : col::WARN);
     }
     s.drawFastHLine(grid::MARGIN, y + 6, grid::W - 2 * grid::MARGIN, col::LINE);
   }
@@ -2057,11 +2221,47 @@ void WeatherUi::drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const Weath
         if (fillW > 0) spr.fillRect(x0, 0, fillW, 3, tv3::col::RAIN2);
       }
     }
+
+    // LICZNIK POZYCJI "3 z 7" (v158). Pasek segmentowy wyzej pokazuje to samo
+    // graficznie, ale z dwoch metrow nie da sie policzyc kresek — wlasciciel chcial
+    // liczby. MIANOWNIK JEST LICZONY, NIE STALY: bierze sie z v3ProgressPos(), czyli
+    // z tej samej pary kV3Loop + viewSkipped(), ktora decyduje o pomijaniu ekranow
+    // (radar bez opadu, pokoje bez czujnikow BLE, piec bez autoryzacji, powietrze bez
+    // danych). Gdyby stalo tu cfg::VIEW_COUNT (13), licznik klamalby przez wiekszosc
+    // doby — petla V3 ma osiem ekranow, z ktorych realnie dostepne bywaja cztery.
+    //
+    // GEOMETRIA (policzona, nie przymierzona): font f10, napis "N z M" = 23 px dla
+    // kazdej kombinacji cyfr (M <= 8, wiec zawsze jedna cyfra; w f10 '1'..'9' i 'z'
+    // maja te same szerokosci w tym ukladzie). Lewy gorny rog: x = MARGIN = 7, wiec
+    // napis zajmuje x=7..29. Baseline 11 => wiersze pikseli 4..10 (glify f10 maja
+    // yOffset -7 i wysokosc 7). Nad nim pasek segmentow konczy sie na wierszu 2 —
+    // jeden wiersz przerwy. Pod nim najwyzszy element ekranow petli to "RADAR"
+    // (f11, baseline 20 => wiersze 12..19) i etykiety lightHeader (f11, baseline 22
+    // => wiersze 14..21), wiec zostaje co najmniej 1 px odstepu. Prawy gorny rog
+    // celowo ODRZUCONY: siedzi tam kropka feedbacku dotyku (srodek 311,9, r=4).
+    //
+    // KOLOR: lewa gora jest CIEMNA na ekranie glownym (kolumna kontekstu x=0..119),
+    // w nocnym wariancie (pelna czern) i na radarze (mapa) — tam ONDARK_DIM; na
+    // pozostalych ekranach petli tlo jest jasne — tam MUTE. Na ekranach spoza petli
+    // (STATS/MEM/RUCH) v3ProgressPos zwraca false, wiec licznika po prostu nie ma
+    // i ciemny naglowek diagnostyki nie ma z czym kolidowac.
+    // `& 15` NIE jest zabezpieczeniem przed bledem — obie liczby sa z definicji
+    // z zakresu 1..kV3LoopN (8). Jest po to, zeby KOMPILATOR to wiedzial: bez maski
+    // gcc zaklada dla "%d" pelny zakres int (do 11 znakow na liczbe) i przy
+    // -Wformat-truncation zglasza mozliwe obciecie bufora. Z maska widzi 0..15,
+    // czyli najwyzej "15 z 15" = 7 znakow + NUL, co miesci sie w 12 B z zapasem.
+    char pos[12];
+    snprintf(pos, sizeof(pos), "%d z %d", (curSeg + 1) & 15, totSeg & 15);
+    const bool darkTop = (view == cfg::VIEW_RADAR) || (view == cfg::VIEW_NOW) ||
+                         (view == cfg::VIEW_RETRO) || (view == cfg::VIEW_HOURS);
+    plex::str(spr, plex::f10(), pos, tv3::grid::MARGIN, 11,
+              darkTop ? tv3::col::ONDARK_DIM : tv3::col::MUTE);
   }
 
-  // KROPKA FEEDBACKU DOTYKU (spec 7a). Natychmiast po surowym dotyku elektrody —
-  // jeszcze przed rozroznieniem 1x/2x (okno ~550 ms w touch::poll) — w prawym gornym
-  // rogu zapala sie mala kropka: "urzadzenie slyszy". rawTouchMs_ ustawia
+  // KROPKA FEEDBACKU DOTYKU (spec 7a). Zapala sie, gdy elektroda czuje palec —
+  // w prawym gornym rogu: "urzadzenie slyszy". (v158) Nie jest juz obejsciem
+  // opoznionej reakcji (SINGLE leci teraz natychmiast, patrz Touch.cpp), tylko
+  // potwierdzeniem kontaktu przy dluzszym przytrzymaniu. rawTouchMs_ ustawia
   // noteRawTouch(), wolane z petli gdy touch::pressedRaw(). Rysowana PO widoku, wiec
   // lezy na wierzchu kazdego ekranu (jasnego i ciemnego radaru). Jej stan jest
   // wliczony w sygnature V3 (render()), wiec render nie pominie ani zapalenia, ani
