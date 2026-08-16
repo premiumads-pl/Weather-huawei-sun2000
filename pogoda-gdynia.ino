@@ -962,6 +962,12 @@ static void netTask(void*) {
 
     if (WiFi.status() != WL_CONNECTED) {
       gWifiOk = false;
+      // Znacznik MUSI objac cale connectWifi(): jedna proba to WiFi.begin(), do 12 s
+      // czekania na WL_CONNECTED i do 10 s na NTP — czyli ponad 20 s, w ktorych
+      // netTask wisi w rdzeniu (skan wszystkich kanalow, DHCP, lwIP). Bez tego etapu
+      // zawieszenie w tym miejscu raportowalo NET_STAGE_IDLE z konca poprzedniego
+      // obiegu, czyli "netTask nic nie robil" — najgorszy mozliwy trop.
+      gNetStage.stageNow = NET_STAGE_WIFI;
       if (!connectWifi()) {
         vTaskDelay(pdMS_TO_TICKS(cfg::WIFI_RETRY_MS));
         continue;
@@ -1265,6 +1271,10 @@ static void netTask(void*) {
       if (gasWantSave) gasSnap = gGas;
       xSemaphoreGive(gLock);
       if (gasWantSave) {
+        // Raz na dobe, ale to nadal zapis do flash — wlasny etap, tak jak przy
+        // pozostalych dwoch zapisach NVS w tej petli. Nastepny blok (bramka BLE)
+        // ustawia swoj wlasny etap, wiec znacznik nie zostaje na dluzej.
+        gNetStage.stageNow = NET_STAGE_NVS;
         gasHistorySave(gasSnap);
         LOG("Gaz: zamknieta doba, log zapisany");
       }
@@ -1285,6 +1295,12 @@ static void netTask(void*) {
     // WiFi. Czujnik nadaje co kilka-kilkanaście sekund, więc 6 s nasłuchu co
     // 45 s spokojnie wystarczy, a WiFi (panel, OTA, MQTT) tego nie odczuwa.
     if (ble::ready() && static_cast<int32_t>(now - nextBleAt) >= 0) {
+      // Wlasny etap, ODDZIELNY od NET_STAGE_BLE_GW (bramka to zwykly GET po WiFi).
+      // ble::scan(4) wchodzi w BLEScan::start(4, false), czyli BLOKUJE 4 sekundy
+      // w stosie BLE (BleSensors.cpp:354) — najdluzszy pojedynczy blokujacy fragment
+      // tej petli po connectWifi(). Bez tego etapu zawis na radiu BLE raportowal
+      // "bramka BLE" albo "piec Viessmann", zaleznie od tego, co bylo wczesniej.
+      gNetStage.stageNow = NET_STAGE_BLE_SCAN;
       ble::scan(4);
       mqttha::publishBle();
 
@@ -1310,6 +1326,12 @@ static void netTask(void*) {
           RoomHistory snap = gRooms;
           AirHistory airSnap = gAirHistory;   // ta sama kadencja 10 min, jeden mutex, snapshot
           xSemaphoreGive(gLock);
+          // Dwa bloby (1736 B + ~52 B) co 10 min. Zapis do NVS to kasowanie i zapis
+          // sektora flash — dziesiatki ms, a przy przenoszeniu strony przez
+          // wear-leveling wiecej. Znacznik zostaje na NVS do konca bloku BLE; po nim
+          // i tak nie ma juz nic poza ponownym zajeciem mutexu, a nastepny blok
+          // (roaming) ustawia swoj wlasny etap.
+          gNetStage.stageNow = NET_STAGE_NVS;
           roomHistorySave(snap);          // NVS poza mutexem — zapis trwa
           airHistorySave(airSnap);        // 7-dniowa historia powietrza (klucz "airh", ~52 B)
           nextRoomSaveAt = millis() + 600000;
@@ -1328,6 +1350,11 @@ static void netTask(void*) {
     const bool roamNow = gWifiOk && (gRoamWanted ||
                                      static_cast<int32_t>(now - nextRoamAt) >= 0);
     if (roamNow) {
+      // Etap obejmuje CALY przeglad, bo kazdy jego krok potrafi trwac: portal::scanLock()
+      // czeka na blokade skanu do 20 s, WiFi.scanNetworks() przechodzi wszystkie kanaly
+      // (250 ms na kanal), a po decyzji o przenosinach jest jeszcze petla do 6 s
+      // czekajaca na WL_CONNECTED. Wczesniej raportowal sie tu etap z bloku BLE.
+      gNetStage.stageNow = NET_STAGE_WIFI_ROAM;
       gRoamWanted = false;
       nextRoamAt = millis() + 180000;
       const int cur = WiFi.RSSI();
@@ -1410,6 +1437,10 @@ static void netTask(void*) {
     // 1736 B co 10 min (pokoje). NVS jest wear-levelowane, a to najmniejszy z tych
     // trzech zapisow — nie zmienia rzedu wielkosci zuzycia.
     if (static_cast<int32_t>(now - nextStoreAt) >= 0) {
+      // Dwa zapisy do flash co 5 minut (584 B + 296 B). Wlasny etap z tego samego
+      // powodu, co przy historii pokoi: kasowanie sektora nie jest natychmiastowe,
+      // a bez znacznika zawis na NVS raportowal etap poprzedniego bloku.
+      gNetStage.stageNow = NET_STAGE_NVS;
       // Osobne zakresy: dwa snapshoty (724 B + 292 B) nie musza zyc naraz na stosie
       // netTask. Zapis ZAWSZE poza gLock — rdzen 1 czeka na te sama blokade z klatka.
       {

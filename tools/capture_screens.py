@@ -3,7 +3,7 @@
 oraz contact sheet do README.
 
 Urzadzenie udostepnia:
-  POST /api/view?i=N  -> przelacza/przypina ekran (N: 0..5, -1 = powrot do rotacji)
+  POST /api/view?i=N  -> przelacza/przypina ekran (N: 0..12, -1 = powrot do rotacji)
                          (od fw v154 mutacja wymaga POST; GET tylko odczytuje stan)
   GET /api/screen     -> biezacy ekran jako BMP 320x240 24-bit (pobranie ~1 s)
 
@@ -30,14 +30,39 @@ ENTER_ANIM_WAIT_S = 2.0
 SCREEN_FETCH_TIMEOUT_S = 5
 GIF_FRAME_MS = 2500
 
-# (index, slug, etykieta PL, etykieta EN) — kolejnosc jak w rotacji urzadzenia
+# (index, slug, etykieta PL, etykieta EN) — kolejnosc jak w rotacji urzadzenia.
+#
+# !!! TE NUMERY SA KONTRAKTEM Z Config.h (cfg::VIEW_*) !!!
+# Trafiaja wprost do POST /api/view?i=N, a urzadzenie interpretuje je przez
+# cfg::VIEW_* — zrodlem prawdy jest Config.h, NIE ta lista. Przy dodaniu,
+# usunieciu albo przenumerowaniu ekranu trzeba poprawic OBA miejsca; nic tego
+# nie sprawdza automatycznie i nic o tym nie krzyczy — skrypt po prostu
+# pobierze i podpisze nie te ekrany.
+#
+# Dokladnie to sie stalo: lista stala na ukladzie sprzed wprowadzenia VIEW_RETRO
+# (0..5: now/hours/5days/pv/flights/stats), a Config.h ma dzis VIEW_COUNT = 13
+# i wszystko przesuniete o +1 wzgledem tamtego ukladu. Sprawdzone na zywo
+# 16.08.2026: przypiecie i=2 daje ekran GODZINY, a nie "5 dni". docs/screens.gif
+# byl przez to skladany z ekranow podpisanych cudzymi nazwami.
+#
+# Ekrany pomijane przez ROTACJE (radar bez opadu, dom bez czujnikow BLE, piec bez
+# autoryzacji, powietrze bez danych) i tak daja sie PRZYPIAC przez /api/view,
+# wiec sa na liscie normalnie. Jesli akurat nie maja danych, zrzut pokaze ich
+# stan pusty — i to tez jest prawda o urzadzeniu.
 VIEWS = [
-    (0, "now", "Teraz", "Now"),
-    (1, "hours", "Godziny", "Hours"),
-    (2, "5days", "5 dni", "5 days"),
-    (3, "pv", "Fotowoltaika", "PV"),
-    (4, "flights", "Samoloty", "Flights"),
-    (5, "stats", "Statystyki", "Stats"),
+    (0, "retro", "Retro", "Retro"),
+    (1, "now", "Teraz", "Now"),
+    (2, "hours", "Godziny", "Hours"),
+    (3, "radar", "Radar", "Radar"),
+    (4, "5days", "5 dni", "5 days"),
+    (5, "home", "W domu", "At home"),
+    (6, "boiler", "Piec", "Boiler"),
+    (7, "pv", "Fotowoltaika", "PV"),
+    (8, "flights", "Samoloty", "Flights"),
+    (9, "air", "Powietrze", "Air"),
+    (10, "mem", "Pamiec", "Memory"),
+    (11, "motion", "Ruch", "Motion"),
+    (12, "stats", "Statystyki", "Stats"),
 ]
 
 DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
@@ -76,26 +101,38 @@ def label_font(size: int):
 
 
 def build_contact_sheet(frames: list[tuple[str, Image.Image]], out_path: Path) -> None:
-    cols, rows = 3, 2
+    # DRUGIE zalozenie oparte na starej liscie szesciu ekranow: siatka byla zaszyta
+    # jako 3 x 2 = dokladnie 6 kratek. Przy 13 ekranach plotno wychodziloby na
+    # dwa rzedy, a Image.paste() nie rosnie — po prostu przycina to, co wystaje,
+    # wiec siedem ostatnich ekranow zniknieloby bez slowa ostrzezenia.
+    # Liczba rzedow jest teraz LICZONA z liczby zrzutow.
+    cols = 4
+    rows = (len(frames) + cols - 1) // cols
+
+    # Kratki w natywnej rozdzielczosci 320x240, a nie w powiekszonej 2x uzywanej
+    # do GIF-a: przy 13 ekranach arkusz 4 x 640 px mialby ~2600 px szerokosci,
+    # czyli byloby to zdecydowanie za duzo jak na obrazek osadzony w README.
+    # Zmniejszenie NEAREST z powiekszenia NEAREST oddaje dokladnie oryginal.
     pad = 14
     cap_h = 34
-    w, h = frames[0][1].size
+    fw, fh = frames[0][1].size
+    w, h = fw // SCALE, fh // SCALE
     sheet_w = cols * w + (cols + 1) * pad
     sheet_h = rows * (h + cap_h) + (rows + 1) * pad
     sheet = Image.new("RGB", (sheet_w, sheet_h), (10, 14, 22))
     draw = ImageDraw.Draw(sheet)
-    font = label_font(22)
+    font = label_font(16)
 
     for idx, (label, im) in enumerate(frames):
         col, row = idx % cols, idx // cols
         x = pad + col * (w + pad)
         y = pad + row * (h + cap_h + pad)
-        sheet.paste(im, (x, y))
+        sheet.paste(im.resize((w, h), Image.NEAREST), (x, y))
         tw = draw.textlength(label, font=font)
         draw.text((x + (w - tw) / 2, y + h + 6), label, fill=(210, 225, 240), font=font)
 
     sheet.save(out_path)
-    print(f"zapisano {out_path} ({sheet_w}x{sheet_h})")
+    print(f"zapisano {out_path} ({sheet_w}x{sheet_h}, siatka {cols}x{rows})")
 
 
 def main() -> int:

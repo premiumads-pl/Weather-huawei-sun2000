@@ -1,5 +1,9 @@
 # artefakty kompilacji
 build/
+# katalog buildow WERYFIKACYJNYCH (tools/release.sh robi `git add -A`, a tu
+# laduja tez pliki bez ignorowanego rozszerzenia — np. zrzuty ekranu z
+# weryfikacji na zywo — i wjechalyby do repo przy najblizszym wydaniu).
+build_verify/
 *.bin
 *.elf
 *.map

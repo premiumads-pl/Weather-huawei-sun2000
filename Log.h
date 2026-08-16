@@ -41,6 +41,24 @@ enum NetStage : uint8_t {
   NET_STAGE_FLIGHTS = 9,    // flightClient.fetch()       [TLS]
   NET_STAGE_OTA = 10,       // ota.checkAndUpdate()       [TLS]
 
+  // --- dopisane pozniej: LUKI, czyli dlugie fragmenty netTask bez wlasnego etapu ---
+  // Wszystkie cztery potrafia trwac SEKUNDY i wszystkie do tej pory raportowaly etap
+  // POPRZEDNIEGO bloku — czyli po zawieszeniu wskazywaly palcem na niewinnego klienta.
+  // Numery dopisane NA KONCU (przed 255), zadnego istniejacego nie ruszono, wiec
+  // NET_STAGE_RTC_MAGIC zostaje bez zmian: stara liczba z RTC dalej znaczy to samo.
+  NET_STAGE_WIFI = 11,      // connectWifi(): WiFi.begin + do 12 s na polaczenie
+                            // + do 10 s na NTP (configTime). Realnie do ~22 s.
+  NET_STAGE_WIFI_ROAM = 12, // przeglad roamingowy: portal::scanLock() czeka do 20 s,
+                            // potem WiFi.scanNetworks() (wszystkie kanaly) i przy
+                            // przenosinach jeszcze do 6 s na ponowne polaczenie.
+  NET_STAGE_BLE_SCAN = 13,  // ble::scan(4) — BLEScan::start(4, false) BLOKUJE 4 s
+                            // (BleSensors.cpp:354), plus mqttha::publishBle().
+                            // To NIE jest to samo, co NET_STAGE_BLE_GW: tamto jest
+                            // GET-em po WiFi do Shelly, to jest wlasne radio.
+  NET_STAGE_NVS = 14,       // zapisy blobow do NVS (pokoje + powietrze, PV + palnik,
+                            // log gazu). Kasowanie sektora flash potrafi zajac
+                            // dziesiatki ms, a przy pechowym wear-levelingu wiecej.
+
   // NIE jest etapem petli — to odpowiedz "poprzedniej sesji NIE BYLO". Ustawiane
   // wylacznie w netStageBegin() po zimnym starcie (RTC bez waznego znacznika, czyli
   // po odlaczeniu zasilania). Zera uzyc tu NIE WOLNO: 0 znaczy "netTask stal
@@ -64,6 +82,10 @@ inline const char* netStageName(uint8_t s) {
     case NET_STAGE_BLE_GW:    return "bramka BLE";
     case NET_STAGE_FLIGHTS:   return "loty";
     case NET_STAGE_OTA:       return "OTA";
+    case NET_STAGE_WIFI:      return "laczenie WiFi + NTP";
+    case NET_STAGE_WIFI_ROAM: return "przeglad roamingowy WiFi";
+    case NET_STAGE_BLE_SCAN:  return "skan BLE";
+    case NET_STAGE_NVS:       return "zapis do NVS";
     case NET_STAGE_UNKNOWN:   return "nieznany (zimny start)";
     default:                  return "?";   // numer z NOWSZEJ wersji, po rollbacku
   }
