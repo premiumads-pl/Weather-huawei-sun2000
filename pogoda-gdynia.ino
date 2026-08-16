@@ -974,6 +974,30 @@ static void netTask(void*) {
       }
     }
     gWifiOk = true;
+
+    // (v163) SERWER PANELU WSTAJE TUTAJ, A NIE TYLKO WEWNATRZ connectWifi().
+    // AWARIA, ktora to zamyka, wydarzyla sie na zywo 16.08: urzadzenie odpowiadalo
+    // na ping (25/25 pakietow, zero strat), ekran rysowal, dane sie odswiezaly,
+    // a port 80 ODRZUCAL polaczenia — nie timeout, tylko natychmiastowy RST, czyli
+    // NIKT NIE NASLUCHIWAL. Panel i cale /api byly nieosiagalne az do restartu.
+    // MECHANIZM: portal::beginSta() bylo wolane WYLACZNIE na koncu connectWifi(),
+    // a netTask wchodzi w connectWifi() tylko wtedy, gdy WiFi NIE jest polaczone.
+    // Gdy WiFi.begin() nie zdazy w 12 s, connectWifi() zwraca false i netTask idzie
+    // w `continue`. Sterownik WiFi laczy sie jednak dalej WE WLASNYM ZAKRESIE i po
+    // chwili asocjacja sie udaje. W nastepnym obiegu warunek `status != WL_CONNECTED`
+    // jest juz falszywy, wiec caly blok jest POMIJANY — connectWifi() nie zostanie
+    // wolane NIGDY WIECEJ, a wraz z nim nigdy nie wystartuje serwer. Do tego samego
+    // prowadzi wczesny `return true` na poczatku connectWifi(). Urzadzenie dziala
+    // wtedy poprawnie we wszystkim OPROCZ jedynego kanalu, ktorym mozna je obejrzec.
+    // Blad jest starszy niz dzisiejsza sesja; ujawnily go liczne restarty po OTA,
+    // bo trafienie w nie zalezy od tego, czy asocjacja zmiesci sie w 12 sekundach.
+    // LEK: wolamy beginSta() w kazdym obiegu, gdy WiFi JEST polaczone. Funkcja jest
+    // idempotentna i wychodzi natychmiast, gdy trasy sa juz zarejestrowane (patrz
+    // komentarz przy niej w Portal.cpp), wiec koszt to jedno porownanie na obieg.
+    // Zostawienie wywolania takze w connectWifi() jest celowe: tam serwer wstaje
+    // od razu po pierwszym polaczeniu, bez czekania na kolejny obieg.
+    portal::beginSta();
+
     const uint32_t now = millis();
 
     // ---- OTA (jedyne miejsce, gdzie dotykamy obiektu Update) ----

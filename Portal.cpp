@@ -3490,11 +3490,19 @@ void beginAp() {
   Serial.printf("Portal AP: %s / %s -> http://%s\n", kApSsid, kApPass, apIpStr);
 }
 
+// IDEMPOTENTNE — i to jest teraz CZESCIA KONTRAKTU, a nie szczegolem implementacji.
+// Od v163 netTask wola te funkcje w KAZDYM obiegu (patrz pogoda-gdynia.ino, zaraz za
+// `gWifiOk = true`), zeby serwer wstal niezaleznie od tego, KTORA droga urzadzenie
+// dostalo polaczenie. Dlatego wychodzimy tu natychmiast, gdy trasy sa juz
+// zarejestrowane: bez tego kazdy obieg netTask wypisywalby linie na Serial.
+// `apMode = false` stoi PRZED wyjsciem celowo — przejscie z trybu konfiguracji (AP)
+// na normalna prace musi je skasowac takze wtedy, gdy serwer juz chodzi.
 void beginSta() {
   apMode = false;
-  if (!started) {
-    routes();
+  if (started) {
+    return;
   }
+  routes();
   Serial.printf("Panel: http://%s\n", WiFi.localIP().toString().c_str());
 }
 
