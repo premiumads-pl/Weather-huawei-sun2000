@@ -134,7 +134,9 @@ Urządzenie wisi na ścianie bez USB, więc `Serial` jest ślepy. Zamiast tego:
 - `GET /api/log` — bufor kołowy ostatnich ~120 linii logu
 - `GET /api/diag` — migawka JSON: heap, Wi-Fi, ostatni sukces/błąd każdego
   podsystemu, status OTA
-- `GET /api/view?i=N` — przypina ekran (0–5, `-1` = powrót do rotacji)
+- `GET /api/view` — odczyt bieżącego widoku `{"cur":X,"pin":Y}` (tylko odczyt)
+- `POST /api/view?i=N` — przypina ekran (0–5, `-1` = powrót do rotacji); od v154 mutacja
+  wymaga POST, żeby obca strona nie przestawiła ekranu przez `<img src=".../api/view?i=3">`
 - `GET /api/screen` — bieżący ekran jako BMP 320×240 24-bit
 - `POST /api/reboot` — restart bez kasowania konfiguracji
 

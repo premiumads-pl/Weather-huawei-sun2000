@@ -667,7 +667,7 @@ async function pickView(i){
  const nm=[...VIEWS,...VDIAG].find(v=>v[1]===i);
  $('vmsg').textContent=i<0?'Rotacja automatyczna — dokładnie jak na urządzeniu.'
   :('Zatrzymane na ekranie: '+(nm?nm[0]:i)+'. Kliknij „Auto”, żeby wznowić rotację.');
- try{const r=await(await fetch('/api/view?i='+i)).json();pin=r.pin;tabs();}catch(e){}
+ try{const r=await(await fetch('/api/view?i='+i,{method:'POST'})).json();pin=r.pin;tabs();}catch(e){}
 }
 function themeUI(){
  $('thv1').className=theme===1?'on':'';
@@ -707,8 +707,8 @@ function highlightBl(v){document.querySelectorAll('#blpills button').forEach(b=>
 async function setBl(v){
  highlightBl(v);
  try{
-  if(v==='auto')await fetch('/api/bl?v=auto');            // zwolnij forsowanie -> automat LDR
-  else await fetch('/api/bl?v='+v+'&ms=14400000');        // ~4 h override, sam wygasa
+  if(v==='auto')await fetch('/api/bl?v=auto',{method:'POST'});            // zwolnij forsowanie -> automat LDR
+  else await fetch('/api/bl?v='+v+'&ms=14400000',{method:'POST'});        // ~4 h override, sam wygasa
  }catch(e){}
 }
 // --- NAWIGACJA: komputer = pokaz jedna sekcje; telefon = rozwin/zwin akordeon ---
@@ -1145,9 +1145,9 @@ async function bles(){
   const src = s.gw ? ' <span style="color:#2563C4">· przez bramkę</span>' : '';
   return `<li style="display:block">
    <div style="display:flex;justify-content:space-between">
-    <b>${s.name||s.mac}</b><span class=sig>${st} · ${s.rssi} dBm${src}</span></div>
+    <b>${esc(s.name||s.mac)}</b><span class=sig>${st} · ${s.rssi} dBm${src}</span></div>
    <div class=row style="margin-top:8px">
-    <input id=bn${i} placeholder="nazwa (np. Łazienka)" value="${s.name||''}">
+    <input id=bn${i} placeholder="nazwa (np. Łazienka)" value="${esc(s.name||'')}">
     <input id=bk${i} placeholder="${s.hasKey?'klucz zapisany':'bindkey (32 znaki hex)'}"
      autocapitalize=off autocorrect=off>
    </div>
@@ -1261,7 +1261,7 @@ async function viStat(){
 }
 async function demo(on){
  $('dmsg').textContent='...';
- const r=await(await fetch('/api/radardemo?on='+on)).json();
+ const r=await(await fetch('/api/radardemo?on='+on,{method:'POST'})).json();
  $('dmsg').className='hint ok';$('dmsg').textContent=r.msg;
  if(on) pickView(3);   // VIEW_RADAR=3 (dawniej bledne pickView(2)=VIEW_HOURS, nieobecny w V3)
 }
@@ -1364,11 +1364,16 @@ async function load(){
 async function scan(){
  $('nets').innerHTML='<li>Skanuję…</li>';
  const r=await(await fetch('/api/scan')).json();
- $('nets').innerHTML=r.map(n=>`<li onclick="pick('${n.s.replace(/'/g,"\\'")}')">
-   <span>${n.s} ${n.e?'🔒':''}</span><span class=sig>${n.r} dBm</span></li>`).join('')
+ // XSS: SSID (n.s) to do 32 DOWOLNYCH bajtow z eteru. NIGDY nie trafia w pozycje kodu.
+ // Wzorem geo()/setLoc(): w HTML idzie tylko przez esc() jako TEKST, a klik przekazuje
+ // numeryczny indeks; pick() czyta oryginalny SSID z tablicy (window._N), wiec do
+ // /api/wifi trafia dokladny SSID (bez encji &amp;), a atrybut onclick nie niesie SSID.
+ $('nets').innerHTML=r.map((n,i)=>`<li onclick="pick(${i})">
+   <span>${esc(n.s)} ${n.e?'🔒':''}</span><span class=sig>${n.r} dBm</span></li>`).join('')
    ||'<li>Nic nie znaleziono</li>';
+ window._N=r;
 }
-function pick(s){$('ssid').value=s;$('pass').focus();}
+function pick(i){$('ssid').value=window._N[i].s;$('pass').focus();}
 async function saveWifi(){
  $('wmsg').textContent='Łączę…';
  const r=await(await fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1381,7 +1386,7 @@ async function geo(){
  const r=await(await fetch('/api/geo?q='+encodeURIComponent($('q').value))).json();
  if(r.err){$('locs').innerHTML='<li class=err>'+r.err+'</li>';return}
  $('locs').innerHTML=r.map((l,i)=>`<li onclick="setLoc(${i})">
-   <span>${l.n}<br><span class=sig>${l.a}</span></span>
+   <span>${esc(l.n)}<br><span class=sig>${esc(l.a)}</span></span>
    <span class=b>${l.lat.toFixed(2)}, ${l.lon.toFixed(2)}</span></li>`).join('')
    ||'<li>Brak wyników</li>';
  window._L=r;
@@ -2867,7 +2872,11 @@ void apiBacklightSweep() {
 }
 
 void apiView() {
-  if (gViewSet != nullptr && server.hasArg("i")) {
+  // Podwojna rola: GET bez mutacji = ODCZYT stanu (uzywane do zdalnej weryfikacji),
+  // wiec endpoint zostaje na wszystkich metodach i GET nadal czyta. Ale PRZYPIECIE
+  // ekranu (arg "i") MUTUJE stan, wiec wymaga POST — inaczej obca strona przestawi
+  // ekran przez <img src=".../api/view?i=3"> (jak przy vi/set). Odczyt niezmieniony.
+  if (gViewSet != nullptr && server.hasArg("i") && server.method() == HTTP_POST) {
     gViewSet(server.arg("i").toInt());
   }
   int cur = 0, pin = -1;
@@ -3278,15 +3287,18 @@ void routes() {
   server.on("/api/tap", HTTP_POST, apiTap);
   server.on("/api/theme", HTTP_POST, apiTheme);
   server.on("/api/tuning", HTTP_POST, apiTuning);
-  server.on("/api/bl", apiBacklight);
-  server.on("/api/blsweep", apiBacklightSweep);
+  // POST, nie GET: MUTUJA podswietlenie, wiec obca strona nie odpali ich przez
+  // <img src=".../api/bl?v=255"> (jak przy vi/set). Panel wola je metoda POST.
+  // Uwaga: /api/blsweep to tez reczny test wzrokowy — teraz wymaga np. curl -X POST.
+  server.on("/api/bl", HTTP_POST, apiBacklight);
+  server.on("/api/blsweep", HTTP_POST, apiBacklightSweep);
   server.on("/api/ble", HTTP_GET, apiBleList);
   server.on("/api/ble", HTTP_POST, apiBleSet);
   server.on("/api/blegw", HTTP_POST, apiBleGw);
   server.on("/api/meter", HTTP_GET, apiMeterList);
   server.on("/api/meter", HTTP_POST, apiMeterAdd);
   server.on("/api/meter", HTTP_DELETE, apiMeterDel);
-  server.on("/api/radardemo", apiRadarDemo);
+  server.on("/api/radardemo", HTTP_POST, apiRadarDemo);   // MUTUJE tryb radaru -> POST (CSRF)
   server.on("/api/vi", HTTP_GET, apiViState);
   server.on("/api/vi/link", HTTP_POST, apiViLink);
   server.on("/api/vi/forget", HTTP_POST, apiViForget);

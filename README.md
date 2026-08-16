@@ -60,7 +60,8 @@ endpoints stand in for a serial console (all also reachable from the
 |---|---|
 | `GET /api/log` | in-RAM ring buffer of the last ~120 log lines |
 | `GET /api/diag` | JSON snapshot: heap (current/min-ever/largest free block), Wi-Fi RSSI, per-subsystem last-success age and last error, OTA status |
-| `GET /api/view?i=N` | pins screen `N` (`0`–`5`); `i=-1` returns to auto-rotation; responds with `{"cur":X,"pin":Y}` |
+| `GET /api/view` | reads current view: `{"cur":X,"pin":Y}` (read-only) |
+| `POST /api/view?i=N` | pins screen `N` (`0`–`5`); `i=-1` returns to auto-rotation (mutating — POST since v154, so a foreign `<img>` tag can't switch the screen) |
 | `GET /api/screen` | current screen as a 320×240 24-bit BMP (~1 s to fetch) |
 | `POST /api/reboot` | restarts without touching saved configuration |
 

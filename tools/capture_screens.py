@@ -3,7 +3,8 @@
 oraz contact sheet do README.
 
 Urzadzenie udostepnia:
-  GET /api/view?i=N   -> przelacza/przypina ekran (N: 0..5, -1 = powrot do rotacji)
+  POST /api/view?i=N  -> przelacza/przypina ekran (N: 0..5, -1 = powrot do rotacji)
+                         (od fw v154 mutacja wymaga POST; GET tylko odczytuje stan)
   GET /api/screen     -> biezacy ekran jako BMP 320x240 24-bit (pobranie ~1 s)
 
 Uzycie:
@@ -48,7 +49,12 @@ def http_get(url: str, timeout: float) -> bytes:
 
 
 def pin_view(base: str, i: int) -> None:
-    body = http_get(f"{base}/api/view?i={i}", timeout=5)
+    # POST, nie GET: od fw v154 /api/view MUTUJE (przypina ekran) tylko przy metodzie
+    # POST — GET zostawiono jako czysty odczyt stanu, zeby obca strona nie mogla przez
+    # <img src=".../api/view?i=3"> przestawiac ekranu (CSRF). Puste cialo wystarcza.
+    req = urllib.request.Request(f"{base}/api/view?i={i}", data=b"", method="POST")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        body = r.read()
     print(f"  view={i} -> {body.decode('utf-8', 'replace')}")
 
 
