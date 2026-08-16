@@ -305,6 +305,23 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
    potem samo wraca do automatu. Najniższa pozycja to 18% — ekranu nie da się zgasić.</div>
  </div>
 
+<!-- SKORKI WYSWIETLACZA — TU wchodzi sekcja wyboru wygladu, gdy skorek bedzie WIECEJ NIZ JEDNA.
+     Dokladnie w tym miejscu stala do v159 sekcja "Wyglad interfejsu" (V3/V1/V2), usunieta w v160
+     razem z motywami. Endpoint /api/theme ZOSTAL odtworzony w v162 i dziala (patrz apiTheme),
+     ale sekcji CELOWO NIE PRZYWRACAMY: dostepna skorka jest jedna, a przycisk, ktory niczego nie
+     zmienia, jest gorszy niz jego brak — wyglada na zepsuty.
+     Zeby ja dopisac, gdy skorek przybedzie:
+       1. blok jak sasiednie: <div class=blk><h2>Wygląd interfejsu</h2><div class=tabs id=thtabs>
+          </div><div class=hint id=thmsg></div></div>
+       2. w dolnym bloku skryptu panelu (tam, gdzie tabs()/pickView): pobierz GET /api/theme,
+          zbuduj przyciski z pola "available" (kazdy wpis ma "v" i "name"), podswietl ten
+          rowny polu "theme";
+       3. klikniecie: fetch('/api/theme?v='+v,{method:'POST'}) — MUSI byc POST, GET tego
+          nie zmieni (CSRF, patrz komentarz przy apiTheme);
+       4. odpowiedz 400 niesie czytelny powod w polu "err" — pokaz go w #thmsg.
+     Cala reszta instrukcji (gdzie dopisac wartosc i gdzie rozgalezic rysowanie) stoi przy polu
+     `theme` w Settings.h. -->
+
  <div class=blk>
   <h2>Tryb nocny i jasność automatu</h2>
   <label>Tryb nocny — ekran główny zwija się do samego zegara (godziny 0–23)</label>
@@ -625,8 +642,11 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
 </div><script>
 const $=i=>document.getElementById(i);
 // V3: jawna mapa etykieta -> indeks widoku (cfg::VIEW_*). Bez "i-1" — indeksy sa dokladnie
-// te, ktore przyjmuje pinView() (WeatherUi.cpp). RETRO=0 i HOURS=2 nie istnieja w V3, wiec
-// ich tu nie ma. Ekrany diagnostyczne to osobna, mniejsza grupa pigulek.
+// te, ktore przyjmuje pinView() (WeatherUi.cpp). Numerow 0 i 2 tu nie ma i nie bedzie:
+// to ZAREZERWOWANE sloty po skasowanych w v162 ekranach RETRO i GODZINY (patrz Config.h).
+// Dziura miedzy 1 a 3 ponizej jest wiec POPRAWNA — nie "naprawiac" jej przenumerowaniem,
+// bo te numery wychodza na zewnatrz przez /api/view.
+// Ekrany diagnostyczne to osobna, mniejsza grupa pigulek.
 const VIEWS=[['Auto',-1],['Główny',1],['Radar',3],['5 dni',4],['Prąd',7],['Pokoje',5],['Ogrzewanie',6],['Powietrze',9],['Samoloty',8]];
 // Kolejnosc jak numeracja na wyswietlaczu: para dotykowa Statystyki(1/2, VIEW_STATS=12)
 // -> Pamiec(2/2, VIEW_MEM=10), a potem osobny Ruch(VIEW_MOTION=11).
@@ -1258,7 +1278,7 @@ async function demo(on){
  $('dmsg').textContent='...';
  const r=await(await fetch('/api/radardemo?on='+on,{method:'POST'})).json();
  $('dmsg').className='hint ok';$('dmsg').textContent=r.msg;
- if(on) pickView(3);   // VIEW_RADAR=3 (dawniej bledne pickView(2)=VIEW_HOURS, nieobecny w V3)
+ if(on) pickView(3);   // VIEW_RADAR=3 (dawniej bledne pickView(2) — slot dzis wycofany, patrz Config.h)
 }
 // Kolorowy blok "po ludzku": kropka statusu + tytul + tresc. cls: 'ok'|'warn'|'err'.
 function fblock(title,body,cls){
@@ -1587,6 +1607,12 @@ void apiState() {
   d["bl_dim"] = settings().blDim;
   d["bl_night"] = settings().blNight;
   d["arot"] = settings().autoRotate;   // auto-rotacja V3 (checkbox w panelu)
+  // (v162) Skorka wyswietlacza — pole PRZYWROCONE tam, gdzie bylo do v159. Dzis zawsze
+  // Settings::THEME_PASMOWY (jedyna istniejaca), bo load() sprowadza do niej kazda inna
+  // wartosc z NVS. Panel go NIE UZYWA (nie ma sekcji wyboru wygladu, dopoki skorka jest
+  // jedna) — zostaje dla skryptow i dla przyszlej sekcji. Pelna lista dostepnych skorek
+  // wraz z nazwami: GET /api/theme.
+  d["theme"] = settings().theme;
 
   // UWAGA: hasla brokera nie zwracamy NIGDY — tylko flage "cos jest ustawione".
   d["mq_en"] = settings().mqttEnabled;
@@ -2905,6 +2931,64 @@ void apiBacklightSweep() {
   server.send(200, "application/json", buf);
 }
 
+// ------------------------------------------------------- SKORKI WYSWIETLACZA --
+// HAK NA PRZYSZLOSC, odtworzony w v162 na polecenie wlasciciela ("Zostaw endpointy,
+// gdybym kiedys wpadl na pomysl skorek do wyswietlacza, to ma zostac"). W v160, przy
+// usuwaniu motywow V1/V2, zniknely RAZEM z nimi: pole `theme` w ustawieniach, ten
+// endpoint, pole w /api/state i sekcja "Wyglad interfejsu" w panelu. Wracaja — ale
+// UCZCIWIE: dzis skorka jest DOKLADNIE JEDNA i nic jeszcze nie rozgalezia sie po tym
+// polu (rysowanie idzie prosto w drawV3). To jest szkielet, nie funkcja.
+//
+// Nazwy do wyswietlenia. GET /api/theme oddaje z tej tablicy liste dostepnych skorek,
+// a POST przyjmuje WYLACZNIE wartosci, ktore sa na tej liscie. Dodajac druga skorke
+// dopisz ja TUTAJ i w Settings::themeValid() — pelna instrukcja stoi przy polu
+// `theme` w Settings.h.
+struct ThemeEntry { uint8_t v; const char* name; };
+const ThemeEntry kThemes[] = {
+    {Settings::THEME_PASMOWY, "Pasmowy"},
+};
+constexpr int kThemesN = sizeof(kThemes) / sizeof(kThemes[0]);
+
+void apiTheme() {
+  // MUTACJA WYLACZNIE PRZEZ POST — GET jest czystym odczytem. To nie jest ozdoba:
+  // w v154 projekt przestawil na POST wszystkie mutujace endpointy wlasnie po to, zeby
+  // obca strona otwarta w tej samej sieci nie przestawila urzadzenia przez
+  // <img src="http://.../api/theme?v=2"> (CSRF — przegladarka wysle takie zadanie
+  // sama, bez zgody uzytkownika). Ten sam wzorzec, co w apiView()/apiViSet().
+  bool ok = true;
+  const char* err = "";
+  if (server.method() == HTTP_POST) {
+    // Brak argumentu "v" to blad zapytania, a nie cicha zgoda na wartosc 0.
+    if (!server.hasArg("v")) {
+      ok = false;
+      err = "brak parametru v";
+    } else {
+      const long v = server.arg("v").toInt();
+      // setTheme() sam odrzuca wszystko spoza themeValid() — sprawdzamy zakres uint8_t
+      // tylko po to, zeby rzutowanie nie zawijalo (v=259 nie ma udawac 3).
+      ok = (v >= 0 && v <= 255) && settings().setTheme(static_cast<uint8_t>(v));
+      if (!ok) err = "nieznana skorka — dozwolone tylko wartosci z pola \"available\"";
+    }
+  }
+
+  JsonDocument d;
+  d["ok"] = ok;
+  if (!ok) d["err"] = err;
+  d["theme"] = settings().theme;       // biezaca skorka (zawsze PRAWDA, takze po bledzie)
+  JsonArray av = d["available"].to<JsonArray>();
+  for (int i = 0; i < kThemesN; ++i) {
+    JsonObject o = av.add<JsonObject>();
+    o["v"] = kThemes[i].v;
+    o["name"] = kThemes[i].name;
+  }
+  String out;
+  serializeJson(d, out);
+  server.sendHeader("Cache-Control", "no-store");
+  // 400 przy odrzuconej wartosci: skrypt ma zobaczyc blad w kodzie odpowiedzi, a nie
+  // dopiero po rozpakowaniu JSON-a. Odczyt (GET) zawsze 200.
+  server.send(ok ? 200 : 400, "application/json", out);
+}
+
 void apiView() {
   // Podwojna rola: GET bez mutacji = ODCZYT stanu (uzywane do zdalnej weryfikacji),
   // wiec endpoint zostaje na wszystkich metodach i GET nadal czyta. Ale PRZYPIECIE
@@ -3321,6 +3405,9 @@ void routes() {
   server.on("/api/coredump", HTTP_DELETE, apiCoredumpErase);
   server.on("/api/coredump/raw", HTTP_GET, apiCoredumpRaw);
   server.on("/api/screen", apiScreen);
+  // Skorka: JEDEN handler na obie metody, bo sam rozroznia GET (odczyt) od POST
+  // (mutacja) — dokladnie jak /api/view nizej. Rejestracja bez HTTP_* obejmuje obie.
+  server.on("/api/theme", apiTheme);
   server.on("/api/view", apiView);
   server.on("/api/tap", HTTP_POST, apiTap);
   server.on("/api/tuning", HTTP_POST, apiTuning);

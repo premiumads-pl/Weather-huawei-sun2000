@@ -286,20 +286,12 @@ class WeatherUi {
   // (y=0..205) i nie wiedzą, w którym pasie są — przycina je viewport celu.
   void drawContentBg(TFT_eSPI& spr);
 
-  // --- EKRAN RETRO (Mario) — v114, obecnie NIEUZYWANY -----------------------------
-  // Do v159 byl slotem 0 rotacji w motywach V1 i V2. Motyw V3 "Pasmowy" go NIE MA:
-  // viewSkipped() pomija VIEW_RETRO, kV3Loop go nie zawiera, a drawV3() rysuje pod tym
-  // numerem ekran GLOWNY. Po usunieciu V1/V2 (v160) nikt wiec tych dwoch metod nie wola.
-  // ZOSTAWIONE CELOWO: wlasciciel prosil o usuniecie MOTYWOW, nie ekranow, a decyzja
-  // "kasujemy Mario czy przywracamy go do petli V3" nalezy do niego. Linker (--gc-sections)
-  // i tak nie wciaga ich do binarki, wiec nie kosztuja flasha ani RAM-u — koszt jest
-  // wylacznie w zrodle (ok. 340 linii tutaj i w WeatherUi.cpp + RetroFont.h/RetroSprites.h).
-  // Zeby je ozywic, wystarczy dopisac cfg::VIEW_RETRO do kV3Loop i zdjac go z viewSkipped().
-  void drawViewRetro(TFT_eSPI& spr, int ox, float t, const WeatherModel& w, uint32_t nowMs);
-  // Dolny pasek RETRO (WILGOC/WIATR/HPA) na y=206..239 (poza buforem VIEW_H), rysowany
-  // wprost na cel — tak jak dzis robi to drawV3Bottom(). Nieuzywany z tego samego powodu.
-  void drawViewRetroFooter(TFT_eSPI& dst, const WeatherModel& w);
-
+  // (v162) EKRANY RETRO (Mario, slot 0) i GODZINY (slot 2) SA SKASOWANE W CALOSCI —
+  // razem z drawViewRetro()/drawViewRetroFooter(), paleta rcol::, fontem i sprite'ami
+  // (RetroFont.h/RetroSprites.h — pliki usuniete). Byly nieosiagalne od v160: petla
+  // kV3Loop ich nie zawiera, a funkcje rysujace GODZINY zniknely juz razem z motywami.
+  // Numery 0 i 2 zostaly ZAREZERWOWANE, nie zwolnione — uzasadnienie przy cfg::VIEW_*
+  // w Config.h (numer widoku wychodzi na zewnatrz przez /api/view).
 
   // Motyw V3 "Pasmowy" (WeatherUiV3.cpp). JEDEN dispatcher rysuje obszar sprite
   // (y=0..205), drugi — dolny pas (206..239) wprost na TFT, bo uklad V3 siega pelnej

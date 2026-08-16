@@ -16,6 +16,7 @@ podaj wlasny adres jako argument, jesli Twoje urzadzenie ma inny IP.
 WAZNE: na koniec skrypt ZAWSZE przywraca automatyczna rotacje (i=-1),
 nawet jesli po drodze wystapi blad.
 """
+import re
 import sys
 import time
 import urllib.request
@@ -45,14 +46,20 @@ GIF_FRAME_MS = 2500
 # 16.08.2026: przypiecie i=2 daje ekran GODZINY, a nie "5 dni". docs/screens.gif
 # byl przez to skladany z ekranow podpisanych cudzymi nazwami.
 #
+# (v162) NUMERY 0 I 2 ZNIKLY Z TEJ LISTY, a reszta ZOSTALA NA SWOICH MIEJSCACH.
+# Ekrany RETRO (0) i GODZINY (2) zostaly skasowane, ale pozostalych widokow CELOWO
+# nie przenumerowano — sloty 0 i 2 sa w Config.h zarezerwowane, bo numer widoku
+# wychodzi na zewnatrz przez /api/view. Dziury w numeracji ponizej sa wiec POPRAWNE
+# i maja takie zostac; lista ma 11 pozycji, a VIEW_COUNT dalej wynosi 13.
+# Gdyby ktos mimo to przypial i=0 albo i=2, urzadzenie narysuje ekran GLOWNY
+# (galaz `default:` w drawV3) — czyli zrzut byby duplikatem "now", nie czernia.
+#
 # Ekrany pomijane przez ROTACJE (radar bez opadu, dom bez czujnikow BLE, piec bez
 # autoryzacji, powietrze bez danych) i tak daja sie PRZYPIAC przez /api/view,
 # wiec sa na liscie normalnie. Jesli akurat nie maja danych, zrzut pokaze ich
 # stan pusty — i to tez jest prawda o urzadzeniu.
 VIEWS = [
-    (0, "retro", "Retro", "Retro"),
     (1, "now", "Teraz", "Now"),
-    (2, "hours", "Godziny", "Hours"),
     (3, "radar", "Radar", "Radar"),
     (4, "5days", "5 dni", "5 days"),
     (5, "home", "W domu", "At home"),
@@ -65,7 +72,87 @@ VIEWS = [
     (12, "stats", "Statystyki", "Stats"),
 ]
 
-DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
+# Slug z VIEWS -> nazwa stalej cfg::VIEW_* w Config.h. Sluzy WYLACZNIE weryfikacji
+# nizej; kolejnosc i tresc VIEWS pozostaja recznie utrzymywane.
+SLUG_TO_CONST = {
+    "now": "NOW",
+    "radar": "RADAR",
+    "5days": "DAYS",
+    "home": "HOME",
+    "boiler": "BOILER",
+    "pv": "PV",
+    "flights": "FLIGHTS",
+    "air": "AIR",
+    "mem": "MEM",
+    "motion": "MOTION",
+    "stats": "STATS",
+}
+
+REPO_DIR = Path(__file__).resolve().parent.parent
+DOCS_DIR = REPO_DIR / "docs"
+
+
+def verify_against_config() -> None:
+    """Sprawdza, czy VIEWS zgadza sie z cfg::VIEW_* w Config.h — ZANIM cokolwiek
+    pobierzemy z urzadzenia.
+
+    Az do v162 ten kontrakt pilnowal wylacznie komentarz ("nic tego nie sprawdza
+    automatycznie i nic o tym nie krzyczy") — i raz sie rozjechal: docs/screens.gif
+    zostal zlozony z ekranow podpisanych cudzymi nazwami, bo lista tkwila w ukladzie
+    sprzed VIEW_RETRO. Teraz krzyczy. Rozjazd przerywa skrypt PRZED przypieciem
+    czegokolwiek, wiec nie zostawia urzadzenia w polowie sesji zrzutow.
+
+    Brak Config.h (uruchomienie skryptu spoza repo) NIE jest bledem — wtedy po prostu
+    nie ma czego porownac i lecimy dalej z ostrzezeniem.
+    """
+    cfg_path = REPO_DIR / "Config.h"
+    try:
+        src = cfg_path.read_text(encoding="utf-8")
+    except OSError as e:  # noqa: BLE001
+        print(f"UWAGA: nie moge odczytac {cfg_path} ({e}) — pomijam weryfikacje.",
+              file=sys.stderr)
+        return
+
+    consts = {m.group(1): int(m.group(2))
+              for m in re.finditer(r"^constexpr\s+int\s+VIEW_(\w+)\s*=\s*(\d+)\s*;",
+                                   src, re.MULTILINE)}
+    count = consts.pop("COUNT", None)
+    if count is None or not consts:
+        raise SystemExit(f"BLAD: nie znalazlem cfg::VIEW_* w {cfg_path} — "
+                         "zmienil sie zapis stalych? Popraw ten skrypt.")
+
+    problems: list[str] = []
+
+    # 1) Kazdy wpis VIEWS wskazuje na istniejaca stala i na TEN SAM numer.
+    for idx, slug, _pl, _en in VIEWS:
+        name = SLUG_TO_CONST.get(slug)
+        if name is None:
+            problems.append(f"slug '{slug}' nie ma odpowiednika w SLUG_TO_CONST")
+        elif name not in consts:
+            problems.append(f"cfg::VIEW_{name} (slug '{slug}') nie istnieje juz w Config.h")
+        elif consts[name] != idx:
+            problems.append(f"slug '{slug}': lista mowi {idx}, "
+                            f"a cfg::VIEW_{name} = {consts[name]}")
+        if idx >= count:
+            problems.append(f"slug '{slug}': numer {idx} >= VIEW_COUNT ({count}) — "
+                            "urzadzenie odrzuci go w pinView()")
+
+    # 2) Zaden ZADEKLAROWANY widok nie wypadl po cichu z listy. To jest ta polowa
+    #    kontraktu, ktorej brak zabolal poprzednio: dodany do Config.h ekran, o ktorym
+    #    skrypt nie wie, po prostu nie trafial do docs/screens.gif.
+    listed = {SLUG_TO_CONST.get(slug) for _i, slug, _pl, _en in VIEWS}
+    for name, num in sorted(consts.items(), key=lambda kv: kv[1]):
+        if name not in listed:
+            problems.append(f"cfg::VIEW_{name} = {num} jest w Config.h, "
+                            "ale nie ma go w VIEWS — zrzut go pominie")
+
+    if problems:
+        raise SystemExit("BLAD: VIEWS rozjechalo sie z Config.h:\n  - "
+                         + "\n  - ".join(problems))
+
+    holes = sorted(set(range(count)) - set(consts.values()))
+    print(f"VIEWS zgadza sie z Config.h ({len(VIEWS)} ekranow, VIEW_COUNT={count}"
+          + (f", sloty zarezerwowane: {holes}" if holes else "") + ")")
 
 
 def http_get(url: str, timeout: float) -> bytes:
@@ -137,6 +224,9 @@ def build_contact_sheet(frames: list[tuple[str, Image.Image]], out_path: Path) -
 
 def main() -> int:
     base = sys.argv[1].rstrip("/") if len(sys.argv) > 1 else DEFAULT_BASE
+    # NAJPIERW kontrakt z Config.h, dopiero potem dotykamy urzadzenia — rozjazd ma
+    # przerwac skrypt, zanim przypnie pierwszy ekran.
+    verify_against_config()
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
     print(f"Urzadzenie: {base}")
 

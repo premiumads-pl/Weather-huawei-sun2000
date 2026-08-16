@@ -75,13 +75,18 @@ void Settings::load() {
   modbusPort = prefs.getUShort("mbport", 502);
   pvPeakW = prefs.getUShort("peak", 6000);
   otaEnabled = prefs.getBool("ota", true);
-  // (v160) Klucza "theme" JUZ NIE CZYTAMY. Motywy V1/V2 zostaly usuniete, zostal
-  // jeden uklad rysujacy (V3 "Pasmowy"), wiec nie ma wartosci, ktora mialaby tu
-  // wplynac na obraz. To jest zarazem odpowiedz na pytanie "co z urzadzeniem, ktore ma
-  // w NVS zapisane 1 albo 2": nie ma znaczenia, co tam lezy — nikt tego nie czyta, a
-  // rysowanie nie ma juz galezi, w ktora taka wartosc mogla by wejsc. Czarny ekran po
-  // aktualizacji jest wiec wykluczony strukturalnie, a nie przez sprowadzanie wartosci
-  // do 3. Osierocony klucz zostawiamy w NVS — patrz komentarz przy polach w Settings.h.
+  // SKORKA WYSWIETLACZA — wlasny klucz "theme", jak kazde inne pole (zaden blob).
+  // (v162) Klucz WRACA do odczytu razem z hakiem na skorki (patrz Settings.h).
+  // TA JEDNA LINIA JEST CALYM ZABEZPIECZENIEM PRZED CZARNYM EKRANEM po aktualizacji
+  // z v159: u wlasciciela pod tym kluczem NADAL LEZY 1 albo 2 (wycofane motywy V1/V2),
+  // a getUChar odda te wartosc DOSLOWNIE. Sprowadzamy wiec KAZDA nielegalna wartosc
+  // (1, 2, 0, smiec z uszkodzonego NVS) do jedynej istniejacej skorki. Gdyby tego tu
+  // nie bylo, a rysowanie kiedykolwiek rozgalezilo sie po tym polu, urzadzenie
+  // wpadloby w galaz nieistniejacego motywu — a jest tylko-OTA, wiec z czerni nie ma
+  // jak wrocic. NIE UPRASZCZAC tego do samego getUChar(); przy dodawaniu drugiej
+  // skorki rozszerz themeValid(), nie kasuj sprowadzania.
+  const uint8_t th = prefs.getUChar("theme", THEME_PASMOWY);
+  theme = themeValid(th) ? th : THEME_PASMOWY;
 
   // Ustawienia wyswietlacza (tryb nocny + rotacja + jasnosc). Domyslne = dawne stale
   // z Config.h; clampTuning() nizej pilnuje zakresow (m.in. TWARDE minimum jasnosci),
@@ -184,6 +189,25 @@ void Settings::save() {
   prefs.putBool("mqen", mqttEnabled);
   bleGwWrite(prefs, *this);
   prefs.end();
+}
+
+// Osobno od save(): skorka klika sie z panelu niezaleznie od reszty formularzy
+// (WiFi/MQTT/lokalizacja...), wiec nie ma powodu przy kazdym kliknieciu przepisywac
+// do NVS calej reszty ustawien. Ten sam wzorzec co saveTuning()/viSave()/meterSave().
+// (v162) WLASNY KLUCZ "theme", nie blob — dlatego przywrocenie tego pola po v160 nie
+// przesunelo ani jednego innego ustawienia w NVS.
+// Wartosci spoza themeValid() ODRZUCAMY (false), zamiast po cichu podmieniac na
+// domyslna: panel ma dostac jasny blad, a nie wrazenie, ze zapisal cos, czego nie ma.
+bool Settings::setTheme(uint8_t t) {
+  if (!themeValid(t)) return false;
+  theme = t;
+  Preferences prefs;
+  if (!prefs.begin(NS_CFG, false)) {
+    return false;
+  }
+  prefs.putUChar("theme", theme);
+  prefs.end();
+  return true;
 }
 
 // Jedno zrodlo prawdy o zakresach ustawien wyswietlacza. Godziny do 0..23; czas

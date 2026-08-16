@@ -2371,9 +2371,12 @@ void WeatherUi::drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const Weath
       v3Motion(spr, nowMs);
       break;
     case cfg::VIEW_NOW:
-    case cfg::VIEW_RETRO:   // w V3 pomijane w rotacji - defensywnie rysuj GLOWNY
-    case cfg::VIEW_HOURS:
     default:
+      // (v162) `default:` JEST TU ZABEZPIECZENIEM, NIE OZDOBA — nie kasowac. Lapie
+      // KAZDY numer widoku bez wlasnej galezi: wycofane sloty 0 (RETRO) i 2 (GODZINY),
+      // ktore nadal wolno przypiac przez POST /api/view?i=N (patrz Config.h), oraz
+      // wszystko, co wpadnie tu po przyszlej pomylce. Urzadzenie jest tylko-OTA, wiec
+      // "nieznany numer" ma pokazac ekran GLOWNY, a nigdy czarna plansze.
       // Wariant nocny (makieta 02): ciemno + pora nocna => minimalny zegar zamiast
       // dwukolumnowego ukladu. To JEDYNA zmiana w tej galezi — dzien rysuje v3Main
       // jak dotad, pozostale ekrany rotacji bez zmian.
@@ -2449,8 +2452,12 @@ void WeatherUi::drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const Weath
     // czyli najwyzej "15 z 15" = 7 znakow + NUL, co miesci sie w 12 B z zapasem.
     char pos[12];
     snprintf(pos, sizeof(pos), "%d z %d", (curSeg + 1) & 15, totSeg & 15);
-    const bool darkTop = (view == cfg::VIEW_RADAR) || (view == cfg::VIEW_NOW) ||
-                         (view == cfg::VIEW_RETRO) || (view == cfg::VIEW_HOURS);
+    // (v162) Zdjete stad VIEW_RETRO i VIEW_HOURS — oba ekrany skasowane. Warunek nie
+    // musi lapac wycofanych slotow 0/2: licznik "x z y" rysuje sie TYLKO wtedy, gdy
+    // v3ProgressPos() zwrocil true, a ten szuka biezacego widoku w kV3Loop — w ktorej
+    // ani 0, ani 2 nigdy nie bylo. Dla przypietego wycofanego numeru licznika po
+    // prostu nie ma, wiec nie ma tez czego kolorowac.
+    const bool darkTop = (view == cfg::VIEW_RADAR) || (view == cfg::VIEW_NOW);
     plex::str(spr, plex::f10(), pos, tv3::grid::MARGIN, 11,
               darkTop ? tv3::col::ONDARK_DIM : tv3::col::MUTE);
   }
@@ -2509,9 +2516,11 @@ void WeatherUi::drawV3Bottom(TFT_eSPI& tft, uint8_t view, const WeatherModel& w,
       v3MotionBottom(tft);
       break;
     case cfg::VIEW_NOW:
-    case cfg::VIEW_RETRO:
-    case cfg::VIEW_HOURS:
     default:
+      // (v162) Ta sama rola co `default:` w drawV3() wyzej: dolny pas dla KAZDEGO
+      // numeru bez wlasnej galezi, wliczajac wycofane sloty 0 i 2. Bez tego przypiety
+      // stary numer zostawilby pas 206..239 z poprzedniej klatki (rysujemy wprost na
+      // TFT, nie do bufora — nikt tego nie czysci).
       if (isNightNow(blTarget_)) {
         tft.fillRect(0, 206, tv3::grid::W, tv3::grid::H - 206, 0x0000);   // czern w nocy
       } else if (!w.ready && nowMs < 90000UL) {

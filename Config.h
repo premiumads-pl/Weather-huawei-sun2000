@@ -245,17 +245,38 @@ constexpr uint32_t MQTT_STALE_MS = 3UL * 60UL * 1000UL;
 //   rytm. 2,5 x 60 s = 150 s -> 3 min. Bylo: 900 s w panelu, czyli 15 pominietych
 //   publikacji z rzedu wygladalo na zdrowe polaczenie.
 
-constexpr int VIEW_COUNT = 13;  // RETRO / TERAZ / GODZINY / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / POWIETRZE / PAMIEC / RUCH / STATYSTYKI
-// v114: RETRO wszedl PIERWSZY w rotacji (wyrazne zyczenie wlasciciela — ma je
-// widziec zaraz po starcie, przed TERAZ). To przesuwa WSZYSTKIE pozostale numery
-// widokow o +1 wzgledem v113 (VIEW_NOW byl 0, teraz jest 1, itd.). Zrodlem prawdy
-// dla numeru widoku jest WYLACZNIE ta stala (cfg::VIEW_*) — dawniej (przed
-// wprowadzeniem VIEW_NOW/VIEW_HOURS) switch w drawView() mial gole "case 0:" /
-// "case 1:" i przezyl niezauwazony przez kilka wersji. Kazde nowe uzycie numeru
-// widoku ma isc przez cfg::VIEW_*, nigdy przez literal.
-constexpr int VIEW_RETRO = 0;   // ekran ozdobny w stylu gry platformowej 8/16-bit (Mario) — WeatherUi::drawViewRetro
+constexpr int VIEW_COUNT = 13;  // [0 wycofany] / TERAZ / [2 wycofany] / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / POWIETRZE / PAMIEC / RUCH / STATYSTYKI
+// Zrodlem prawdy dla numeru widoku jest WYLACZNIE ta stala (cfg::VIEW_*) — dawniej
+// switch w drawView() mial gole "case 0:" / "case 1:" i przezyl niezauwazony przez
+// kilka wersji. Kazde nowe uzycie numeru widoku ma isc przez cfg::VIEW_*, nigdy
+// przez literal.
+//
+// (v162) SLOTY 0 I 2 SA WYCOFANE I ZAREZERWOWANE — NIE WOLNO ICH UZYC PONOWNIE.
+// Byly to ekrany RETRO (Mario, slot 0) i GODZINY (slot 2), skasowane w calosci w
+// tej wersji. NUMERY POZOSTALYCH WIDOKOW CELOWO ZOSTALY BEZ ZMIAN, mimo ze robi to
+// dwie dziury w numeracji. Powod jest jeden i twardy: numer widoku WYCHODZI NA
+// ZEWNATRZ firmware'u przez HTTP — POST /api/view?i=N przyjmuje go, a GET /api/view
+// oddaje go w polach "cur"/"pin". Panel WWW i tools/capture_screens.py jada razem z
+// firmware i daloby sie je poprawic, ale wszystko, co siedzi POZA repozytorium
+// (zakladka w przegladarce, rest_command w Home Assistant, skrypt wlasciciela), NIE
+// jada. Przenumerowanie 0..10 zmienioby po cichu ZNACZENIE kazdego numeru >= 3 (np.
+// i=7 przestaloby byc PV, a stalo sie POKOJAMI) — czyli stary wpis nadal by dzialal,
+// tylko pokazywalby CUDZY ekran. Dokladnie ta klasa bledu juz raz uderzyla w ten
+// projekt (docs/screens.gif skladany z ekranow podpisanych cudzymi nazwami, patrz
+// naglowek tools/capture_screens.py), wiec nie powtarzamy jej dla kosmetyki.
+// Sprawdzone przed ta decyzja: numer widoku NIE trafia do MQTT (ani do discovery
+// Home Assistant, ani do nazw encji, ani do zadnego ladunku — MqttClient.cpp nie zna
+// slowa "view"), NIE trafia do NVS (przypiecie zyje w WeatherUi::pinned_, polu w RAM,
+// i ginie przy restarcie) i nie ma go w /api/state ani /api/diag. Zostaje wylacznie
+// /api/view — i to on rozstrzyga.
+//
+// Co to znaczy w praktyce dla slotow 0 i 2: nie maja juz wlasnych stalych ani wlasnych
+// galezi w dispatcherach. POST /api/view?i=0 (albo i=2) nadal przechodzi przez
+// pinView() (bo 0 i 2 < VIEW_COUNT) i trafia do galezi `default:` w drawV3()/
+// drawV3Bottom(), ktora rysuje ekran GLOWNY. To jest zachowanie ZAMIERZONE i jedyne
+// bezpieczne: urzadzenie jest tylko-OTA, wiec numer widoku spoza listy ma pokazac
+// cokolwiek czytelnego, a nie czern.
 constexpr int VIEW_NOW = 1;
-constexpr int VIEW_HOURS = 2;
 constexpr int VIEW_RADAR = 3;   // animowana mapa opadow (pomijany, gdy nie pada)
 constexpr int VIEW_DAYS = 4;
 constexpr int VIEW_HOME = 5;    // czujniki BLE — pomijany, gdy zadnego nie ma
@@ -264,18 +285,32 @@ constexpr int VIEW_PV = 7;
 constexpr int VIEW_FLIGHTS = 8;
 // v117: POWIETRZE wszedl ZARAZ PO SAMOLOTY (9) — a to przesunelo PAMIEC/RUCH/
 // STATYSTYKI o +1 wzgledem v116 (byly 9/10/11, teraz 10/11/12). Ten sam kontrakt,
-// co przy v111 nizej: static_assert w WeatherUi.cpp::drawView() wymaga
+// co przy v111 nizej: static_assert (nizej, pod stalymi) wymaga
 // VIEW_STATS == VIEW_COUNT - 1, wiec nowy ekran NIE moze wejsc na koncu — musi
 // wejsc PRZED serwisowa trojka, zeby STATS zostal ostatni.
 constexpr int VIEW_AIR = 9;     // POWIETRZE: PM10/PM2.5 + indeks ARMAAG (GA17, zapas GA24) — pomijany, gdy brak danych z obu stacji
 // v111: dwa nowe ekrany serwisowe (eksploracyjne — PAMIEC/RUCH) WESZLY PRZED
-// STATS, nie po nim. Powod: static_assert w WeatherUi.cpp::drawView() wymaga
-// VIEW_STATS == VIEW_COUNT - 1 (inaczej rotacja widokow trafia w "default" i przez
-// caly czas trzymania tego widoku ekran zostaje czarny — patrz komentarz przy
-// tym switchu). Wygodniej przesunac STATS na koniec niz rozluzniac ten kontrakt.
+// STATS, nie po nim. Powod: static_assert (nizej) wymaga
+// VIEW_STATS == VIEW_COUNT - 1. Wygodniej przesunac STATS na koniec niz rozluzniac
+// ten kontrakt.
 constexpr int VIEW_MEM = 10;    // PAMIEC: wszystkie rodzaje (SRAM/PSRAM/flash/partycje/RTC/ROM/stos)
 constexpr int VIEW_MOTION = 11; // RUCH: PIR (rytm doby) + LDR (jasnosc) + wydajnosc rysowania (fps)
 constexpr int VIEW_STATS = 12;  // ekran serwisowy — MUSI zostac VIEW_COUNT-1 (patrz wyzej)
+
+// (v162) TEN WARUNEK MIESZKA TERAZ TUTAJ, NIE W FUNKCJI. Do v159 stal w
+// WeatherUi.cpp::drawView() — i zniknal razem z ta funkcja przy usuwaniu motywow
+// V1/V2 (v160), po cichu, zostawiajac w tym pliku dwa komentarze powolujace sie na
+// straznika, ktorego juz nie bylo. Obok stalych, ktorych pilnuje, nie da sie go
+// zgubic przy kasowaniu kodu rysujacego.
+static_assert(VIEW_STATS == VIEW_COUNT - 1,
+              "VIEW_STATS musi byc ostatnim numerem widoku (VIEW_COUNT-1) — "
+              "nowy ekran dopisuj PRZED serwisowa trojka STATS/MEM/RUCH");
+// Sloty 0 i 2 sa wycofane (patrz wyzej), ale VIEW_COUNT ich NIE zwalnia: zostaja w
+// zakresie, zeby pinView() dalej przyjmowal stare numery i oddawal je galezi
+// domyslnej (ekran GLOWNY) zamiast odrzucac albo gasic ekran.
+static_assert(VIEW_NOW == 1 && VIEW_RADAR == 3,
+              "sloty 0 i 2 sa ZAREZERWOWANE po wycofanych ekranach RETRO/GODZINY — "
+              "nie przenumerowuj widokow, /api/view wystawia te numery na zewnatrz");
 
 // --- progi zdrowia urządzenia (wskaźniki na ekranie statystyk) ---
 // Temperatura: czujnik w ESP32-S3 mierzy strukturę (die), nie otoczenie.

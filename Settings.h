@@ -21,18 +21,45 @@ struct Settings {
 
   bool otaEnabled = true;
 
-  // --- wyglad interfejsu ---
-  // (v160) Pola `theme` i metody setTheme() JUZ NIE MA. Wlasciciel oglada wylacznie
-  // motyw V3 "Pasmowy" i polecil usunac V1 ("klasyczny") oraz V2 ("retro"), wiec nie
-  // ma juz czego przelaczac: rysowanie idzie jedna sciezka (WeatherUi::paintFrame ->
-  // drawV3). Usuniecie pola jest bezpieczne, bo ta struktura NIE jest zapisywana do
-  // NVS jako surowy blob o stalym ukladzie — load()/save() czytaja i pisza KAZDE pole
-  // pod WLASNYM kluczem (patrz Settings.cpp), wiec zniknieciе jednego pola niczego nie
-  // przesuwa. Stary klucz NVS "theme" (wartosc 1 albo 2) moze dalej lezec w pamieci
-  // urzadzenia — jest teraz osierocony i NIKT go nie czyta, wiec nie ma jak wplynac na
-  // obraz. Celowo go NIE kasujemy: zapis do NVS przy kazdym rozruchu tylko po to, zeby
-  // zwolnic kilka bajtow, nie jest tego wart, a gdyby kiedys trzeba bylo cofnac
-  // firmware do v159, stara wartosc jest wtedy na miejscu.
+  // --- SKORKA WYSWIETLACZA (hak na przyszlosc) -------------------------------
+  // (v162) Pole PRZYWROCONE na wyrazne polecenie wlasciciela: "Zostaw endpointy,
+  // gdybym kiedys wpadl na pomysl skorek do wyswietlacza, to ma zostac". W v160,
+  // przy usuwaniu motywow V1/V2, zniknelo RAZEM z nimi — i razem z /api/theme, polem
+  // w /api/state oraz sekcja "Wyglad interfejsu" w panelu. Wraca wiec jako SWIADOMY,
+  // PUSTY HAK, a nie jako udawanie, ze nic sie nie stalo: dzis rysowanie ma dokladnie
+  // jedna sciezke (WeatherUi::paintFrame -> drawV3) i pole na nia NIE WPLYWA.
+  //
+  // DOKLADNIE JEDNA WARTOSC JEST LEGALNA — THEME_PASMOWY. Kazda inna (1 i 2 po
+  // motywach V1/V2, ktore u wlasciciela NADAL LEZA W NVS pod kluczem "theme", a takze
+  // 0 i smieci) jest sprowadzana do niej przy odczycie w load(). TO JEST JEDYNA RZECZ
+  // STOJACA MIEDZY STARA WARTOSCIA W NVS A CZARNYM EKRANEM: gdyby ktokolwiek kiedys
+  // rozgalezil rysowanie po tym polu, a load() oddawal surowe 2, urzadzenie wpadloby
+  // w galaz nieistniejacego motywu. Urzadzenie jest tylko-OTA — z czerni nie ma
+  // powrotu. Nie usuwaj tego sprowadzania przy dodawaniu drugiej skorki; rozszerz je.
+  //
+  // ===== JAK DODAC DRUGA SKORKE (krotka instrukcja, zeby ten hak nie zgnil) =====
+  //   1. Dopisz stala obok THEME_PASMOWY ponizej (kolejny numer, np. 5 — NIE 1 ani 2,
+  //      te dwie sa spalone przez stare wartosci w NVS u wlasciciela).
+  //   2. Dopisz ja do themeValid() ponizej — to ono decyduje, co przejdzie przez
+  //      load() i przez POST /api/theme.
+  //   3. Dopisz nazwe do wyswietlenia w kThemes[] w Portal.cpp (tablica obok
+  //      apiTheme) — GET /api/theme oddaje z niej liste dostepnych skorek.
+  //   4. Rozgalez RYSOWANIE: WeatherUi::paintFrame() w WeatherUi.cpp wola dzis
+  //      bezwarunkowo drawV3()/drawV3Bottom(); tam wstaw wybor wg settings().theme.
+  //   5. Panel WWW: odkomentuj/dopisz sekcje wyboru wygladu — miejsce jest wskazane
+  //      komentarzem w literale HTML w Portal.cpp (szukaj "SKORKI").
+  static constexpr uint8_t THEME_PASMOWY = 3;   // uklad V3 "Pasmowy" — JEDYNY istniejacy
+  // Numery 1 i 2 to WYCOFANE motywy V1 ("klasyczny") i V2 ("retro"). Zarezerwowane na
+  // zawsze: u kazdego urzadzenia, ktore chodzilo na v159 lub starszym, jedna z nich
+  // nadal siedzi w NVS pod kluczem "theme".
+  static constexpr bool themeValid(uint8_t t) { return t == THEME_PASMOWY; }
+  uint8_t theme = THEME_PASMOWY;
+  // Zapisuje OD RAZU do NVS pod WLASNYM kluczem "theme" (jak viSave()/saveTuning()) i
+  // tylko wtedy, gdy t przechodzi themeValid(). Wlasny klucz, a nie blob — dopisanie
+  // tego pola z powrotem NIE przesuwa zadnego innego ustawienia, bo load()/save()
+  // adresuja kazde pole osobno (patrz Settings.cpp).
+  // false = wartosc odrzucona; RAM i NVS zostaja nietkniete.
+  bool setTheme(uint8_t t);
 
   // --- USTAWIENIA WYSWIETLACZA edytowalne z panelu (dawniej stale w Config.h) ---
   // Trzymane jako WARTOSCI GOTOWE (nie sentinel 0): load() nakłada clamp, a rysowanie
