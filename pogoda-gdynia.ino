@@ -577,7 +577,7 @@ RoomModel uiRoomModel{};
 RadarViewModel uiRadarModel{};
 
 // Zbiera gotowe wiersze ekranu W DOMU. Kolejnosc i filtrowanie sa DOKLADNIE takie,
-// jak w petli, ktora stala do v125 w drawViewHome — inaczej kafelki zmienilyby
+// jak w petli, ktora stala do v125 w owczesnym drawViewHome — inaczej kafelki zmienilyby
 // kolejnosc na ekranie.
 static void buildRoomModel(RoomModel& m, uint32_t nowMs) {
   // Zrodlo starsze niz to nie liczy sie w ogole: lepszy slaby sygnal TERAZ niz
@@ -654,7 +654,7 @@ static void buildRoomModel(RoomModel& m, uint32_t nowMs) {
 }
 
 // Wybiera klatke radaru, jej wiek i wektor przesuniecia chmur. Kod przeniesiony
-// z drawViewRadar bez zmian rachunkowych — razem z komentarzami, bo to one niosa
+// z owczesnego drawViewRadar bez zmian rachunkowych — razem z komentarzami, bo to one niosa
 // wyprowadzenie znaku wektora.
 static void buildRadarModel(RadarViewModel& m, const WeatherModel& w, uint32_t nowMs) {
   m = RadarViewModel{};
@@ -662,7 +662,7 @@ static void buildRadarModel(RadarViewModel& m, const WeatherModel& w, uint32_t n
   m.hasRain = radarmap::hasRain();
   m.error = radarmap::lastError();
   // Brak klatek: nie ma czego wybierac i — tak jak przed refaktorem, gdzie
-  // drawViewRadar wychodzil przed zapisem — diag().radarFrame zostaje nietkniety.
+  // rysowanie radaru wychodzilo przed zapisem — diag().radarFrame zostaje nietkniety.
   if (m.frames == 0) return;
 
   // Klatka animacji: cyklicznie, z krotka pauza na ostatniej (najnowszej) —
@@ -1789,17 +1789,12 @@ void setup() {
 
   portal::setViewHandler([](int i) { ui.pinView(i); },
                          [](int& cur, int& pin) { ui.viewState(cur, pin); });
-  // Panel: przycisk dotyku dziala jak fizyczny pin GPIO7. V3 "Pasmowy" ma wlasna
-  // nawigacje (touchTapV3/touchDoubleV3, spec 7a) — kierujemy tak samo jak dotyk
-  // realny, dokladamy noteRawTouch() zeby kropka feedbacku pokazala sie tez w
-  // podgladzie na zywo. V1/V2 zostaja przy restartHold/prevView bez zmian.
+  // Panel: przycisk dotyku dziala jak fizyczny pin GPIO7. Kierujemy go w te same
+  // metody co dotyk realny (touchTapV3/touchDoubleV3, spec 7a) i dokladamy
+  // noteRawTouch(), zeby kropka feedbacku pokazala sie tez w podgladzie na zywo.
   portal::setTapHandler([](int n) {
-    if (settings().theme == 3) {
-      ui.noteRawTouch();
-      if (n >= 2) ui.touchDoubleV3(); else ui.touchTapV3();
-    } else {
-      if (n >= 2) ui.prevView(); else ui.restartHold();
-    }
+    ui.noteRawTouch();
+    if (n >= 2) ui.touchDoubleV3(); else ui.touchTapV3();
   });
   // Podswietlenie: test sprzetu + podglad wysterowania (patrz Portal.h).
   portal::setBacklightHandler(
@@ -2139,27 +2134,21 @@ void loop() {
   }
 
   // --- dotyk GPIO7 ---
-  // V3 "Pasmowy" (spec 7a) ma WLASNA nawigacje: 1x = nastepny ekran w petli 8
-  // widokow, 2x = wejscie/wyjscie z diagnostyki, powrot na GLOWNY po 60 s ciszy
-  // (to ostatnie zalatwia render()). V1/V2 zostaja przy STARYM zachowaniu:
-  // restartHold (odliczanie od nowa) / prevView (poprzedni) + auto-rotacja.
-  // (v158) SINGLE przychodzi teraz NATYCHMIAST po zboczu, a dla gestu podwojnego leci
-  // SINGLE, a zaraz po nim DOUBLE (patrz Touch.cpp). Ten switch NIE wymagal z tego
-  // powodu zadnej zmiany logiki, i to nie przypadek, tylko sprawdzona wlasciwosc obu
-  // sciezek: touchDoubleV3() ustawia widok BEZWZGLEDNIE (STATS albo GLOWNY), a
-  // prevView() (V1/V2) cofa o jeden wzgledem stanu PO restartHold(), ktore widoku nie
-  // rusza. W obu wygladach drugie zbocze wiec poprawnie NADPISUJE skutek pierwszego.
-  // Zmienil sie tylko log: dla gestu podwojnego stoja w nim teraz DWIE linie, i tak ma
-  // byc — widac wtedy, ze urzadzenie uslyszalo oba stukniecia, a nie jedno.
-  const bool v3nav = settings().theme == 3;
+  // Nawigacja V3 "Pasmowy" (spec 7a): 1x = nastepny ekran w petli 8 widokow,
+  // 2x = wejscie/wyjscie z diagnostyki, powrot na GLOWNY po 60 s ciszy (to ostatnie
+  // zalatwia render()). (v160) Zniknal stad wariant V1/V2 (restartHold/prevView)
+  // razem z tamtymi motywami — zostala jedna sciezka, bez rozgalezienia.
+  // (v158) SINGLE przychodzi NATYCHMIAST po zboczu, a dla gestu podwojnego leci
+  // SINGLE, a zaraz po nim DOUBLE (patrz Touch.cpp). Ten switch tego nie rozroznia i
+  // nie musi: touchDoubleV3() ustawia widok BEZWZGLEDNIE (STATS albo GLOWNY), wiec
+  // drugie zbocze poprawnie NADPISUJE skutek pierwszego. Dla gestu podwojnego stoja
+  // w dzienniku DWIE linie i tak ma byc — widac, ze urzadzenie uslyszalo oba stukniecia.
   switch (touch::poll()) {
     case touch::Tap::SINGLE:
-      if (v3nav) { ui.touchTapV3();    LOG("Dotyk V3: nastepny ekran"); }
-      else       { ui.restartHold();   LOG("Dotyk: odliczanie ekranu od nowa"); }
+      ui.touchTapV3();    LOG("Dotyk V3: nastepny ekran");
       break;
     case touch::Tap::DOUBLE:
-      if (v3nav) { ui.touchDoubleV3(); LOG("Dotyk V3 x2: diagnostyka (nadpisuje krok 1x)"); }
-      else       { ui.prevView();      LOG("Dotyk x2: poprzedni ekran"); }
+      ui.touchDoubleV3(); LOG("Dotyk V3 x2: diagnostyka (nadpisuje krok 1x)");
       break;
     default:
       break;
@@ -2168,10 +2157,8 @@ void loop() {
   // niosla takze role "cos sie dzieje, czekaj" — bo SINGLE szlo dopiero po 550 ms;
   // teraz reakcja jest natychmiastowa, a kropka zostaje jako potwierdzenie kontaktu
   // (przydatne, gdy palec lezy na pinie za dlugo i leci tylko jedno zbocze).
-  // touch::pressedRaw() zwraca stan policzony w poll() wyzej (bez dodatkowego odczytu
-  // ADC). Tylko V3 rysuje kropke, wiec tylko tu ustawiamy znacznik — rawTouchMs_
-  // w V1/V2 zostaje martwy.
-  if (v3nav && touch::pressedRaw()) ui.noteRawTouch();
+  // touch::pressedRaw() zwraca stan policzony w poll() wyzej (bez dodatkowego odczytu ADC).
+  if (touch::pressedRaw()) ui.noteRawTouch();
 
   // --- autotest diody RGB przy starcie (3 x 500 ms) ---
   // NIE zabiera juz ekranu. Dioda i TFT to osobny sprzet — test jednego nie ma prawa

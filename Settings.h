@@ -21,18 +21,18 @@ struct Settings {
 
   bool otaEnabled = true;
 
-  // --- wyglad interfejsu (V1 "klasyczny" / V2 "SCENA", przelaczane z panelu) ---
-  // Tylko 1 albo 2 — kazda inna wartosc w NVS (urzadzenie czyste, blob z przyszlej
-  // wersji) wraca do domyslnej w load(). Domyslnie 2: wlasciciel zamowil V2 jako
-  // docelowy wyglad; V1 zostaje dostepny z panelu jako odwrot awaryjny, gdyby w
-  // nowym stylu czegos zabraklo. Ekran VIEW_RETRO (indeks 0) NIE jest tym objety —
-  // zostaje identyczny w obu wygladach (patrz WeatherUi::drawViewRetro).
-  uint8_t theme = 2;
-  // Zapisuje OD RAZU do NVS (jak viSave()/meterSave()/bleGwSave()) i tylko wtedy,
-  // gdy t to 1 albo 2 — przelacznik w panelu ma dzialac natychmiast, samodzielnie,
-  // bez klikania gdziekolwiek indziej "Zapisz". false = t byla spoza {1,2}, RAM i
-  // NVS zostaja nietkniete.
-  bool setTheme(uint8_t t);
+  // --- wyglad interfejsu ---
+  // (v160) Pola `theme` i metody setTheme() JUZ NIE MA. Wlasciciel oglada wylacznie
+  // motyw V3 "Pasmowy" i polecil usunac V1 ("klasyczny") oraz V2 ("retro"), wiec nie
+  // ma juz czego przelaczac: rysowanie idzie jedna sciezka (WeatherUi::paintFrame ->
+  // drawV3). Usuniecie pola jest bezpieczne, bo ta struktura NIE jest zapisywana do
+  // NVS jako surowy blob o stalym ukladzie — load()/save() czytaja i pisza KAZDE pole
+  // pod WLASNYM kluczem (patrz Settings.cpp), wiec zniknieciе jednego pola niczego nie
+  // przesuwa. Stary klucz NVS "theme" (wartosc 1 albo 2) moze dalej lezec w pamieci
+  // urzadzenia — jest teraz osierocony i NIKT go nie czyta, wiec nie ma jak wplynac na
+  // obraz. Celowo go NIE kasujemy: zapis do NVS przy kazdym rozruchu tylko po to, zeby
+  // zwolnic kilka bajtow, nie jest tego wart, a gdyby kiedys trzeba bylo cofnac
+  // firmware do v159, stara wartosc jest wtedy na miejscu.
 
   // --- USTAWIENIA WYSWIETLACZA edytowalne z panelu (dawniej stale w Config.h) ---
   // Trzymane jako WARTOSCI GOTOWE (nie sentinel 0): load() nakłada clamp, a rysowanie
@@ -64,7 +64,7 @@ struct Settings {
   static constexpr uint16_t DWELL_MIN    = 3;
   static constexpr uint16_t DWELL_MAX    = 60;
 
-  // Zapis OD RAZU do NVS (jak setTheme()/viSave()): osobne klucze, natychmiastowo,
+  // Zapis OD RAZU do NVS (jak viSave()): osobne klucze, natychmiastowo,
   // niezaleznie od save(). Argumenty sa clampowane w srodku (przez clampTuning),
   // wiec panel moze podac cokolwiek — twardych progow pilnujemy TU, nie w UI. Po
   // zapisie pola w RAM sa juz clampniete i nastepna klatka czyta nowe wartosci

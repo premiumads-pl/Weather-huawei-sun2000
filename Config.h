@@ -58,32 +58,22 @@ constexpr int PIN_LDR = 1;
 constexpr int PIN_PIR = 13;
 
 // ---------- Siatka layoutu ----------
+// Wysokosc gornej belki. UWAGA: to NIE jest juz stala motywu V1 — po usunieciu V1/V2
+// (v160) jej jedynymi czytelnikami sa ekrany SYSTEMOWE, wspolne dla calego firmware:
+// drawSetup() (tryb AP, "krok 1 z 2") i drawNetInfo() ("POLACZONO Z SIECIA"). Motyw V3
+// tej belki nie rysuje — ma wlasny naglowek wg siatki z ThemeV3.h. Nie kasowac.
 constexpr int HEADER_H = 28;
-constexpr int PROG_Y = 29;
-constexpr int PROG_H = 3;
+// (v160) PROG_Y/PROG_H zniknely razem z motywami V1/V2: opisywaly segmentowy pasek
+// postepu, ktorego jedynym czytelnikiem bylo drawProgress(). Motyw V3 "Pasmowy" ma
+// wlasny pasek (2 px na y=0..1, rysowany w drawV3) — te dwie stale nie definiowaly
+// juz niczego.
 constexpr int CONTENT_Y = 34;
 constexpr int CONTENT_H = 172;
 // FOOTER_Y/FOOTER_H tu NIE MA i niech tak zostanie. Byly, nie definiowaly niczego
 // (zero uzyc w calym repo) i do tego podawaly zle liczby: twierdzily 208/32, gdy
 // stopka realnie stoi na 206 i ma 34 px. Ktos, kto w dobrej wierze zmienilby te
 // stala, nie zobaczylby ZADNEGO efektu. Jedyne zrodlo prawdy o stopce to
-// WeatherUi::VIEW_H (= CONTENT_Y + CONTENT_H) i wysokosc liczona w drawFooterTo().
-
-// ---------- Siatka layoutu V2 ("SCENA", v119) ----------
-// Ten sam bufor rysowania (do y=205, czyli CONTENT_Y+CONTENT_H — patrz
-// WeatherUi::VIEW_H i notatka wyzej) w drugim ukladzie: HUD gorny, pasek segmentow
-// rotacji, wiersz tytulu, potem wlasna tresc ekranu (karty albo scena). Wspolne dla
-// wszystkich 12 planowanych ekranow V2 i zrodlo prawdy dla themev2::* (ThemeV2.h/
-// .cpp) — tak jak stale wyzej sa zrodlem prawdy dla ukladu V1. VIEW_RETRO (ekran 0)
-// nie korzysta z ZADNEJ z tych dwoch siatek — ma wlasny HUD w obu wygladach
-// (patrz komentarz przy drawViewRetro w WeatherUi.h).
-constexpr int V2_HUD_H = 28;       // y=0..27 — themev2::hudTop
-constexpr int V2_SEG_Y = 29;       // themev2::hudSegments — ta sama pozycja co PROG_Y
-constexpr int V2_SEG_H = 3;        // = PROG_H: ten sam pasek co V1, inny styl rysowania
-constexpr int V2_TITLE_Y = 36;     // themev2::titleRow
-constexpr int V2_TITLE_H = 16;     // y=36..51
-constexpr int V2_CONTENT_Y = 54;   // od tad ekran rysuje wlasna tresc (karty/scena)
-constexpr int V2_CONTENT_BOTTOM = CONTENT_Y + CONTENT_H;  // = 206, ten sam bufor co V1
+// WeatherUi::VIEW_H (= CONTENT_Y + CONTENT_H) i dolny pas rysowany w drawV3Bottom().
 
 // ---------- Podświetlenie — steruje nim OPTOREZYSTOR, nie zegar ----------
 constexpr uint32_t BL_PWM_FREQ = 5000;
@@ -310,7 +300,7 @@ constexpr uint32_t VIEW_HOLD_STATS_MS = VIEW_HOLD_MS;   // tyle samo co reszta
 constexpr uint32_t VIEW_HOLD_MEM_MS = 14000;
 constexpr uint32_t VIEW_HOLD_MOTION_MS = 14000;
 // Pelny cykl animacji radaru to (n+2)*RADAR_FRAME_MS: n klatek + 2 "przystanki"
-// pauzy na najnowszej (patrz WeatherUi::drawViewRadar). Przy 13 klatkach (v109,
+// pauzy na najnowszej (patrz v3Radar w WeatherUiV3.cpp). Przy 13 klatkach (v109,
 // bylo 7, co 20 min) to (13+2)*650 = 9750 ms, wiec dwa pelne cykle to 19,5 s.
 // Stara wartosc 16000 byla dobrana pod 7 klatek ((7+2)*650=5850 ms, tam "2x" to
 // 11,7 s, z zapasem) — po przejsciu 7->13 obcinalaby animacje w ~64% DRUGIEJ
@@ -324,7 +314,7 @@ constexpr uint32_t RADAR_FRAME_MS = 650;       // wolniej = oko nadaza za fronte
 // (echo z chmur rzedu 700 hPa, ~3 km) — nie z wiatrem PRZYZIEMNYM (10 m), jedynym,
 // jaki mamy z Open-Meteo. Ten na wysokosci bywa typowo 1,5-2,5x szybszy, bo znika
 // tarcie o teren/zabudowe. RADAR_FLOW_GAIN mnozy windKmh z API, zeby wektor ruchu
-// echa na ekranie (WeatherUi::drawViewRadar) lepiej zgadzal sie z tym, co realnie
+// echa na ekranie (v3Radar) lepiej zgadzal sie z tym, co realnie
 // widac na kolejnych klatkach.
 // To JAWNE PRZYBLIZENIE, nie pomiar — nie udawajmy inaczej. Wartosc do kalibracji,
 // gdy zbierzemy realny ruch echa (kilka frontow, porownanie przesuniecia klatka

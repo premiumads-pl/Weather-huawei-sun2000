@@ -306,16 +306,6 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
  </div>
 
  <div class=blk>
-  <h2>Wygląd interfejsu</h2>
-  <div class=tabs>
-   <button id=thv3 onclick=setTheme(3)>V3 Pasmowy</button>
-   <button id=thv1 onclick=setTheme(1)>V1 klasyczny</button>
-   <button id=thv2 onclick=setTheme(2)>V2 retro</button>
-  </div>
-  <div class=hint id=thmsg>Zmiana działa od razu, bez restartu urządzenia.</div>
- </div>
-
- <div class=blk>
   <h2>Tryb nocny i jasność automatu</h2>
   <label>Tryb nocny — ekran główny zwija się do samego zegara (godziny 0–23)</label>
   <div class=row>
@@ -641,7 +631,7 @@ const VIEWS=[['Auto',-1],['Główny',1],['Radar',3],['5 dni',4],['Prąd',7],['Po
 // Kolejnosc jak numeracja na wyswietlaczu: para dotykowa Statystyki(1/2, VIEW_STATS=12)
 // -> Pamiec(2/2, VIEW_MEM=10), a potem osobny Ruch(VIEW_MOTION=11).
 const VDIAG=[['Statystyki',12],['Pamięć',10],['Ruch',11]];
-let live=true,pin=-1,theme=3;
+let live=true,pin=-1;
 
 function bset(cls,txt){document.querySelectorAll('.'+cls).forEach(e=>e.textContent=txt);}
 // Uptime czytelnie takze przy krotkiej pracy: <1 h -> "X min", <doba -> "X h Y min",
@@ -669,21 +659,6 @@ async function pickView(i){
  $('vmsg').textContent=i<0?'Rotacja automatyczna — dokładnie jak na urządzeniu.'
   :('Zatrzymane na ekranie: '+(nm?nm[0]:i)+'. Kliknij „Auto”, żeby wznowić rotację.');
  try{const r=await(await fetch('/api/view?i='+i,{method:'POST'})).json();pin=r.pin;tabs();}catch(e){}
-}
-function themeUI(){
- $('thv1').className=theme===1?'on':'';
- $('thv2').className=theme===2?'on':'';
- $('thv3').className=theme===3?'on':'';
-}
-async function setTheme(v){
- $('thmsg').textContent='Zmieniam…';
- try{
-  const r=await(await fetch('/api/theme?v='+v,{method:'POST'})).json();
-  theme=r.theme;
-  $('thmsg').className='hint '+(r.ok?'ok':'err');
-  $('thmsg').textContent=r.ok?'Zapisano — ekran przełączy się od razu.':'Nie udało się zapisać.';
- }catch(e){$('thmsg').className='hint err';$('thmsg').textContent='Błąd połączenia';}
- themeUI();
 }
 async function saveTune(){
  $('tunmsg').className='hint';$('tunmsg').textContent='Zapisuję…';
@@ -1371,7 +1346,6 @@ async function load(){
  $('onl').className='pill '+(r.ap?'pAp':'pOn');
  $('cur').textContent=r.city+' ('+r.lat.toFixed(4)+', '+r.lon.toFixed(4)+')';
  $('ssid').value=r.ssid||'';$('mb').value=r.mb||'';$('peak').value=(r.peak/1000).toFixed(1);
- theme=r.theme||3;themeUI();
  // Ustawienia wyswietlacza — wartosci przychodza juz clampniete z urzadzenia.
  $('nstart').value=r.night_start;$('nend').value=r.night_end;$('dwell').value=r.dwell;
  $('blday').value=r.bl_day;$('bldim').value=r.bl_dim;$('blnight').value=r.bl_night;
@@ -1603,7 +1577,6 @@ void apiState() {
   d["lon"] = settings().lon;
   d["mb"] = settings().modbusHost;
   d["peak"] = settings().pvPeakW;
-  d["theme"] = settings().theme;   // 1/2/3 — panel czyta to przy kazdym ladowaniu
 
   // Ustawienia wyswietlacza (tryb nocny + rotacja + jasnosc). Wartosci sa juz
   // clampniete w Settings::load(), wiec panel pokazuje PRAWDE (to, co realnie dziala).
@@ -2346,7 +2319,7 @@ void apiDiag() {
     air["sample_epoch"] = d.airSampleEpoch;   // unix epoch (UTC) pomiaru na stacji
     const time_t nowT = time(nullptr);
     // Wiek POMIARU (od stacji), NIE wiek naszego fetch'a (to jest ok_ago_s wyzej) —
-    // ta sama para pojec, co na ekranie (patrz WeatherUi::drawViewAir).
+    // ta sama para pojec, co na ekranie (patrz v3Air w WeatherUiV3.cpp).
     if (nowT > 1700000000) {
       air["sample_age_s"] = static_cast<long>(nowT - static_cast<time_t>(d.airSampleEpoch));
     } else {
@@ -2391,7 +2364,7 @@ void apiDiag() {
 
   // --- v111: "memfull" — WSZYSTKIE rodzaje pamieci, dla ekranu PAMIEC. Zeby dalo
   // sie zweryfikowac ten ekran zdalnie (bez patrzenia na urzadzenie), tu leza TE
-  // SAME wywolania ESP-IDF, ktore rysuje WeatherUi::drawViewMem() — patrz komentarze
+  // SAME wywolania ESP-IDF, ktore rysuje ekran PAMIEC (v3Diag2) — patrz komentarze
   // przy tamtej funkcji co do znaczenia largest_block/min_ever/partycji/RTC/ROM.
   // `mem` wyzej (sram_free/sram_min/sram_block/psram_*) zostaje NIETKNIETY — to
   // sekcja dodatkowa, nie zamiennik.
@@ -2879,21 +2852,6 @@ void apiBacklight() {
   server.send(200, "application/json", buf);
 }
 
-// Przelacznik wygladu V1/V2. Dziala NATYCHMIAST bez restartu: settings().setTheme()
-// pisze do NVS od razu (patrz Settings.cpp), a nastepna klatka juz czyta nowa
-// wartosc — tyle ze na razie NIC jej jeszcze nie czyta (ten etap buduje tylko
-// przelacznik i prymitywy V2, patrz ThemeV2.h; podlaczenie do rysowania widokow to
-// kolejny krok). v spoza {1,2} zostaje bez zmian — endpoint zwraca wtedy aktualny,
-// niezmieniony stan, a nie zamrozony/domyslny, zeby panel zawsze pokazal PRAWDE.
-void apiTheme() {
-  const int v = server.hasArg("v") ? server.arg("v").toInt() : 0;
-  const bool ok = (v >= 1 && v <= 3) && settings().setTheme(static_cast<uint8_t>(v));
-  char buf[64];
-  snprintf(buf, sizeof(buf), "{\"ok\":%s,\"theme\":%d}", ok ? "true" : "false",
-           settings().theme);
-  server.send(200, "application/json", buf);
-}
-
 // Ustawienia wyswietlacza edytowalne z panelu: okno trybu nocnego (nightStart/nightEnd),
 // czas jednego ekranu w rotacji (dwell [s]) i trzy poziomy jasnosci (blDay/blDim/blNight).
 // Kazdy argument opcjonalny — brakujacy zostaje bez zmian (bierzemy biezaca wartosc).
@@ -3365,7 +3323,6 @@ void routes() {
   server.on("/api/screen", apiScreen);
   server.on("/api/view", apiView);
   server.on("/api/tap", HTTP_POST, apiTap);
-  server.on("/api/theme", HTTP_POST, apiTheme);
   server.on("/api/tuning", HTTP_POST, apiTuning);
   // POST, nie GET: MUTUJA podswietlenie, wiec obca strona nie odpali ich przez
   // <img src=".../api/bl?v=255"> (jak przy vi/set). Panel wola je metoda POST.

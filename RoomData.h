@@ -7,7 +7,7 @@
 // Model posredni ekranu W DOMU (v126). Po co osobna struktura, skoro dane siedza
 // juz w ble::?
 //
-// Bo do v125 funkcja RYSUJACA (drawViewHome/drawViewHomeV2) sama podejmowala
+// Bo do v125 funkcja RYSUJACA (owczesne drawViewHome/drawViewHomeV2) sama podejmowala
 // decyzje o DANYCH: czytala singleton ble:: na zywo, szukala nazwy pokoju przez
 // settings().bleFind(), wolala millis() (mimo ze nowMs stal obok w sygnaturze
 // paintFrame) i - najgorsze - sama arbitrazowala RSSI miedzy wlasnym radiem a

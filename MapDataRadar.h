@@ -26,7 +26,7 @@ constexpr int MAP_H = 172;
 // wynik dla tej linii tez, o ile ktos ja przy okazji nie skasuje (gen_map.py
 // jej dzis nie emituje samo, patrz uwaga w tools/gen_map.py).
 //
-// Uzywana przez WeatherUi::drawViewRadar do przeliczenia predkosci wiatru
+// Uzywana przez ekran RADAR (v3Radar) do przeliczenia predkosci wiatru
 // (km/h) na przesuniecie w pikselach tej mapy MIEDZY klatkami radaru. Do v109
 // ta skala byla wpisana na sztywno w WeatherUi.cpp jako 349 m/px -- ale to byla
 // skala gmapw (111 km szerokosci / 320 px). Ta mapa pokrywa ~300 km na tej

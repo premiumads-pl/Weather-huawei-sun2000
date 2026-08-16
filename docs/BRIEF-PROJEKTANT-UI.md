@@ -3,6 +3,17 @@
 **Wersja dokumentu:** 1.1 · lipiec 2026 · firmware v117
 **Repozytorium:** https://github.com/premiumads-pl/Weather-huawei-sun2000
 
+> **DOKUMENT HISTORYCZNY — nie opisuje stanu obecnego (nota z v160).**
+> To jest brief, którym zamówiono wygląd **V2** („retro") jako alternatywę dla
+> ówczesnego **V1** („klasyczny"). Oba te wyglądy **zostały usunięte z firmware
+> w v160** — razem z przełącznikiem motywów w panelu WWW, endpointem `/api/theme`
+> i polem `theme` w ustawieniach. Jedynym wyglądem jest dziś **V3 „Pasmowy"**,
+> zamówiony osobnym briefem `BRIEF-PROJEKTANT-INTERFEJSU.md` (wersja 2.0).
+> Wszystko poniżej — punkty 9 („wygląd V1 zostaje bez zmian"), 10 („zadanie: wygląd
+> V2") i 11 („przełączanie V1 / V2") — czytaj wyłącznie jako zapis tego, co
+> zamawiano w lipcu 2026, nie jako opis działającego urządzenia. Budżety flasha
+> i wyliczenia kosztu drugiego kompletu ikon też dotyczą tamtego stanu.
+
 > **Uwaga o wiarygodności tego dokumentu.** Wersja 1.0 zawierała dwa błędy rzeczowe: twierdziła, że urządzenie nie ma dotyku (ma) i że ikony pogody są rysowane wektorowo (są bitmapami zajmującymi ~98 kB flasha). Oba wynikały z pisania z pamięci zamiast sprawdzenia w kodzie. W wersji 1.1 **każda liczba i każde twierdzenie techniczne zostały zweryfikowane** bezpośrednio w źródłach albo odczytane z działającego urządzenia. Miejsca, gdzie czegoś nie zweryfikowano, są oznaczone wprost.
 
 ---

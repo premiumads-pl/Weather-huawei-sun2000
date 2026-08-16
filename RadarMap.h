@@ -13,7 +13,7 @@
 // Do v109 bralismy co DRUGA klatke (7 z 13, co 20 min) — front przeskakiwal 48 px
 // naraz (15% szerokosci ekranu) i wygladal na "latajacy". Teraz bierzemy KAZDA
 // klatke, jaka RainViewer oddaje: sam skok bazowy spada o polowe, a reszte
-// plynnosci dorzuca interpolacja wektorem wiatru w WeatherUi::drawViewRadar
+// plynnosci dorzuca interpolacja wektorem wiatru w ekranie RADAR (v3Radar)
 // (potrzebuje gestszych klatek, zeby miec miedzy czym "dojezdzac").
 //
 // Geometria (v110, POSZERZENIE Z 111 NA ~300 KM — sprostowanie: ten komentarz

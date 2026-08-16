@@ -75,11 +75,13 @@ void Settings::load() {
   modbusPort = prefs.getUShort("mbport", 502);
   pvPeakW = prefs.getUShort("peak", 6000);
   otaEnabled = prefs.getBool("ota", true);
-  // Domyslnie 2 (V2) — patrz uzasadnienie przy polu w Settings.h. Kazda wartosc
-  // spoza {1,2} (np. 0 z NVS, ktorego ta wersja nigdy by nie zapisala) wraca do
-  // domyslnej, zamiast wciskac sie w rysowanie jako nieznany wyglad.
-  const uint8_t th = prefs.getUChar("theme", 3);
-  theme = (th >= 1 && th <= 3) ? th : 3;   // 1=V1 ciemny, 2=V2 retro, 3=V3 "Pasmowy" (domyslny)
+  // (v160) Klucza "theme" JUZ NIE CZYTAMY. Motywy V1/V2 zostaly usuniete, zostal
+  // jeden uklad rysujacy (V3 "Pasmowy"), wiec nie ma wartosci, ktora mialaby tu
+  // wplynac na obraz. To jest zarazem odpowiedz na pytanie "co z urzadzeniem, ktore ma
+  // w NVS zapisane 1 albo 2": nie ma znaczenia, co tam lezy — nikt tego nie czyta, a
+  // rysowanie nie ma juz galezi, w ktora taka wartosc mogla by wejsc. Czarny ekran po
+  // aktualizacji jest wiec wykluczony strukturalnie, a nie przez sprowadzanie wartosci
+  // do 3. Osierocony klucz zostawiamy w NVS — patrz komentarz przy polach w Settings.h.
 
   // Ustawienia wyswietlacza (tryb nocny + rotacja + jasnosc). Domyslne = dawne stale
   // z Config.h; clampTuning() nizej pilnuje zakresow (m.in. TWARDE minimum jasnosci),
@@ -184,22 +186,6 @@ void Settings::save() {
   prefs.end();
 }
 
-// Osobno od save(): przelacznik wygladu klika sie z panelu niezaleznie od reszty
-// formularzy (WiFi/MQTT/lokalizacja...), wiec nie ma powodu przy KAZDYM kliknieciu
-// V1/V2 przepisywac do NVS cala reszte ustawien. Ten sam wzorzec co viSave()/
-// meterSave()/bleGwSave() nizej.
-bool Settings::setTheme(uint8_t t) {
-  if (t < 1 || t > 3) return false;   // 1=V1, 2=V2, 3=V3 "Pasmowy"
-  theme = t;
-  Preferences prefs;
-  if (!prefs.begin(NS_CFG, false)) {
-    return false;
-  }
-  prefs.putUChar("theme", theme);
-  prefs.end();
-  return true;
-}
-
 // Jedno zrodlo prawdy o zakresach ustawien wyswietlacza. Godziny do 0..23; czas
 // ekranu do DWELL_MIN..DWELL_MAX; jasnosc podbijana do TWARDEGO minimum (gorna
 // granica 255 jest darmowa — uint8_t). Bez zejscia ponizej progu ekranu nie da sie
@@ -216,7 +202,7 @@ void Settings::clampTuning() {
 
 // Osobno od save(): ustawienia wyswietlacza zmienia sie z panelu niezaleznie od
 // reszty formularzy, wiec nie ma po co przy kazdej zmianie przepisywac WiFi/MQTT.
-// Ten sam wzorzec co setTheme()/viSave()/meterSave(). Clamp NAJPIERW — do NVS i do
+// Ten sam wzorzec co viSave()/meterSave(). Clamp NAJPIERW — do NVS i do
 // RAM trafiaja juz wartosci w zakresie, wiec panel czytajacy je z powrotem widzi
 // PRAWDE (np. jasnosc podbita do minimum).
 bool Settings::saveTuning(uint8_t nStart, uint8_t nEnd, uint16_t dwell,

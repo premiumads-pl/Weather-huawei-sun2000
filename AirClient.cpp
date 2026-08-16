@@ -205,7 +205,7 @@ bool AirClient::parsePayload(const char* json, std::size_t len, AirModel& out) c
 
   if (!out.hasPm10 && !out.hasPm25) {
     // Ani glowna, ani zapasowa stacja nie dala NIC uzytecznego. Ekran (WeatherUi::
-    // drawViewAir) i rotacja (WeatherUi::render) maja to potraktowac jak brak danych
+    // v3Air) i rotacja (WeatherUi::render) maja to potraktowac jak brak danych
     // w ogole — dokladnie tak, jak RADAR bez opadu.
     strncpy(out.errorMsg,
             out.usingFallback ? "Brak danych: GA17 i GA24" : "Brak danych: GA17",

@@ -1933,15 +1933,15 @@ void v3Diag2(TFT_eSPI& s, uint32_t heapNow, float cpuTempC) {
   // RTC SLOW — pamiec .rtc_noinit przezywajaca restart programowy/OTA (trzyma dlugoterminowe
   // statystyki PIR/LDR: gPir/gLdr). NIE MA API runtime na jej zajetosc (jak getFreeHeap/
   // getFreePsram dla RAM/PSRAM), wiec liczymy ja z sizeof znanych struktur, a pojemnosc to
-  // REALNY rozmiar sekcji (7680 B). DOKLADNIE te same liczby, co ekran PAMIEC w V1/V2
-  // (WeatherUi.cpp drawViewMem: used = sizeof(PirRtc)+sizeof(LdrRtc), usable 7680) oraz panel
-  // /api/memfull (Portal.cpp) — zeby TRZY miejsca pokazujace RTC SLOW mowily to samo. UWAGA:
-  // gPvRtc (+40 B, dodane w v113) jest TU i TAM pomijane; policzenie kompletu wymagaloby
-  // ZGODNEJ poprawki we wszystkich trzech miejscach. Pasek jak RAM wyzej i jak RTC w
-  // drawViewMem: udzial WOLNEGO miejsca, zielony (col::OK) — mocno wypelniony == duzo zapasu.
+  // REALNY rozmiar sekcji (7680 B). DOKLADNIE te same liczby, co panel /api/memfull
+  // (Portal.cpp) — zeby OBA miejsca pokazujace RTC SLOW mowily to samo. (Do v159 bylo ich
+  // trzy: trzecim byl ekran PAMIEC motywow V1/V2, usuniety w v160.) UWAGA: gPvRtc (+40 B,
+  // dodane w v113) jest TU i TAM pomijane; policzenie kompletu wymagaloby ZGODNEJ poprawki
+  // w obu miejscach. Pasek jak RAM wyzej: udzial WOLNEGO miejsca, zielony (col::OK) —
+  // mocno wypelniony == duzo zapasu.
   plex::str(s, plex::f13(), "RTC SLOW", lx, y, col::PANEL);
   {
-    const uint32_t used = sizeof(PirRtc) + sizeof(LdrRtc);   // gPir + gLdr (jak drawViewMem/Portal)
+    const uint32_t used = sizeof(PirRtc) + sizeof(LdrRtc);   // gPir + gLdr (jak /api/memfull)
     constexpr uint32_t usable = 7680;   // realny rozmiar .rtc_noinit — stala jak w Portal.cpp
     char v[40];
     snprintf(v, sizeof(v), "%lu / %lu B · przeżywa restart",

@@ -61,7 +61,6 @@ class WeatherUi {
   // dotyka bufora wyswietlacza, wiec obraz na TFT sie nie zatrzymuje.
   void streamScreenshot(WiFiClient& client, const WeatherModel& w, const PvModel& pv,
                         const PvHistory& hist, const FlightModel& fl, bool wifiOk);
-  void drawFooterTo(TFT_eSPI& dst, const PvModel& pv, bool wifiOk);
   bool restoreBuffer();  // odtwarza bufor po zakończonym OTA
   void drawOtaDirect(int progress, const char* msg);
 
@@ -79,18 +78,9 @@ class WeatherUi {
   // Podglad w przegladarce: przypiecie ekranu (idx < 0 = rotacja automatyczna).
   void pinView(int idx);
 
-  // Dotyk GPIO7: odliczanie bieżącego ekranu startuje od nowa. Nie zatrzymuje
-  // rotacji na stałe — po prostu przedłuża to, na co patrzysz.
-  void restartHold() { viewStart_ = millis(); }
-
-  // Podwójne dotknięcie: krok wstecz. Pomija ekrany, które i tak są wyłączone
-  // z rotacji (radar bez opadu, "w domu" bez czujników) — inaczej cofnięcie
-  // trafiałoby w pustą kartę.
-  void prevView();
-
   // --- NAWIGACJA DOTYKIEM V3 "Pasmowy" (spec 7a) ----------------------------
-  // TYLKO dla theme==3. V1/V2 uzywaja restartHold()/prevView() powyzej bez zmian
-  // (patrz switch dotyku w pogoda-gdynia.ino i galaz theme==3 w render()).
+  // (v160) JEDYNA nawigacja dotykiem. Do v159 stal obok niej wariant V1/V2
+  // (restartHold/prevView); zniknal razem z tamtymi motywami.
   // 1x stukniecie: nastepny ekran w PETLI 8 widokow (GLOWNY->RADAR->5 DNI->PRAD->
   // POKOJE->OGRZEWANIE->POWIETRZE->SAMOLOTY->GLOWNY), z pominieciem niedostepnych
   // (viewSkipped). Bedac w diagnostyce (STATS/MEM) przelacza miedzy nimi.
@@ -130,10 +120,9 @@ class WeatherUi {
 
   // Czy ekran `i` jest pomijany w rotacji (radar bez opadu, "w domu" bez czujnikow,
   // piec bez autoryzacji, powietrze bez danych z obu stacji) — JEDYNE miejsce z tymi
-  // czterema warunkami, zeby definicja "pomijany" nie rozjechala sie miedzy paskiem
-  // postepu V1 (drawProgress) a paskiem segmentow V2 (themev2::hudSegments, patrz
-  // ThemeV2.h). Statyczna i publiczna celowo: hudSegments rysuje sie z osobnego
-  // pliku (ThemeV2.cpp), bez wlasnej instancji WeatherUi.
+  // czterema warunkami, zeby definicja "pomijany" nie rozjechala sie miedzy rotacja,
+  // nawigacja dotykiem i paskiem postepu V3. Statyczna celowo — v3ProgressPos() liczy
+  // z niej pozycje "x z y" bez potrzeby stanu instancji.
   static bool viewSkipped(int i, const struct AirModel* air);
 
   void raiseAlert(const Alert& a, uint32_t nowMs);
@@ -226,13 +215,6 @@ class WeatherUi {
   void pushBands(F&& paint);
 
   // stopka: rysujemy tylko gdy dane się zmieniły (inaczej migotałaby)
-  int32_t lastAc_ = INT32_MIN;
-  int32_t lastGrid_ = INT32_MIN;
-  int lastKwh_ = -1;
-  int lastCpu_ = -1000;
-  bool lastOnline_ = false;
-  bool lastAsleep_ = false;   // falownik uśpiony (noc) — inaczej stopka by nie odświeżyła
-  bool footerInit_ = false;
 
   // rotacja widoków
   uint8_t view_ = 0;
@@ -302,69 +284,22 @@ class WeatherUi {
 
   // Rysowanie. Wszystkie te funkcje operują na GLOBALNYCH współrzędnych ekranu
   // (y=0..205) i nie wiedzą, w którym pasie są — przycina je viewport celu.
-  void drawHeader(TFT_eSPI& spr, const WeatherModel& w, bool wifiOk, uint32_t nowMs);
-  void drawProgress(TFT_eSPI& spr, uint32_t nowMs);
-  void drawFooter(const PvModel& pv, bool wifiOk);
-  void drawSysBoxTo(TFT_eSPI& dst, int y);
   void drawContentBg(TFT_eSPI& spr);
-  void drawView(TFT_eSPI& spr, uint8_t view, int ox, float t, const WeatherModel& w,
-                const PvModel& pv, const PvHistory& hist, const FlightModel& fl,
-                uint32_t nowMs, uint32_t heapNow);
-  // v114: ekran ozdobny (patrz WeatherUi.cpp, sekcja "WIDOK 0: RETRO"). Ma WLASNY
-  // HUD gorny i dolny (stylizowane na 8-bit), wiec w odroznieniu od reszty widokow
-  // NIE korzysta ze wspolnego drawHeader/drawProgress/drawFooter — paintFrame()
-  // i render()/streamScreenshot() maja z tego powodu osobna galaz dla VIEW_RETRO.
-  void drawViewRetro(TFT_eSPI& spr, int ox, float t, const WeatherModel& w, uint32_t nowMs);
-  // Dolny pasek RETRO (WILGOC/WIATR/HPA) zajmuje dokladnie to miejsce co stopka PV
-  // (y=206..239, poza buforem VIEW_H) — patrz drawFooterTo(). Ten sam wzorzec:
-  // dowolny cel (TFT na żywo albo pasek zrzutu), zeby dzialalo w obu miejscach.
-  void drawViewRetroFooter(TFT_eSPI& dst, const WeatherModel& w);
-  void drawViewNow(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
-  void drawViewHours(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
-  void drawViewDays(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
-  void drawViewPv(TFT_eSPI& spr, int ox, float t, const PvModel& pv, const PvHistory& hist);
-  void drawViewFlights(TFT_eSPI& spr, int ox, float t, const FlightModel& fl);
-  void drawViewRadar(TFT_eSPI& spr, int ox, float t, const WeatherModel& w, uint32_t nowMs);
-  void drawViewHome(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
-  void drawViewBoiler(TFT_eSPI& spr, int ox, float t);
-  void drawGasChart(TFT_eSPI& spr, int ox, float e);
-  // v111: dwa nowe ekrany eksploracyjne (obok VIEW_STATS, ktory zostaje nietkniety).
-  // heapNow: ta sama zlapana-raz-u-wolajacego wartosc, co dostaje drawViewStats —
-  // "SRAM wolny TERAZ" ma pokazywac identyczna liczbe na obu ekranach. nowMs
-  // (tylko RUCH) sluzy do "ostatni ruch X temu" z tego samego powodu.
-  void drawViewMem(TFT_eSPI& spr, int ox, float t, uint32_t heapNow);
-  void drawViewMotion(TFT_eSPI& spr, int ox, float t, uint32_t nowMs);
-  void drawViewStats(TFT_eSPI& spr, int ox, float t, uint32_t nowMs, uint32_t heapNow);
-  // v117: jakosc powietrza. `w` — TYLKO do opcjonalnego wiersza porownania z nasza
-  // prognoza (w.current.tempC); juz i tak jest w drawView(), wiec to przekazanie
-  // niczego nie kosztuje. Bez nowMs — jedyna wartosc "zywa" na tym ekranie (wiek
-  // ostatniej probki) liczy sie z epoch (time(nullptr)), nie z millis(), a to jest
-  // ten sam rodzaj odczytu "zegara sciennego", co godzina podswietlanego slupka w
-  // drawViewMotion — tam tez wolane swiezo, z tym samym uzasadnieniem (patrz tamten
-  // komentarz): kosmetyczna niescislosc rzedu sekundy miedzy paskami zrzutu nikomu
-  // nie szkodzi, a wciaganie TEGO parametru przez caly lancuch render/paintFrame/
-  // drawView tylko po to nie byloby tego warte.
-  void drawViewAir(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
 
-  // --- V2 ("SCENA", v119) — jeden wariant na kazdy widok V1 powyzej, OPROCZ
-  // VIEW_RETRO (ten zostaje wspolny dla obu wygladow, patrz WeatherUi::drawView
-  // i komentarz przy Settings::theme w Settings.h). Te same modele danych co
-  // V1 (patrz sygnatury — identyczne parametry), inny styl rysowania: prymitywy
-  // z ThemeV2.h (HUD/segmenty/tytul/karta/tlo), font wylacznie RetroFont.
-  // Definicje siedza w OSOBNEJ sekcji na koncu WeatherUi.cpp — nie mieszane z
-  // V1, zeby "nie ruszac V1" bylo prawdziwe takze wizualnie w diffie.
-  void drawViewNowV2(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
-  void drawViewHoursV2(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
-  void drawViewDaysV2(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
-  void drawViewPvV2(TFT_eSPI& spr, int ox, float t, const PvModel& pv, const PvHistory& hist);
-  void drawViewFlightsV2(TFT_eSPI& spr, int ox, float t, const FlightModel& fl);
-  void drawViewRadarV2(TFT_eSPI& spr, int ox, float t, const WeatherModel& w, uint32_t nowMs);
-  void drawViewHomeV2(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
-  void drawViewBoilerV2(TFT_eSPI& spr, int ox, float t);
-  void drawViewAirV2(TFT_eSPI& spr, int ox, float t, const WeatherModel& w);
-  void drawViewMemV2(TFT_eSPI& spr, int ox, float t, uint32_t heapNow);
-  void drawViewMotionV2(TFT_eSPI& spr, int ox, float t, uint32_t nowMs);
-  void drawViewStatsV2(TFT_eSPI& spr, int ox, float t, uint32_t nowMs, uint32_t heapNow);
+  // --- EKRAN RETRO (Mario) — v114, obecnie NIEUZYWANY -----------------------------
+  // Do v159 byl slotem 0 rotacji w motywach V1 i V2. Motyw V3 "Pasmowy" go NIE MA:
+  // viewSkipped() pomija VIEW_RETRO, kV3Loop go nie zawiera, a drawV3() rysuje pod tym
+  // numerem ekran GLOWNY. Po usunieciu V1/V2 (v160) nikt wiec tych dwoch metod nie wola.
+  // ZOSTAWIONE CELOWO: wlasciciel prosil o usuniecie MOTYWOW, nie ekranow, a decyzja
+  // "kasujemy Mario czy przywracamy go do petli V3" nalezy do niego. Linker (--gc-sections)
+  // i tak nie wciaga ich do binarki, wiec nie kosztuja flasha ani RAM-u — koszt jest
+  // wylacznie w zrodle (ok. 340 linii tutaj i w WeatherUi.cpp + RetroFont.h/RetroSprites.h).
+  // Zeby je ozywic, wystarczy dopisac cfg::VIEW_RETRO do kV3Loop i zdjac go z viewSkipped().
+  void drawViewRetro(TFT_eSPI& spr, int ox, float t, const WeatherModel& w, uint32_t nowMs);
+  // Dolny pasek RETRO (WILGOC/WIATR/HPA) na y=206..239 (poza buforem VIEW_H), rysowany
+  // wprost na cel — tak jak dzis robi to drawV3Bottom(). Nieuzywany z tego samego powodu.
+  void drawViewRetroFooter(TFT_eSPI& dst, const WeatherModel& w);
+
 
   // Motyw V3 "Pasmowy" (WeatherUiV3.cpp). JEDEN dispatcher rysuje obszar sprite
   // (y=0..205), drugi — dolny pas (206..239) wprost na TFT, bo uklad V3 siega pelnej
@@ -387,22 +322,13 @@ class WeatherUi {
   bool v3ProgressPos(int& cur, int& total) const;
   // Plansza zdarzenia w stylu V3 (makiety 13/18/19): ciemne tlo, glif/trojkat po lewej,
   // tytul + tekst alertu po prawej, akcent kolorem alert_.color. Rysowana zamiast drawV3()
-  // gdy alertActive_ (patrz paintFrame). `t` = postep wejscia jak V1 drawAlert (260 ms).
+  // gdy alertActive_ (patrz paintFrame). `t` = postep wejscia planszy (260 ms).
   void drawV3Alert(TFT_eSPI& spr, float t);
-  // Karta "BRAK DANYCH" — jeden wyglad dla wszystkich miejsc w V2, ktore V1
-  // pokrywa przez drawNoData()/drawNoData(..., sub). `msg`/`sub` ida przez
-  // themev2::foldAscii w srodku (patrz definicja) — wolno im wiec nosic
-  // polskie znaki, tak jak istniejacym stringom bledow (np. radarmap::lastError()).
-  void drawNoDataV2(TFT_eSPI& spr, int ox, const char* msg, const char* sub = nullptr);
-
   void drawBacklightSweep(TFT_eSPI& spr, uint32_t nowMs);
-  void drawAlert(TFT_eSPI& spr, float t);
-  // Podtytuł (sub) niesie powód ciszy falownika — noc, nie awaria.
-  void drawNoData(TFT_eSPI& spr, int ox, const char* msg, const char* sub = nullptr);
   uint32_t holdFor(uint8_t view) const;
 
   // V3: ustaw widok NATYCHMIAST (bez slajdu — V3 tnie, patrz paintFrame), zresetuj
   // liczniki wejscia i wymus przerysowanie. Zdejmuje pin z panelu (dotyk przejmuje
-  // sterowanie) i gasi ewentualny alert (jak prevView/pinView). Tylko sciezka V3.
+  // sterowanie) i gasi ewentualny alert (jak pinView).
   void setViewV3(uint8_t v);
 };
