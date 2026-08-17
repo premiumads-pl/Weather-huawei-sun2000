@@ -468,7 +468,24 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top
   const int prod = pv.data.powerAcW < 0 ? 0 : pv.data.powerAcW;
   const int load = pv.data.houseLoadW < 0 ? 0 : pv.data.houseLoadW;
   const int gridW = pv.data.gridPowerW;   // >0 oddajemy, <0 pobor
-  const bool producing = prod >= load && prod > 120;
+  // (v167) KONTRAKT TEGO MODULU: WIELKA LICZBA JEST SUMA PASKA. Pasek nizej dzieli
+  // max(prod, load), czyli RAZ produkcje (na [z PV][→sieć]), a RAZ pobor domu
+  // (na [z PV][z sieci]) — i tak MUSI byc, bo tylko wieksza z dwoch mocy zawiera
+  // w sobie obie czesci. Ale zamiana podstawy musi byc widoczna, inaczej niebieski
+  // segment jest raz procentem PRODUKCJI, a raz procentem POBORU i obie liczby
+  // wygladaja identycznie (25% w poludnie i 13% rano znacza wtedy co innego).
+  // Mowi to slowo przy wielkiej liczbie ("kW prod." / "kW pobór") — pod warunkiem,
+  // ze wielka liczba naprawde jest ta podstawa.
+  // BLAD DO v166: warunek brzmial `prod >= load && prod > 120`, wiec gdy obie moce
+  // byly ponizej 120 W, a produkcja nie mniejsza od poboru (swit, zmierzch, zima —
+  // np. PV 100 W, dom 50 W), wielka liczba pokazywala POBOR ("0,1 kW pobór"),
+  // a pasek dzielil PRODUKCJE 100 W na [50 W z PV][50 W do sieci]. Podpis opisywal
+  // wtedy inna wielkosc niz pasek pod nim, i nic tego nie zdradzalo.
+  // `prod > load` daje rownowaznosc scisla: prod > load => max = prod (podpis
+  // "prod."), prod <= load => max = load (podpis "pobór"). Prog 120 W jest zbedny,
+  // bo przy prod = load = 0 warunek i tak jest falszywy — zostaje uczciwe
+  // "0,0 kW pobór" nad pustym torem paska (span = 0, patrz nizej).
+  const bool producing = prod > load;
 
   // (v161) Wyciszenie i wiek — wzorzec z v158 (ekran glowny, wiersz "odczuwalna"
   // ustepujacy miejsca wiekowi). ZERO NOWYCH WIERSZY: prawy gorny wiersz modulu
@@ -516,9 +533,14 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top
 
   // --- PASEK PRZEPLYWU ENERGII (dynamiczny, wszystkie przypadki) ----------------
   // Rozklad mocy na trzy skladniki:
-  //   selfUse = min(prod, load)  — PV zjadana przez dom  (NIEBIESKI col::SELF)
+  //   selfUse = min(prod, load)  — autokonsumpcja        (NIEBIESKI col::SELF)
   //   export  = max(0, prod-load) — nadwyzka PV do sieci  (ZIELONY  col::OK)
   //   import  = max(0, load-prod) — dom dobiera z sieci   (CZERWONY col::GRID)
+  // (v167) TE TRZY KOLORY SA WZORCEM DLA CALEGO PROJEKTU — ten pasek jest jedynym
+  // miejscem, gdzie wszystkie trzy skladniki bilansu stoja obok siebie, wiec to on
+  // definiuje jezyk kolorow energii (pelny kontrakt: ThemeV3.h przy col::SELF).
+  // W v167 dostosowal sie do niego ekran PRAD — oba paski dnia i wykres doby.
+  // Tutaj NIC sie nie zmienilo: ten modul mial racje od poczatku.
   // Szerokosc paska = max(prod, load), wiec oba scenariusze sie mieszcza:
   //   prod > load -> [niebieski selfUse][zielony export]  (oddajemy nadprodukcje)
   //   prod < load -> [niebieski selfUse][czerwony import] (kupujemy z sieci)
@@ -1276,8 +1298,15 @@ PvBalance pvBalance(const PvSnapshot& d, const PvHistory& h) {
 // `muted` (dane stare, wzorzec v158): segment A col::MUTE, segment B col::LINE —
 // podzial wciaz widac, ale kolor-komunikat ("zielone=dobre", "czerwone=platne")
 // jest zdjety; procenty tez znikaja, bo sa czescia tego samego komunikatu.
-// txtA/txtB: kolor procentu dobrany do jasnosci segmentu (BG na ciemnych OK/GRID,
-// PANEL na jasnych OK2/PV) — jeden kontrast, zero zgadywania w miejscu wywolania.
+// txtA/txtB: kolor procentu dobrany do jasnosci segmentu — jeden kontrast, zero
+// zgadywania w miejscu wywolania. (v167) Po zmianie palety pasków przeliczone
+// wprost ze wzoru WCAG na tle #F4F4F0 (BG) i #1A1C1E (PANEL):
+//   SELF #3D78C4 (Y=0,182): BG 4,09 : 1  vs PANEL 3,80 : 1  -> BG
+//   OK   #4D9A4D (Y=0,253): BG 3,13 : 1  vs PANEL 4,96 : 1  -> PANEL
+//   GRID #C04A3A (Y=0,164): BG 4,44 : 1  vs PANEL 3,50 : 1  -> BG
+// Przy okazji kontrast W PASKU "PV DZIŚ" WZROSL: do v166 lewy segment byl zielony
+// z jasnym procentem (3,13), a teraz jest niebieski z jasnym (4,09); prawy byl
+// jasnozielony OK2 z ciemnym, a jest zielony z ciemnym (4,96).
 void dayBar(TFT_eSPI& s, int y, float frac, bool hasData, bool muted,
             uint16_t colA, uint16_t colB, uint16_t txtA, uint16_t txtB) {
   const int bx = grid::MARGIN, bw = grid::W - 2 * grid::MARGIN, bh = 11;
@@ -1469,16 +1498,27 @@ void v3Pv(TFT_eSPI& s, const PvModel& pv, const PvHistory& hist) {
   plex::str(s, plex::f11(), line1, grid::MARGIN, 88, cSec);
   fmt1(la, sizeof(la), selfPv);
   fmt1(lb, sizeof(lb), expKwh);
-  // Legenda po prawej w tym samym wierszu: najszersze "zużyte 99,9 · oddane 99,9"
-  // ma w f11 150 px (start x=163), a tytul "PV DZIŚ 99,9 kWh" konczy sie na x=107
-  // -> 56 px luzu. Kolejnosc slow = kolejnosc segmentow paska (lewy->prawy).
-  snprintf(line1, sizeof(line1), "zużyte %s · oddane %s", la, lb);
+  // Legenda po prawej w tym samym wierszu. Kolejnosc slow = kolejnosc segmentow
+  // paska (lewy->prawy).
+  // (v167) "zużyte" USTAPILO slowu "z PV" — jedyna zmiana napisu na tym ekranie.
+  // Powod: to jest DOKLADNIE ta sama liczba (`bal.selfPv`), co "z PV" w legendzie
+  // paska "DOM DZIŚ" 28 px nizej i co "z PV" na ekranie glownym. Od v167 nosi tez
+  // ten sam kolor, a dwa rozne slowa pod jednym kolorem podwazalyby caly komunikat:
+  // czytelnik uznalby, ze to jednak dwie rozne wielkosci, ktore przypadkiem trafily
+  // w ten sam odcien. Jedna wielkosc = jeden kolor I jedno slowo.
+  // Szerokosci: najszersze "z PV 99,9 · oddane 99,9" ma w f11 134 px (bylo
+  // "zużyte …" = 150 px), wiec start x=313−134=179, a tytul "PV DZIŚ 99,9 kWh"
+  // (100 px od x=7) konczy sie na x=107 -> 72 px luzu (bylo 56).
+  snprintf(line1, sizeof(line1), "z PV %s · oddane %s", la, lb);
   plex::strRight(s, plex::f11(), line1, grid::DATA_R, 88, cSec);
   // Prog 0,05 kWh (nie ==0): rano/zima licznik dzienny potrafi dlugo stac na
   // pojedynczych watogodzinach — pasek z procentami przy tak malej podstawie bylby
   // szumem. Ponizej progu: pusty tor, bez segmentow i procentow (patrz dayBar).
+  // (v167) [SELF autokonsumpcja][OK oddane] — dokladnie lewa i prawa czesc paska
+  // ekranu glownego w stanie eksportu, tylko w kWh za dobe zamiast w kW chwilowych.
+  // Bylo [OK zuzyte][OK2 oddane], czyli zielen dzielona na dwa odcienie.
   dayBar(s, 92, pvToday > 0.05f ? selfPv / pvToday : 0.f, pvToday > 0.05f, pvOld,
-         col::OK, col::OK2, col::BG, col::PANEL);
+         col::SELF, col::OK, col::BG, col::PANEL);
 
   // PASEK 2 "DOM DZIŚ": czym dom byl dzis zasilany. Tytul = `bal.home`, ktore
   // pvBalance() liczy jako `selfPv + fromGrid`, czyli jako sume TYCH segmentow —
@@ -1504,13 +1544,58 @@ void v3Pv(TFT_eSPI& s, const PvModel& pv, const PvHistory& hist) {
   // 99,9 kWh" konczy sie na x=120 -> 67 px luzu.
   snprintf(line1, sizeof(line1), "z PV %s · z sieci %s", la, lb);
   plex::strRight(s, plex::f11(), line1, grid::DATA_R, 116, cSec);
+  // (v167) [SELF autokonsumpcja][GRID z sieci] — dokladnie ten sam pasek co na
+  // ekranie glownym w stanie importu. LEWY SEGMENT JEST TERAZ TYM SAMYM KOLOREM,
+  // CO LEWY SEGMENT PASKA WYZEJ, bo to ta sama liczba (`bal.selfPv`); do v166 byl
+  // pomaranczowy (col::PV) obok zielonego, choc oba pokazywaly np. 20,9 kWh.
+  // Prawy segment bez zmian — czerwien "z sieci" byla zgodna z kontraktem od v164.
+  // Kolor procentu w lewym segmencie zmieniony z PANEL na BG, bo SELF jest ciemny
+  // (4,09 : 1 zamiast 3,80 : 1 — rachunek przy dayBar).
   dayBar(s, 120, homeKwh > 0.05f ? bal.selfPv / homeKwh : 0.f, homeKwh > 0.05f, pvOld,
-         col::PV, col::GRID, col::PANEL, col::BG);
+         col::SELF, col::GRID, col::BG, col::BG);
 
-  // Wykres doby: WYPELNIONY (nie linia — na zywo linia byla nieczytelna). Sluply
-  // POBORU domu (niebieski) jako tlo + PRODUKCJA (bursztyn) na wierzchu. Efekt:
-  // wykres jest "pelny" o kazdej porze (dom zawsze cos ciagnie), a w dzien bursztyn
-  // slonca narasta na niebieskim tle. Slupki maja pelna szerokosc slotu, bez przerw.
+  // Wykres doby: WYPELNIONY (nie linia — na zywo linia byla nieczytelna), slupki
+  // pelnej szerokosci slotu, bez przerw.
+  //
+  // (v167) TRZY SERIE ZAMIAST DWOCH — dolozona AUTOKONSUMPCJA. Kolejnosc rysowania
+  // (od tylu): 1. pobor domu, 2. produkcja, 3. autokonsumpcja = min(produkcja,
+  // pobor). Kazda seria idzie OD PODSTAWY w gore, wiec pozniejsza zakrywa dolna
+  // czesc wczesniejszej.
+  //
+  // CO Z TEJ KOLEJNOSCI WYNIKA WIZUALNIE: widac DOKLADNIE TRZY ROZLACZNE PASMA,
+  // ktore sa trzema skladnikami bilansu z kontraktu (ThemeV3.h) — dolem zawsze
+  // autokonsumpcja, a nad nia albo nadwyzka oddana, albo energia dobrana z sieci,
+  // nigdy oba naraz. To ten sam podzial, co pasek na ekranie glownym, tylko
+  // rozciagniety w czas. Dlatego SERIE nie dostaja "wlasnych" kolorow: seria poboru
+  // jest rysowana czerwienia GRID, bo widac z niej wylacznie czesc PONAD
+  // autokonsumpcja, a to jest wlasnie import; seria produkcji zielenia OK, bo widac
+  // z niej wylacznie nadwyzke, czyli eksport. Bursztyn col::PV znika z tego wykresu:
+  // "produkcja ogolem" nie jest skladnikiem, tylko suma dwoch pasm.
+  //
+  // RACHUNEK (peak = 4000 W, ch−2 = 62 px, wysokosc = int(62 * moc / 4000)):
+  //  A) PRODUKCJA > POBOR (poludnie, prod 3000, pobor 1000):
+  //     lh = int(62*0,25) = 15, ph = int(62*0,75) = 46, sh = int(62*0,25) = 15.
+  //     Rysujemy GRID 0..15 -> OK 0..46 (zakrywa czerwony w calosci) -> SELF 0..15.
+  //     WIDAC: 0..15 niebieski = autokonsumpcja 1000 W, 15..46 zielony = 2000 W
+  //     oddane. Czerwonego nie widac ani piksela — i slusznie, import = 0.
+  //  B) POBOR > PRODUKCJA (wieczor, prod 1000, pobor 3000):
+  //     lh = 46, ph = 15, sh = 15. GRID 0..46 -> OK 0..15 -> SELF 0..15.
+  //     WIDAC: 0..15 niebieski = 1000 W z PV, 15..46 czerwony = 2000 W z sieci.
+  //     Zielonego nie widac — eksport = 0.
+  //  C) prod = 0 (noc): ph = sh = 0, caly slupek czerwony = pobor z sieci.
+  //  D) pobor = 0: lh = sh = 0, caly slupek zielony = wszystko poszlo do sieci.
+  //  E) prod = pobor: lh = ph = sh, caly slupek niebieski = nic nie plynie przez
+  //     zlacze z siecia.
+  // Trzeci fillRect NIE jest redundantny: bez niego dolne pasmo mialoby kolor serii
+  // rysowanej jako druga (zielony), czyli twierdziloby, ze energia zjedzona przez
+  // dom zostala oddana do sieci.
+  //
+  // BEZ NOWEJ TABLICY W RAM: min() liczone w locie z dwoch pol, ktore i tak juz
+  // czytamy w tej samej iteracji. Wysokosc pasma autokonsumpcji jest liczona TYM
+  // SAMYM wyrazeniem, co lh i ph, tylko z mniejsza z dwoch mocy — a poniewaz to
+  // doslownie jedno z tamtych dwoch wyrazen, wychodzi z niego dokladnie
+  // min(lh, ph) co do piksela, bez ryzyka, ze niebieskie pasmo wystaje ponad
+  // slupek, ktory ma przykrywac (zaokraglenia nie moga sie rozjechac).
   // (v164) Nizszy niz do v163 (bylo cy=90, ch=84): gorna polowa ekranu oddana
   // paskom bilansu, wykres schodzi na y=140..204 — os godzin w dolnym pasie
   // (v3PvBottom, y=216) zostaje na miejscu i teraz siedzi tuz pod podstawa.
@@ -1535,10 +1620,19 @@ void v3Pv(TFT_eSPI& s, const PvModel& pv, const PvHistory& hist) {
       const int x1 = cx + ((i + 1) * cw) / PvHistory::SLOTS;
       const int bw = (x1 - x0) > 1 ? (x1 - x0) : 1;   // pelna szerokosc slotu, bez luk
       if (hist.filled[i]) {
-        const int lh = static_cast<int>((ch - 2) * (hist.load[i] / static_cast<float>(peak)));
-        if (lh > 0) s.fillRect(x0, base - lh, bw, lh, col::SELF);   // pobor domu (tlo)
-        const int ph = static_cast<int>((ch - 2) * (hist.watts[i] / static_cast<float>(peak)));
-        if (ph > 0) s.fillRect(x0, base - ph, bw, ph, col::PV);     // produkcja (na wierzchu)
+        const uint16_t wS = hist.watts[i], lS = hist.load[i];
+        const uint16_t sS = wS < lS ? wS : lS;   // autokonsumpcja w locie, bez tablicy
+        // 1. POBOR DOMU z tylu — widoczna zostanie tylko czesc ponad autokonsumpcja,
+        //    czyli energia dobrana z sieci, i stad czerwien.
+        const int lh = static_cast<int>((ch - 2) * (lS / static_cast<float>(peak)));
+        if (lh > 0) s.fillRect(x0, base - lh, bw, lh, col::GRID);
+        // 2. PRODUKCJA — widoczna zostanie tylko nadwyzka ponad autokonsumpcja,
+        //    czyli energia oddana do sieci, i stad zielen.
+        const int ph = static_cast<int>((ch - 2) * (wS / static_cast<float>(peak)));
+        if (ph > 0) s.fillRect(x0, base - ph, bw, ph, col::OK);
+        // 3. AUTOKONSUMPCJA na wierzchu — dolne pasmo kazdego slupka.
+        const int sh = static_cast<int>((ch - 2) * (sS / static_cast<float>(peak)));
+        if (sh > 0) s.fillRect(x0, base - sh, bw, sh, col::SELF);
       } else if (i > curSlot && curSlot >= 0) {
         s.fillRect(x0, base - 2, bw, 2, col::LINE);   // reszta doby - jeszcze przed nami
       }
@@ -1558,23 +1652,46 @@ void v3PvBottom(TFT_eSPI& tft, const PvModel& pv, const PvHistory& hist) {
     const int x = cx + (hh * cw) / 24;
     plex::strCenter(tft, plex::f10(), hb, x, 216, col::MUTE);
   }
-  // Legenda scisnieta w lewo (bylo: probki na x=7 i x=120): po prawej wchodzi
-  // "autokonsumpcja NN%". USTAPILO "reszta doby" — podpis szarej linii 2 px
-  // przyszlych slotow; procent zuzycia wlasnego to informacja, a tamten podpis
-  // byl dekoracja (sama linia na wykresie zostaje). Trzech podpisow naraz nie
-  // zmiescimy: "produkcja"(54) + "pobór domu"(69) + "autokonsumpcja 100%"(128)
-  // + 2 probki po 10 px + odstepy > 306 px.
-  tft.fillRect(grid::MARGIN, 226, 10, 8, col::PV);
-  plex::str(tft, plex::f13(), "produkcja", grid::MARGIN + 14, 233, col::SECOND);
-  tft.fillRect(85, 226, 10, 8, col::SELF);   // próbka wypełniona, jak wykres (nie linia)
-  plex::str(tft, plex::f13(), "pobór domu", 99, 233, col::SECOND);
+  // (v167) LEGENDA NAZYWA WIDOCZNE PASMA, NIE SERIE — i to jest tu cala decyzja.
+  // Wykres rysuje TRZY SERIE (pobor domu, produkcja, autokonsumpcja), ale czytelnik
+  // nie widzi ANI JEDNEJ z nich w calosci: dwie pierwsze sa przykryte i wystaja
+  // z nich wylacznie roznice. Podpis "pobór domu" przy czerwonej probce wskazywalby
+  // wiec pole, ktorego na wykresie NIE MA — czerwone pasmo nigdy nie jest calym
+  // poborem domu, tylko jego czescia dobrana z sieci; tak samo zielone nie jest
+  // produkcja, tylko jej nadwyzka. Nazywamy dokladnie to, co widac, i DOKLADNIE
+  // TYMI SAMYMI slowami, co legendy obu paskow wyzej: "z PV", "oddane", "z sieci".
+  // (Do v166 legenda nazywala serie i wtedy to bylo poprawne, bo serii byly dwie
+  // i kazda miala wlasne, w pelni widoczne pole.)
+  //
+  // SZEROKOSCI (f13, probka 10 px + 4 px odstepu do tekstu, pas x=7..313 = 306 px):
+  //   probka + "z PV"    (25) = 39 px -> x  7..46
+  //   probka + "oddane"  (42) = 56 px -> x 58..114
+  //   probka + "z sieci" (33) = 47 px -> x 126..173
+  //   "autokonsumpcja 100%" = 128 px, do prawej krawedzi -> start x=185
+  // Odstepy miedzy pozycjami: 12, 12 i 12 px, przy 4 px miedzy probka a jej wlasnym
+  // podpisem — trzykrotna roznica wystarcza, zeby sasiednie pozycje sie nie zlewaly.
+  // Procent liczony w wariancie NAJSZERSZYM (100%); typowe "62%" ma 121 px, czyli
+  // 7 px luzu wiecej. Suma pozycji 39+56+47+128 = 270 px, odstepy 36 px = 306 px.
+  tft.fillRect(grid::MARGIN, 226, 10, 8, col::SELF);
+  plex::str(tft, plex::f13(), "z PV", grid::MARGIN + 14, 233, col::SECOND);
+  tft.fillRect(58, 226, 10, 8, col::OK);   // próbka wypełniona, jak pasma wykresu
+  plex::str(tft, plex::f13(), "oddane", 72, 233, col::SECOND);
+  tft.fillRect(126, 226, 10, 8, col::GRID);
+  plex::str(tft, plex::f13(), "z sieci", 140, 233, col::SECOND);
   // Autokonsumpcja = procent DZISIEJSZEJ produkcji zuzyty na miejscu — dokladnie
   // udzial lewego segmentu paska "PV DZIŚ". (v165) Te same liczby bierzemy z tego
   // samego pvBalance(), co paski, wiec podpis nie moze sie z nimi rozjechac przy
   // przelaczeniu zrodla miernik/calka. Najszersze "autokonsumpcja 100%" ma
-  // 128 px (start x=185), "pobór domu" konczy sie na x=168 -> 17 px luzu.
+  // 128 px (start x=185), a "z sieci" konczy sie na x=173 -> 12 px luzu.
   // Trzy stany jak w v3Pv: bez odczytu / sen / produkcja ~0 -> bez napisu (procent
   // z pustej podstawy to szum); dane stare -> liczba zostaje, kolor na MUTE.
+  // (v167) TEN PROCENT ZOSTAJE, choc trzecia probka legendy zabrala mu 17 px luzu.
+  // Kusilo, zeby go skasowac jako duplikat — ta sama liczba stoi w lewym segmencie
+  // paska "PV DZIŚ" cztery wiersze wyzej. Ale tamten procent jest rysowany TYLKO
+  // wtedy, gdy segment jest dosc szeroki (szerokosc napisu + 8 px, patrz dayBar)
+  // i znika CALKOWICIE przy starych danych (`muted` konczy dayBar przed procentami).
+  // Dokladnie w tych dwoch przypadkach — mala autokonsumpcja i dane po progu
+  // swiezosci — ten napis jest jej JEDYNYM miejscem na ekranie.
   const bool pvFresh = pv.online && freshMs(diag().pvOkAt, pv.asleep ? cfg::PV_STALE_NIGHT_MS
                                                                      : cfg::PV_STALE_MS);
   const bool pvOld = pv.data.valid && !pvFresh && !pv.asleep;

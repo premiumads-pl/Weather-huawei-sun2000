@@ -235,7 +235,10 @@ struct PvHistory {
   }
 
   // Szczyt z OBU serii — pobór potrafi przewyższyć produkcję (dobieramy z sieci),
-  // a wtedy czerwony słupek musi się zmieścić w tej samej skali co żółty.
+  // a wtedy słupek poboru musi się zmieścić w tej samej skali co słupek produkcji.
+  // (v167) Bez nazw kolorów: te same dwie serie są od v167 rysowane jako TRZY
+  // rozłączne pasma (autokonsumpcja / oddane / z sieci) i przypisanie „seria =
+  // kolor” przestało tu obowiązywać — patrz kontrakt kolorów w ThemeV3.h.
   uint16_t peak() const {
     uint16_t m = 0;
     for (int i = 0; i < SLOTS; ++i) {

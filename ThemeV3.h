@@ -38,18 +38,39 @@ constexpr uint16_t RAIN    = 0x2318;  // #2563C4 opad (najsilniejszy)
 constexpr uint16_t RAIN2   = 0x5C7A;  // #5B8DD0
 constexpr uint16_t RAIN3   = 0x9DDB;  // #9DB8DD
 constexpr uint16_t RAIN4   = 0xBE3B;  // #B8C6DD (najslabszy)
-constexpr uint16_t OK      = 0x4CC9;  // #4D9A4D produkcja / stan OK / swieze
-// (v164) JEDYNY kolor dolozony dla paskow bilansu dnia na ekranie PRAD: energia
-// ODDANA do sieci. Ta sama rodzina co OK (energia PV zuzyta na miejscu), ale
-// rozjasniona (#4D9A4D -> #8CBF8C, L* ~58 -> ~73) — oddane to nadal "dobra"
-// energia sloneczna, tylko wyplywajaca z domu, wiec slabszy odcien tego samego
-// komunikatu. Paleta nie miala zadnej jasniejszej zieleni (OK jest jedyna),
-// a uzycie np. RAIN3/LINE klamaloby znaczeniem (niebieski=opad, szary=brak).
-constexpr uint16_t OK2     = 0x8DF1;  // #8CBF8C oddane do sieci (pasek PV DZIS)
-constexpr uint16_t SELF    = 0x3BD8;  // #3D78C4 zuzycie wlasne
-constexpr uint16_t GRID    = 0xC247;  // #C04A3A z sieci / alarm
+constexpr uint16_t OK      = 0x4CC9;  // #4D9A4D nadwyzka oddana do sieci / stan OK / swieze
+// ============ KONTRAKT: JEDEN JEZYK KOLOROW ENERGII (v167) ====================
+// ZASADA: TA SAMA WIELKOSC MA TEN SAM KOLOR NA WSZYSTKICH EKRANACH. Do v166 tak
+// NIE bylo — energia z PV zuzyta na miejscu (autokonsumpcja) byla NIEBIESKA na
+// ekranie glownym, ZIELONA w pasku "PV DZIŚ" i POMARANCZOWA w pasku "DOM DZIŚ",
+// a oba te paski pokazywaly ja jako DOSLOWNIE TE SAMA liczbe z pvBalance()
+// (np. 2,5 kWh naraz jako "zuzyte 2,5" i "z PV 2,5"). Kolor przestawal cokolwiek
+// znaczyc, bo trzykrotnie oznaczal to samo trzema roznymi odcieniami.
+//
+// BILANS MA DOKLADNIE TRZY ROZLACZNE SKLADNIKI i tylko one dostaja wypelnienie:
+//   SELF (niebieski)  autokonsumpcja = min(produkcja, pobor)
+//   OK   (zielony)    oddane do sieci = max(produkcja − pobor, 0)
+//   GRID (czerwony)   dobrane z sieci = max(pobor − produkcja, 0)
+// PRODUKCJA OGOLEM = SELF + OK, POBOR DOMU OGOLEM = SELF + GRID. Obie sa SUMAMI,
+// nie skladnikami, wiec NIE MAJA wlasnego koloru wypelnienia: na obu paskach
+// ekranu PRAD, na pasku ekranu glownego i na wykresie doby wystepuja jako CALOSC
+// rozbita na dwa z powyzszych kolorow. Pomalowanie ich jednym kolorem twierdziloby,
+// ze to samo pole jest jednoczesnie autokonsumpcja i eksportem.
+//
+// SKAD AKURAT TE TRZY: ekran glowny jest JEDYNYM miejscem, w ktorym wszystkie trzy
+// skladniki stoja w jednym pasku obok siebie, wiec tylko on mial zestaw pelny
+// i wewnetrznie niesprzeczny — i dlatego to on wygral, a ekran PRAD sie do niego
+// dostosowal. Nazwy stalych mowia to samo (SELF = "zuzycie wlasne", GRID =
+// "z sieci"), a zielony OK jest juz kolorem metryki "do sieci +" w naglowku PRADU.
+//
+// (v167) OK2 (#8CBF8C, jasna zielen dolozona w v164) USUNIETA. Istniala wylacznie
+// po to, by W OBREBIE ZIELENI odroznic "oddane" od "zuzytego" w pasku "PV DZIŚ".
+// Zuzyte jest teraz niebieskie, wiec ta zielen nie ma juz czego odrozniac, a
+// stala bez odbiorcy i z opisem "oddane do sieci" (dzis oddane = OK) klamalaby.
+constexpr uint16_t SELF    = 0x3BD8;  // #3D78C4 autokonsumpcja (PV zuzyta na miejscu)
+constexpr uint16_t GRID    = 0xC247;  // #C04A3A energia dobrana z sieci / alarm
 constexpr uint16_t SUN     = 0xF587;  // #F2B13A slonce
-constexpr uint16_t PV      = 0xE545;  // #E0A92E modulacja / slupki PV
+constexpr uint16_t PV      = 0xE545;  // #E0A92E modulacja / bursztyn PV (POZA bilansem energii)
 constexpr uint16_t WARN    = 0xBC83;  // #B8901F nieswieze / uwaga
 constexpr uint16_t WARNBG  = 0xF738;  // #F3E4C2 tlo plakietki uwagi
 constexpr uint16_t ACCENT  = 0x7D5C;  // #7FA8E0 akcent na ciemnym
