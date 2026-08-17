@@ -243,6 +243,11 @@ void pvHistoryLoad(struct PvHistory& h);
 void pvHistorySave(const struct PvHistory& h);
 void pvHistoryClear();
 
+// --- (v165) baza licznikow miernika z ostatniej polnocy (trwala po zaniku
+// zasilania — DLATEGO NVS, a nie RTC; patrz komentarz przy definicji) ---
+void pvMeterBaseLoad(struct PvMeterBase& b);
+void pvMeterBaseSave(const struct PvMeterBase& b);
+
 // --- historia czujnikow BLE (24 h, ruchome okno; przezywa zanik zasilania) ---
 void roomHistoryLoad(struct RoomHistory& h);
 void roomHistorySave(const struct RoomHistory& h);

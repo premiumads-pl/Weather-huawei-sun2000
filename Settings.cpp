@@ -569,6 +569,105 @@ void pvHistorySave(const PvHistory& h) {
   prefs.end();
 }
 
+// -------------------------------- (v165) baza licznikow miernika -------------
+// "Dzis" z licznikow NARASTAJACYCH = odczyt biezacy minus odczyt z ostatniej
+// polnocy, wiec ta baza jest jedyna rzecza, ktora trzeba przechowac miedzy dobami.
+//
+// DLACZEGO NVS, A NIE RTC: 16.08.2026 wlasciciel wylaczyl zasilanie i wszystkie
+// zbiory w pamieci RTC wystartowaly od zera. RTC przezywa restart, OTA i panic,
+// ale NIE przezywa zaniku napiecia — a baza, ktora znika razem z pradem, jest
+// bezuzyteczna dokladnie w dniu, w ktorym prad byl wylaczony.
+//
+// WLASNY KLUCZ, NIE DOKLEJANIE DO "prof1": profil doby (584 B) jest zapisywany
+// co 5 minut, a baza zmienia sie RAZ NA DOBE. Wspolny blob oznaczalby albo
+// przepisywanie bazy 288 razy dziennie bez potrzeby, albo — gorzej — zmiane
+// rozmiaru PvProfileBlob, ktora wywalilaby static_assert i wymusila migracje
+// klucza profilu (utrata wykresu doby). Osobny klucz kosztuje 24 B.
+//
+// Rozmiary blobow w przestrzeni "pvday" sa parami rozne (prof1 = 584, rh2 = 1736,
+// gas1 = 252, burn1 = 296, mtr1 = 24), wiec pomylka o klucz nie przejdzie przez
+// kontrole getBytesLength() — ten sam wzorzec, co przy pozostalych.
+namespace {
+
+struct PvMeterBlob {
+  uint16_t ver;
+  int32_t year;
+  int32_t yday;
+  float importKwh;
+  float exportKwh;
+  int16_t minute;
+  uint8_t full;
+  uint8_t pad;   // jawne wyrownanie, zeby rozmiar nie zalezal od kompilatora
+};
+
+constexpr uint16_t PV_METER_VER = 1;
+constexpr const char* K_PV_METER = "mtr1";
+
+static_assert(sizeof(PvMeterBlob) == 24,
+              "zmienil sie uklad bazy licznikow - podbij klucz NVS na \"mtr2\", "
+              "inaczej stary blob wczyta sie jako nowy (cicha korupcja)");
+
+}  // namespace
+
+void pvMeterBaseLoad(PvMeterBase& b) {
+  b = PvMeterBase{};
+
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, true)) {
+    return;
+  }
+  PvMeterBlob blob{};
+  const bool ok = prefs.getBytesLength(K_PV_METER) == sizeof(blob) &&
+                  prefs.getBytes(K_PV_METER, &blob, sizeof(blob)) == sizeof(blob) &&
+                  blob.ver == PV_METER_VER;
+  prefs.end();
+  if (!ok) {
+    return;
+  }
+  // Kontrola sensownosci PRZED przyjeciem bazy. Baza ze smieciem (ujemny licznik,
+  // yday spoza zakresu) jest gorsza niz jej brak: brak konczy sie jednodniowym
+  // zjazdem do calki, a smiec — roznica rzedu tysiecy kWh podpisana "dzis".
+  if (blob.yday < 0 || blob.yday > 365 || blob.year < 2020 || blob.year > 2200 ||
+      blob.importKwh < 0.f || blob.exportKwh < 0.f || blob.minute < 0 ||
+      blob.minute > 1439) {
+    Serial.println("PV: baza licznikow w NVS niespojna - ignoruje");
+    return;
+  }
+  b.year = blob.year;
+  b.yday = blob.yday;
+  b.importKwh = blob.importKwh;
+  b.exportKwh = blob.exportKwh;
+  b.minute = blob.minute;
+  b.full = blob.full != 0;
+  b.valid = true;
+  Serial.printf("PV: baza licznikow z NVS: %ld dzien %ld min %d pobor %.2f oddane %.2f%s\n",
+                static_cast<long>(b.year), static_cast<long>(b.yday), b.minute,
+                b.importKwh, b.exportKwh, b.full ? "" : " (NIEPELNA)");
+}
+
+// Wolane WYLACZNIE po zdarzeniu zmiany bazy (SET_FIRST/ROLLED/WENT_BACK), czyli
+// w praktyce raz na dobe — tak jak dobowy log gazu. NIE przy kazdym odczycie:
+// przy kadencji 30 s byloby to 2880 zapisow do flash dziennie zamiast jednego.
+void pvMeterBaseSave(const PvMeterBase& b) {
+  if (!b.valid) {
+    return;
+  }
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, false)) {
+    return;
+  }
+  PvMeterBlob blob{};
+  blob.ver = PV_METER_VER;
+  blob.year = b.year;
+  blob.yday = b.yday;
+  blob.importKwh = b.importKwh;
+  blob.exportKwh = b.exportKwh;
+  blob.minute = b.minute;
+  blob.full = b.full ? 1 : 0;
+  prefs.putBytes(K_PV_METER, &blob, sizeof(blob));
+  prefs.end();
+}
+
 // NIE WOLNO tu wolac prefs.clear(). W przestrzeni "pvday" siedzi TAKZE "rh2",
 // czyli 24 h historii z czujnikow BLE. clear() skasowalby ja przy okazji i nikt
 // by sie o tym nie dowiedzial. Kasujemy wylacznie klucze profilu PV, po nazwie.

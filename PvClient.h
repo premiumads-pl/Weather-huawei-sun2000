@@ -20,5 +20,8 @@ class PvClient {
   bool readU32(uint16_t addr, uint32_t& out);
   bool readS16(uint16_t addr, int gain, float& out);
   bool readU16(uint16_t addr, uint16_t& out);
+  // (v165) Oba liczniki energii miernika JEDNA ramka (37119..37122, 4 rejestry).
+  // Nie dwoma readS32 — patrz uzasadnienie w PvClient.cpp przy wywolaniu.
+  bool readMeterEnergy(float& exportKwh, float& importKwh);
   bool warmUp();
 };

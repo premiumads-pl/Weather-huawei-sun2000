@@ -67,6 +67,10 @@ SemaphoreHandle_t gLock = nullptr;
 WeatherModel gWeather{};
 PvModel gPv{};
 PvHistory gHist{};
+// (v165) Baza licznikow miernika z ostatniej polnocy. Trzymana pod gLock razem
+// z gPv/gHist, bo pisze ja netTask, a czyta webTask (/api/diag). Trwalosc: NVS
+// (klucz "mtr1"), NIE RTC — patrz komentarz przy pvMeterBaseLoad w Settings.cpp.
+PvMeterBase gPvMeterBase{};
 RoomHistory gRooms{};
 AirHistory gAirHistory{};   // 7-dniowa historia jakosci powietrza (srednie dobowe) — patrz AirHistory.h
 vi::Model gVi{};
@@ -1153,8 +1157,29 @@ static void netTask(void*) {
 
       PvModel tmp{};
       const bool ok = pvClient.fetch(tmp, maySleep);
+      // (v165) Zdarzenie bazy licznikow — ustalane pod gLock, OBSLUGIWANE po jego
+      // zwolnieniu (zapis do flash trwa i nie wolno pod nim trzymac rdzenia 1,
+      // ktory czeka na te sama blokade z klatka; ta sama zasada, co przy profilach).
+      PvBaseEvent baseEv = PvBaseEvent::NONE;
+      PvMeterBase baseCopy{};
       xSemaphoreTake(gLock, portMAX_DELAY);
       if (ok) {
+        // (v165) NIEUDANY ODCZYT LICZNIKOW NIE KASUJE MODELU — ta sama zasada, co
+        // przy calym gPv kilkanascie linii nizej (v161). Liczniki energii sa w
+        // OSOBNEJ grupie odczytu (patrz PvClient.cpp), wiec ich brak nie przerywa
+        // calego fetch() i bez tego przeniesienia snapshot z wartownikiem -1 poszedlby
+        // na ekran jako "brak miernika", kasujac dzisiejszy bilans na jedna ramke.
+        // Wartosci sa NARASTAJACE i wolnozmienne: przeniesiona liczba ma wiek jednego
+        // cyklu (30 s w dzien, 5 min noca), czyli ponizej 0,03 kWh roznicy. Wiek jest
+        // widoczny w /api/diag jako pv.meter.energy_fresh — nie zamiatamy go.
+        if (!tmp.data.meterEnergyFresh && gPv.data.meterExportKwh >= 0.f &&
+            gPv.data.meterImportKwh >= 0.f) {
+          tmp.data.meterExportKwh = gPv.data.meterExportKwh;
+          tmp.data.meterImportKwh = gPv.data.meterImportKwh;
+        }
+        // Baza z polnocy + wyliczenie "dzis". Czysta logika, bez NVS — patrz PvData.h.
+        baseEv = pvMeterUpdate(tmp.data, gPvMeterBase, time(nullptr));
+        baseCopy = gPvMeterBase;
         gPv = tmp;
         const time_t t = time(nullptr);
         if (t > 1700000000) {
@@ -1197,6 +1222,42 @@ static void netTask(void*) {
         memcpy(gPv.errorMsg, tmp.errorMsg, sizeof(gPv.errorMsg));
       }
       xSemaphoreGive(gLock);
+
+      // (v165) Baza licznikow zmienila sie -> JEDEN zapis do flash, poza gLock.
+      // W normalnej dobie zdarza sie to RAZ (galaz ROLLED tuz po polnocy), czyli
+      // rzadziej niz dobowy log gazu i o trzy rzedy wielkosci rzadziej niz profil
+      // doby (co 5 min). Zapis przy kazdym odczycie dalby 2880 kasowan sektora
+      // dziennie i to jest jedyny powod, dla ktorego ta galaz jest warunkowa.
+      if (baseEv != PvBaseEvent::NONE) {
+        gNetStage.stageNow = NET_STAGE_NVS;
+        pvMeterBaseSave(baseCopy);
+        switch (baseEv) {
+          case PvBaseEvent::ROLLED:
+            LOG("PV: polnoc - baza licznikow na dzien %ld/%ld o %02d:%02d, pobor %.2f "
+                "oddane %.2f (%s)",
+                static_cast<long>(baseCopy.yday), static_cast<long>(baseCopy.year),
+                baseCopy.minute / 60, baseCopy.minute % 60, baseCopy.importKwh,
+                baseCopy.exportKwh, baseCopy.full ? "pelna" : "NIEPELNA - dzis calka");
+            break;
+          case PvBaseEvent::SET_FIRST:
+            // Pierwszy start po aktualizacji: nie znamy stanu licznikow z TEJ polnocy,
+            // wiec kazda liczba "dzis" bylaby zmyslona. Dzis jedziemy na calce z v164,
+            // miernik przejmuje ekran od nastepnej polnocy.
+            LOG("PV: pierwsza baza licznikow (pobor %.2f, oddane %.2f) - dzis nadal calka",
+                baseCopy.importKwh, baseCopy.exportKwh);
+            break;
+          case PvBaseEvent::WENT_BACK:
+            // Licznik zmalal: wymiana miernika, jego reset albo przepelnienie.
+            // Ujemnych kWh nie pokazujemy — baza idzie na biezaca wartosc, a ten
+            // dzien konczy sie na calce. Slad w logu, zeby dalo sie to jutro poznac.
+            LOG("PV: licznik miernika ZMALAL - baza przestawiona na pobor %.2f, "
+                "oddane %.2f; dzis wracam do calki",
+                baseCopy.importKwh, baseCopy.exportKwh);
+            break;
+          case PvBaseEvent::NONE:
+            break;
+        }
+      }
 
       // Śpiący falownik odpytujemy co 5 minut zamiast co 30 s. Gdy tylko odpowie
       // (a potrafi odpowiadać jeszcze po zachodzie), wracamy do normalnego tempa.
@@ -1812,6 +1873,11 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(cfg::PIN_PIR), pirIsr, CHANGE);
 
   pvHistoryLoad(gHist);
+  // (v165) Baza licznikow miernika. Wczytujemy BEZ sprawdzania daty — tak samo jak
+  // profil palnika i z tego samego powodu: tutaj NTP jeszcze nie odpowiedzial, wiec
+  // tm_yday bylby z 1970 i skasowalby dobra baze. Data jest sprawdzana pozniej,
+  // w netTask (pvMeterUpdate), gdzie zegar jest juz pewny.
+  pvMeterBaseLoad(gPvMeterBase);
   roomHistoryLoad(gRooms);
   airHistoryLoad(gAirHistory);   // 7-dniowa historia jakosci powietrza (klucz "airh")
   uiRooms = gRooms;

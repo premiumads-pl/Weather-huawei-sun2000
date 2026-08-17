@@ -1193,6 +1193,82 @@ PvDayKwh pvDayEnergy(const PvHistory& h) {
   return {selfSum / 6000.f, impSum / 6000.f};
 }
 
+// --- (v165) BILANS DNIA GOTOWY DO POKAZANIA -------------------------------------
+// JEDNO miejsce, w ktorym rozstrzyga sie "miernik czy calka", bo te liczby czytaja
+// DWIE funkcje rysujace: paski w v3Pv() i procent autokonsumpcji w v3PvBottom().
+// Gdyby kazda wybierala zrodlo sama, wystarczylaby jedna rozjechana galaz, zeby
+// pasek pokazywal 70%, a podpis pod wykresem 55% — na jednym ekranie, w tej samej
+// klatce. Sygnatura bierze SNAPSHOT, nie caly PvModel, bo o zrodle decyduja
+// wylacznie dane, a nie stan swiezosci.
+//
+// CO JEST MIERZONE, A CO WYLICZANE (przy `fromMeter`):
+//   mierzone:  produkcja dzis (rej. 32114), ODDANE dzis (licznik 37119 minus baza
+//              z polnocy), POBRANE dzis (licznik 37121 minus baza);
+//   wyliczane: zuzycie wlasne = produkcja − oddane,
+//              zuzycie domu   = zuzycie wlasne + pobrane.
+// Dokladnie taki uklad ma panel FusionSolar wlasciciela i dlatego jego liczby sie
+// domykaja: 27,43 = 20,85 + 6,58 oraz 34,38 = 20,85 + 13,53.
+//
+// DLACZEGO ZUZYCIE WLASNE JEST WYLICZANE, A NIE MIERZONE: nie ma go czym zmierzyc.
+// Miernik stoi na ZLACZU Z SIECIA i widzi wylacznie dwa kierunki przeplywu przez to
+// zlacze; energia z paneli, ktora do zlacza nigdy nie dotarla, jest dla niego
+// niewidzialna. Za to wychodzi z odejmowania DWOCH liczb calkowanych sprzetowo,
+// wiec nie dziedziczy bledu naszego probkowania co 10 minut — inaczej niz calka
+// z v164, ktora byla dotad jedynym zrodlem tej pozycji.
+//
+// SPOJNOSC SUM WYMUSZONA KONSTRUKCYJNIE, nie sprawdzana po fakcie: `selfPv`
+// powstaje jako `pvToday − toGrid`, wiec pasek "PV DZIŚ" sumuje sie do swojego
+// tytulu z definicji; `home` powstaje jako `selfPv + fromGrid`, wiec pasek "DOM
+// DZIŚ" tak samo. Przy okazji obie pozycje "z PV" to teraz TA SAMA liczba —
+// w v164 nie byly (patrz galaz fallbacku), bo kazdy pasek liczyl ja inna droga.
+struct PvBalance {
+  float pvToday;   // produkcja dzis [kWh], rej. 32114
+  float selfPv;    // zuzyte na miejscu
+  float toGrid;    // oddane do sieci
+  float fromGrid;  // pobrane z sieci
+  float home;      // zuzycie domu = selfPv + fromGrid
+  bool fromMeter;  // true = liczniki miernika, false = calka profilu doby (v164)
+};
+
+PvBalance pvBalance(const PvSnapshot& d, const PvHistory& h) {
+  PvBalance b{};
+  b.pvToday = d.energyTodayKwh > 0.f ? d.energyTodayKwh : 0.f;
+
+  // FALLBACK JEST OBOWIAZKOWY: `meterTodayOk` jest false, gdy miernika nie ma,
+  // baza z polnocy jest niepelna (pierwszy dzien po aktualizacji, brak NTP, start
+  // w srodku dnia) albo licznik sie cofnal. Ekran liczy wtedy DOKLADNIE jak v164.
+  // Milczacy miernik nie moze wygasic ekranu.
+  if (d.meterTodayOk) {
+    // Klamra `oddane <= produkcja`: normalnie licznik oddania nie przekroczy
+    // produkcji dnia, ale obie liczby maja WLASNE zera doby — 32114 zeruje falownik
+    // o swojej polnocy, nasza baza o polnocy lokalnego zegara. Przy rozjezdzie tych
+    // chwil (albo gdyby do zlacza dolozylo sie kiedys inne zrodlo) reszta wyszlaby
+    // ujemna. Klamrujemy ODDANE, bo to ono jest wtedy wieksze, niz powinno,
+    // i dzieki temu `selfPv >= 0` bez osobnego sprawdzania.
+    b.toGrid = d.meterTodayExportKwh < b.pvToday ? d.meterTodayExportKwh : b.pvToday;
+    b.selfPv = b.pvToday - b.toGrid;
+    b.fromGrid = d.meterTodayImportKwh;
+    b.fromMeter = true;
+  } else {
+    // Sciezka v164. UWAGA: tu zuzycie wlasne jest MIERZONE (calka), a oddane
+    // wychodzi z odejmowania — czyli odwrotnie niz wyzej. Klamra tez jest po
+    // drugiej stronie: przycinamy zuzyte do rejestru 32114, bo licznik falownika
+    // jest wiarygodniejszy niz nasza calka.
+    const PvDayKwh de = pvDayEnergy(h);
+    b.selfPv = de.selfPv < b.pvToday ? de.selfPv : b.pvToday;
+    b.toGrid = b.pvToday - b.selfPv;
+    b.fromGrid = de.fromGrid;
+    // (v164) Tytul paska "DOM DZIŚ" bral SUROWA calke `de.selfPv`, a pasek "PV
+    // DZIŚ" te sama liczbe PRZYCIETA — wiec oba paski potrafily podac inne "z PV".
+    // Kazdy sumowal sie do wlasnego tytulu i to bylo wtedy wazniejsze. Teraz
+    // uzywamy przycietej w obu miejscach: suma nadal sie zgadza (bo `home` liczymy
+    // z tej samej liczby), a ekran przestaje podawac dwie wartosci jednej rzeczy.
+    b.fromMeter = false;
+  }
+  b.home = b.selfPv + b.fromGrid;
+  return b;
+}
+
 // Pasek bilansu dnia: dwa segmenty na pelnej szerokosci kolumny (306 px, h=11),
 // procent w segmencie tylko gdy sie miesci (szerokosc tekstu + 8 px luzu).
 // `hasData` false (produkcja/zuzycie ~0 rano albo zima) -> sam tor col::LINE,
@@ -1372,16 +1448,21 @@ void v3Pv(TFT_eSPI& s, const PvModel& pv, const PvHistory& hist) {
   // --- DWA PASKI BILANSU DNIA (serce ukladu FusionSolar) ------------------------
   // PASEK 1 "PV DZIŚ": ile z dzisiejszej produkcji zostalo W DOMU, a ile poszlo
   // do sieci. Suma paska = produkcja dzienna Z REJESTRU 32114 (ta sama liczba, co
-  // "dziś" wyzej — jedna prawda na ekranie). "Zuzyte" = calka min(prod, pobor)
-  // z profilu doby (pvDayEnergy), "oddane" = rejestr − zuzyte. Te dwie wielkosci
-  // pochodza z ROZNYCH metod pomiaru (licznik falownika vs nasze probkowanie
-  // 10-minutowe), wiec roznica przy bledzie probkowania potrafi wyjsc ujemna —
-  // klamrujemy zuzyte do rejestru (oddane >= 0), bo licznik falownika jest
-  // wiarygodniejszy niz nasza calka. Procenty liczone z kWh, nie z mocy chwilowych.
-  const PvDayKwh de = pvDayEnergy(hist);
-  const float pvToday = pv.data.energyTodayKwh > 0.f ? pv.data.energyTodayKwh : 0.f;
-  const float selfPv = de.selfPv < pvToday ? de.selfPv : pvToday;   // klamra j.w.
-  const float expKwh = pvToday - selfPv;                            // >= 0 po klamrze
+  // "dziś" wyzej — jedna prawda na ekranie). Procenty liczone z kWh, nie z mocy
+  // chwilowych.
+  //
+  // (v165) ROLE SIE ODWROCILY. Do v164 mierzone bylo "zuzyte" (calka z profilu
+  // doby), a "oddane" wychodzilo z odejmowania. Teraz — gdy baza licznikow jest
+  // pelna — mierzone jest ODDANE (licznik 37119 minus stan z polnocy), a zuzycie
+  // wlasne jest reszta. Zamiana jest celowa: licznik calkuje sprzetowo i bez
+  // przerw, nasza calka probkuje co 10 minut i milczy, kiedy milczy falownik.
+  // Klamra zostaje, tylko po drugiej stronie — szczegoly w bloku wyboru zrodla.
+  // Zrodlo bilansu (miernik albo calka) rozstrzyga pvBalance() — jedno miejsce
+  // dla obu paskow i dla procentu autokonsumpcji w v3PvBottom.
+  const PvBalance bal = pvBalance(pv.data, hist);
+  const float pvToday = bal.pvToday;
+  const float selfPv = bal.selfPv;
+  const float expKwh = bal.toGrid;
   char t1v[12], la[12], lb[12], line1[48];
   fmt1(t1v, sizeof(t1v), pvToday);
   snprintf(line1, sizeof(line1), "PV DZIŚ %s kWh", t1v);
@@ -1399,26 +1480,31 @@ void v3Pv(TFT_eSPI& s, const PvModel& pv, const PvHistory& hist) {
   dayBar(s, 92, pvToday > 0.05f ? selfPv / pvToday : 0.f, pvToday > 0.05f, pvOld,
          col::OK, col::OK2, col::BG, col::PANEL);
 
-  // PASEK 2 "DOM DZIŚ": czym dom byl dzis zasilany. Obie czesci z TEJ SAMEJ calki
-  // profilu doby (z PV = min(prod, pobor), z sieci = max(pobor − prod, 0)), wiec
-  // suma i procenty sa wewnetrznie spojne. "z PV" tu = surowa calka (bez klamry
-  // z paska 1): przy bledzie probkowania oba paski moga sie roznic o ten blad,
-  // ale kazdy z osobna sumuje sie do wlasnego tytulu — to wazniejsze niz idealna
-  // zgodnosc miedzy paskami. UWAGA (komentarz przy pvDayEnergy): nocny pobor nie
-  // wchodzi, bo falownik w nocy nie odpowiada — "DOM DZIŚ" liczy czesc doby
-  // z dzialajacym Modbusem.
-  const float homeKwh = de.selfPv + de.fromGrid;
+  // PASEK 2 "DOM DZIŚ": czym dom byl dzis zasilany. Tytul = `bal.home`, ktore
+  // pvBalance() liczy jako `selfPv + fromGrid`, czyli jako sume TYCH segmentow —
+  // pasek sumuje sie do tytulu z definicji, niezaleznie od wybranego zrodla.
+  //
+  // (v165) PRZY MIERNIKU "z sieci" JEST POMIAREM: to licznik 37121 minus jego stan
+  // z polnocy. To wlasnie ta pozycja byla dotad zanizona — calka z profilu doby
+  // pomijala godziny, w ktorych falownik nie odpowiadal (Huawei potrafi wylaczyc
+  // Modbus TCP po zachodzie), czyli okolo 1-2 kWh nocnego poboru dziennie. Licznik
+  // stoi na zlaczu z siecia i liczy takze wtedy, gdy nikt go nie pyta.
+  //
+  // BEZ MIERNIKA (fallback) obie czesci ida z TEJ SAMEJ calki profilu doby
+  // (z PV = min(prod, pobor), z sieci = max(pobor − prod, 0)) — zachowanie v164
+  // razem z jego znana wada opisana wyzej.
+  const float homeKwh = bal.home;
   char t2v[12];
   fmt1(t2v, sizeof(t2v), homeKwh);
   snprintf(line1, sizeof(line1), "DOM DZIŚ %s kWh", t2v);
   plex::str(s, plex::f11(), line1, grid::MARGIN, 116, cSec);
-  fmt1(la, sizeof(la), de.selfPv);
-  fmt1(lb, sizeof(lb), de.fromGrid);
+  fmt1(la, sizeof(la), bal.selfPv);
+  fmt1(lb, sizeof(lb), bal.fromGrid);
   // Najszersze "z PV 99,9 · z sieci 99,9" ma 126 px (start x=187), tytul "DOM DZIŚ
   // 99,9 kWh" konczy sie na x=120 -> 67 px luzu.
   snprintf(line1, sizeof(line1), "z PV %s · z sieci %s", la, lb);
   plex::strRight(s, plex::f11(), line1, grid::DATA_R, 116, cSec);
-  dayBar(s, 120, homeKwh > 0.05f ? de.selfPv / homeKwh : 0.f, homeKwh > 0.05f, pvOld,
+  dayBar(s, 120, homeKwh > 0.05f ? bal.selfPv / homeKwh : 0.f, homeKwh > 0.05f, pvOld,
          col::PV, col::GRID, col::PANEL, col::BG);
 
   // Wykres doby: WYPELNIONY (nie linia — na zywo linia byla nieczytelna). Sluply
@@ -1483,21 +1569,21 @@ void v3PvBottom(TFT_eSPI& tft, const PvModel& pv, const PvHistory& hist) {
   tft.fillRect(85, 226, 10, 8, col::SELF);   // próbka wypełniona, jak wykres (nie linia)
   plex::str(tft, plex::f13(), "pobór domu", 99, 233, col::SECOND);
   // Autokonsumpcja = procent DZISIEJSZEJ produkcji zuzyty na miejscu — dokladnie
-  // udzial lewego segmentu paska "PV DZIŚ" (te same liczby: calka min(prod, pobor)
-  // z klamra do rejestru 32114, patrz v3Pv). Najszersze "autokonsumpcja 100%" ma
+  // udzial lewego segmentu paska "PV DZIŚ". (v165) Te same liczby bierzemy z tego
+  // samego pvBalance(), co paski, wiec podpis nie moze sie z nimi rozjechac przy
+  // przelaczeniu zrodla miernik/calka. Najszersze "autokonsumpcja 100%" ma
   // 128 px (start x=185), "pobór domu" konczy sie na x=168 -> 17 px luzu.
   // Trzy stany jak w v3Pv: bez odczytu / sen / produkcja ~0 -> bez napisu (procent
   // z pustej podstawy to szum); dane stare -> liczba zostaje, kolor na MUTE.
   const bool pvFresh = pv.online && freshMs(diag().pvOkAt, pv.asleep ? cfg::PV_STALE_NIGHT_MS
                                                                      : cfg::PV_STALE_MS);
   const bool pvOld = pv.data.valid && !pvFresh && !pv.asleep;
-  const float pvToday = pv.data.energyTodayKwh > 0.f ? pv.data.energyTodayKwh : 0.f;
+  const PvBalance bal = pvBalance(pv.data, hist);
+  const float pvToday = bal.pvToday;
   if (pv.data.valid && !pv.asleep && pvToday > 0.05f) {
-    const PvDayKwh de = pvDayEnergy(hist);
-    const float selfPv = de.selfPv < pvToday ? de.selfPv : pvToday;
     char ak[32];
     snprintf(ak, sizeof(ak), "autokonsumpcja %d%%",
-             static_cast<int>(selfPv / pvToday * 100.f + 0.5f));
+             static_cast<int>(bal.selfPv / pvToday * 100.f + 0.5f));
     plex::strRight(tft, plex::f13(), ak, grid::W - grid::MARGIN, 233,
                    pvOld ? col::MUTE : col::SECOND);
   }

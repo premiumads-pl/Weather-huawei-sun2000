@@ -230,6 +230,17 @@ struct Diag {
   uint32_t pvFailHist[6] = {};
   uint32_t pvExtraHist[6] = {};
 
+  // (v165) TRZECIA grupa odczytu: liczniki energii miernika (37119..37122, jedna
+  // ramka). CELOWO poza `pvFails`/`pvExtraFails` i poza obydwoma histogramami —
+  // pelne uzasadnienie w PvClient.cpp przy samym odczycie. W skrocie: `fails`
+  // niesie prog zrywania sesji skalibrowany jako "3 z 5", `extra_hist` opisuje
+  // imiennie wymieniona piatke i ma DOKLADNIE szesc komorek (indeks 0..5), wiec
+  // szosty rejestr w ktorejkolwiek z tych grup albo po cichu zmienia prog, albo
+  // pisze za tablice. Brak licznika energii NIE jest awaria odczytu mocy.
+  // Histogram tu zbedny: jedna ramka na cykl, wiec porazek jest 0 albo 1.
+  uint32_t pvMeterReads = 0;  // proby odczytu licznikow energii
+  uint32_t pvMeterFails = 0;  // z tego nieudane (brak ramki albo licznik ujemny)
+
   // --- czujniki: LDR (GPIO1, ADC1) + PIR AM312 (GPIO13) ---
   // Bez sekretow: LDR to jasnosc otoczenia, PIR to obecnosc — zadnych tokenow ani IP.
   // (Uwaga: to zdanie mowilo kiedys "nic prywatnego" i po dolozeniu PirRtc::byHour

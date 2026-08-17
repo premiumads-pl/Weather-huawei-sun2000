@@ -37,6 +37,7 @@
 #include "BleGateway.h"
 #include "BleSensors.h"
 #include "GasMeter.h"
+#include "PvData.h"        // (v165) PvModel/PvSnapshot/PvMeterBase -> sekcja pv.meter w /api/diag
 #include "RadarMap.h"
 #include "SecureClient.h"   // YieldingSecureClient — geokoder w apiGeo() (patrz tam)
 #include "Touch.h"          // liczniki gestow -> /api/diag.touch (v158)
@@ -50,6 +51,13 @@
 // webTask czyta gGas pod gLock: netTask pisze do niego co 3 minuty.
 extern GasHistory gGas;
 extern SemaphoreHandle_t gLock;
+// (v165) To samo co wyzej i z tego samego powodu (::gPv, ::gPvMeterBase z .ino):
+// /api/diag musi pokazac liczniki miernika, wartosci "dzis" i stan bazy z polnocy,
+// bo bez nich nie da sie JUTRO sprawdzic, czy bilans policzyl sie z miernika, czy
+// z calki — a to jest jedyna roznica miedzy poprawnym a zanizonym "z sieci".
+// Oba czytane pod gLock: pisze je netTask przy kazdym odczycie PV.
+extern PvModel gPv;
+extern PvMeterBase gPvMeterBase;
 
 namespace portal {
 namespace {
@@ -2179,6 +2187,89 @@ void apiDiag() {
     }
   } else {
     pm["started_epoch"] = nullptr;   // NTP jeszcze nigdy nie dał czasu
+  }
+
+  // --- (v165) LICZNIKI ENERGII MIERNIKA + BAZA Z PÓŁNOCY ---
+  // Bez tej sekcji zmiany z v165 NIE DA SIĘ zweryfikować: na ekranie widać dwa
+  // paski, ale nie widać, czy "z sieci" policzyło się z licznika (poprawnie), czy
+  // z całki profilu doby (zaniżone o nocny pobór, ~1-2 kWh). `source` odpowiada na
+  // to jednym słowem, a `base` mówi, DLACZEGO tak wyszło.
+  //
+  // Bez sekretów: same kWh i daty, żadnego IP falownika — /api/diag bywa wklejane
+  // do zgłoszeń błędów.
+  {
+    PvSnapshot pd{};
+    PvMeterBase mb{};
+    // Kopia pod mutexem — netTask pisze oba przy każdym odczycie PV. Kopiujemy,
+    // zamiast czytać pole po polu, żeby wszystkie liczby w tej sekcji pochodziły
+    // z JEDNEJ chwili: inaczej `total` i `today` mogłyby opisywać różne odczyty
+    // i różnica przestałaby się zgadzać z bazą.
+    if (gLock != nullptr && xSemaphoreTake(gLock, pdMS_TO_TICKS(200)) == pdTRUE) {
+      pd = gPv.data;
+      mb = gPvMeterBase;
+      xSemaphoreGive(gLock);
+    }
+    JsonObject mt = pv["meter"].to<JsonObject>();
+    mt["ok"] = pd.meterOk;                   // rej. 37100 — status samego miernika
+    mt["reads"] = d.pvMeterReads;            // próby odczytu liczników energii
+    mt["fails"] = d.pvMeterFails;            // z tego nieudane (osobno od pv.fails!)
+    // Wartownik -1 zostaje wartownikiem także w JSON-ie: null, a nie 0. Zero jest
+    // prawdziwą, możliwą wartością licznika i wystawione jako 0 kłamałoby.
+    if (pd.meterExportKwh >= 0.f) mt["total_export_kwh"] = pd.meterExportKwh;
+    else mt["total_export_kwh"] = nullptr;
+    if (pd.meterImportKwh >= 0.f) mt["total_import_kwh"] = pd.meterImportKwh;
+    else mt["total_import_kwh"] = nullptr;
+    // false = liczby wyżej są przeniesione z poprzedniego cyklu (30 s / 5 min).
+    mt["energy_fresh"] = pd.meterEnergyFresh;
+
+    // "Dziś" — tylko gdy wolno ich użyć. Przy `today_ok == false` NIE wystawiamy
+    // liczb, bo byłyby zmyślone; ekran w tym samym stanie liczy z całki.
+    mt["today_ok"] = pd.meterTodayOk;
+    if (pd.meterTodayOk) {
+      mt["today_export_kwh"] = pd.meterTodayExportKwh;
+      mt["today_import_kwh"] = pd.meterTodayImportKwh;
+    } else {
+      mt["today_export_kwh"] = nullptr;
+      mt["today_import_kwh"] = nullptr;
+    }
+
+    // Stan bazy z północy (NVS, klucz "mtr1"). `full` to jedyne pole, które
+    // decyduje o `source`: baza złapana w środku dnia opisuje kawałek doby,
+    // nie dobę.
+    JsonObject bs = mt["base"].to<JsonObject>();
+    bs["valid"] = mb.valid;
+    bs["full"] = mb.full;
+    if (mb.valid) {
+      bs["year"] = mb.year;
+      bs["yday"] = mb.yday;
+      // Godzina złapania bazy: przy zdrowej dobie 00:00, przy bazie niepełnej widać
+      // tu wprost, o której falownik się odezwał i ile godzin nocy przepadło.
+      //
+      // Klamry na godzinie i minucie NIE są tu obroną przed złymi danymi (te są
+      // odsiane w pvMeterBaseLoad: `minute` przechodzi tylko w zakresie 0..1439),
+      // tylko sposobem na pokazanie KOMPILATOROWI, że wynik ma co najwyżej 5 znaków.
+      // Bez nich `%02d` z int-a to dla -Wformat-truncation potencjalne 11 znaków na
+      // pole i leci ostrzeżenie o obcięciu bufora — a to wydanie ma mieć zerową
+      // różnicę w ostrzeżeniach. Poszerzenie bufora też by je uciszyło, ale
+      // kłamałoby o tym, jaki napis tu naprawdę powstaje.
+      const int bh = mb.minute / 60, bm = mb.minute % 60;
+      char hm[8];
+      snprintf(hm, sizeof(hm), "%02d:%02d", bh < 0 ? 0 : (bh > 23 ? 23 : bh),
+               bm < 0 ? 0 : (bm > 59 ? 59 : bm));
+      bs["at"] = hm;
+      bs["import_kwh"] = mb.importKwh;
+      bs["export_kwh"] = mb.exportKwh;
+    } else {
+      bs["year"] = nullptr;
+      bs["yday"] = nullptr;
+      bs["at"] = nullptr;
+      bs["import_kwh"] = nullptr;
+      bs["export_kwh"] = nullptr;
+    }
+    bs["full_threshold_min"] = PV_BASE_FULL_MIN;
+
+    // Z CZEGO EKRAN WŁAŚNIE LICZY. Ta jedna linia jest powodem całej sekcji.
+    mt["source"] = pd.meterTodayOk ? "miernik" : "calka";
   }
 
   // --- piec: SUROWE liczniki z API (patrz Log.h) ---

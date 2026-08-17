@@ -144,6 +144,41 @@ bool PvClient::readU16(uint16_t addr, uint16_t& out) {
   return readRegsRetry(addr, 1, &out);
 }
 
+// (v165) Oba liczniki energii miernika JEDNA ramka: 37119..37122 = cztery rejestry,
+// czyli dwa int32 obok siebie. To NIE jest mikrooptymalizacja, tylko dwie decyzje:
+//
+//  1. SPOJNOSC. Oba liczniki opisuja te sama chwile, bo przychodza w jednej
+//     odpowiedzi. Przy dwoch osobnych readS32 miedzy nimi mija ~50-150 ms i moze
+//     wpasc ponowienie — a bilans dnia liczymy z ROZNICY tych dwoch liczb.
+//  2. JEDNA JEDNOSTKA PORAZKI. Odczyt albo dochodzi caly, albo wcale; nie ma
+//     stanu "mamy oddane, nie mamy pobranego", ktory trzeba by osobno obsluzyc
+//     w wartownikach i w bazie z polnocy.
+//
+// WYROWNANIE MA ZNACZENIE i kosztowalo osobne rozpoznanie: blok miernika to ciag
+// int32 zaczynajacy sie pod NIEPARZYSTYM adresem 37101, wiec 37119 i 37121 sa
+// poczatkami wartosci. Odczyt zaczynajacy sie od adresu srodkowego (np. 37120)
+// zwraca w pierwszym slowie ZERO zamiast dolnej polowki — sprawdzone na zywym
+// falowniku: zrzut robiony po 5 rejestrow od 37100 mial wyzerowane slowa 37110,
+// 37120, 37130 i 37140 (dokladnie te, ktore wypadaly na poczatek ramki), przez co
+// prad fazy B "wynosil" -655,36 A. Ten sam blok czytany ciagle od 37101 dal
+// -0,46 A. Gdyby ktos kiedys chcial tu czytac od 37120 — nie wolno.
+//
+// Typ i skala: int32 ZE ZNAKIEM, gain 100. Znak jest tu wartowaniem, nie ozdoba:
+// przy odwrotnie zapietych przekladnikach licznik potrafi isc w minus, a wtedy
+// odczyt jako uint32 dalby ~43 mln kWh i baza z polnocy zapisalaby te bzdure na
+// stale. Ujemny licznik odrzucamy nizej (w fetch) razem z wartownikiem -1.
+bool PvClient::readMeterEnergy(float& exportKwh, float& importKwh) {
+  uint16_t regs[4]{};
+  if (!readRegsRetry(37119, 4, regs)) {
+    return false;
+  }
+  const uint32_t ue = (static_cast<uint32_t>(regs[0]) << 16) | regs[1];
+  const uint32_t ui = (static_cast<uint32_t>(regs[2]) << 16) | regs[3];
+  exportKwh = static_cast<float>(static_cast<int32_t>(ue)) / 100.f;
+  importKwh = static_cast<float>(static_cast<int32_t>(ui)) / 100.f;
+  return true;
+}
+
 bool PvClient::warmUp() {
   uint16_t regs[2]{};
   for (int i = 0; i < 4; ++i) {
@@ -295,6 +330,52 @@ bool PvClient::fetch(PvModel& out, bool night) {
   if (readU16(32086, u16)) snap.efficiencyPct = static_cast<float>(u16) / 100.f; else { ++extra; mark(32086); }
   if (readU16(32089, u16)) snap.statusCode = u16; else { snap.statusCode = 0xFFFF; ++extra; mark(32089); }
   if (readU16(37100, u16)) snap.meterOk = (u16 == 1); else { snap.meterOk = true; ++extra; mark(37100); }
+
+  // (v165) LICZNIKI ENERGII MIERNIKA — TRZECIA GRUPA, WLASNY LICZNIK PORAZEK.
+  //
+  // Nie dopisane ani do `fails`, ani do `extra`, i oba wykluczenia maja powod:
+  //
+  //  * `fails` steruje progiem "fails >= 3", ktory zrywa sesje TCP i kosztuje
+  //    ~20 s rozgrzewki Huawei. Prog byl kalibrowany jako 3 Z PIECIU (60%).
+  //    Szosty rejestr w tej grupie zamienilby go po cichu na 3 z 6 (50%) —
+  //    dokladnie ten manewr, przed ktorym ostrzega komentarz kilkadziesiat linii
+  //    wyzej. BRAK LICZNIKA ENERGII NIE JEST AWARIA ODCZYTU MOCY.
+  //  * `extra` tez nie, z DWOCH powodow. Po pierwsze `extra_hist` w /api/diag
+  //    opisuje KONKRETNA piatke wymieniona z nazwy w Log.h (32016/32087/32086/
+  //    32089/37100) i dolozenie szostego rejestru zmienia znaczenie zebranych
+  //    danych bez zmiany nazwy pola. Po drugie — i to jest twardy blad, nie
+  //    estetyka — `pvExtraHist` ma SZESC komorek (indeks 0..5), a Portal.cpp
+  //    czyta je petla `for (i < 6)`. Szosty rejestr pozwolilby na `extra == 6`
+  //    i `++dg.pvExtraHist[6]` nadpisaloby pamiec za tablica.
+  //
+  // Stad `pvMeterReads`/`pvMeterFails` w Diag: osobna para licznikow, osobna
+  // linia w /api/diag, zero wplywu na alarmy i na zrywanie sesji. Histogram jest
+  // tu zbedny — to JEDNA ramka na cykl, wiec porazek moze byc 0 albo 1 i sam
+  // iloraz fails/reads niesie cala informacje.
+  //
+  // Koszt w cyklu Modbus: jedna dodatkowa ramka (4 rejestry) na odczyt, czyli
+  // 11 transakcji zamiast 10 — okolo +10% czasu cyklu przy kadencji 30 s.
+  {
+    Diag& dg = diag();
+    ++dg.pvMeterReads;
+    float ex = 0.f, im = 0.f;
+    if (readMeterEnergy(ex, im)) {
+      // Ujemny licznik narastajacy = zle zapiete przekladniki albo inny model
+      // miernika o innej semantyce. Nie zapisujemy tego do bazy z polnocy —
+      // wartownik -1 zostaje i ekran zjezdza do calki z v164.
+      if (ex >= 0.f && im >= 0.f) {
+        snap.meterExportKwh = ex;
+        snap.meterImportKwh = im;
+        snap.meterEnergyFresh = true;
+      } else {
+        ++dg.pvMeterFails;
+        mark(37119);
+      }
+    } else {
+      ++dg.pvMeterFails;
+      mark(37119);
+    }
+  }
 
   // Licznik kumulacyjny — to jest wlasciwa odpowiedz na "jak czesto padaja", bo
   // w odroznieniu od /api/log nie ma okna: zyje tyle, co uptime. Zadnego mutexa
