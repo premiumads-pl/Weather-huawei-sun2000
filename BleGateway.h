@@ -45,6 +45,13 @@ namespace blegw {
 // Liczba slotow rzadzi Settings - tam leza hosty i tam idzie zapis do NVS.
 constexpr int SLOTS = Settings::BLE_GW;
 
+// (v166) Prog swiezosci dla panelu, w sekundach: powyzej tego bramka jest "stara".
+// 180 s = 20 s kadencji odpytywania (netTask) + 120 s najdluzszego backoffu po bledzie
+// (kRetryNMs w BleGateway.cpp) + zapas na jedno chybione odpytanie. Stala stoi TUTAJ, a
+// nie w JavaScripcie panelu, z tego samego powodu, co stale_s przy pozostalych zrodlach
+// (v158): prog ma miec JEDNO zrodlo prawdy, obok kadencji, ktora go wyznacza.
+constexpr uint32_t STALE_S = 180;
+
 // Wolane z netTask. Odpytuje wszystkie obsadzone sloty, ktore sa "na chodzie":
 // bramka, ktora nie odpowiada, trafia na backoff i nie kradnie czasu pozostalym.
 void poll();

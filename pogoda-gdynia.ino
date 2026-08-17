@@ -273,7 +273,14 @@ void pirRtcBegin() {
   // dlatego rozstrzyga znacznik, a nie "wyglada rozsadnie".
   if (gPir.magic == PIR_RTC_MAGIC) {
     ++gPir.boots;
-    LOG("PIR: liczniki z RTC przezyly restart — zbieram od %lu s, start #%lu\n",
+    // (v166) Znacznik moze byc wazny z DWOCH powodow i mylenie ich kosztowaloby
+    // tydzien zgadywania: albo RTC naprawde przetrwalo restart programowy, albo
+    // sensStatsRestore() podlozylo tu chwile temu kopie z NVS po zaniku zasilania.
+    // Z samych liczb tego nie widac — obie drogi daja identyczny, sensownie
+    // wygladajacy komplet. Stad jawne rozroznienie w dzienniku.
+    LOG("PIR: liczniki %s — zbieram od %lu s, start #%lu\n",
+        sensStats().restoredPir ? "ODTWORZONE Z NVS (byl zanik zasilania)"
+                                : "z RTC przezyly restart",
         (unsigned long)gPir.collectedS, (unsigned long)gPir.boots);
   } else {
     memset(&gPir, 0, sizeof(gPir));
@@ -304,7 +311,10 @@ uint32_t gLdrLevelAccMs = 0;    // reszta ponizej sekundy — bez niej gubilibys
 void ldrRtcBegin() {
   if (gLdr.magic == LDR_RTC_MAGIC) {
     ++gLdr.boots;
-    LOG("LDR: histogram z RTC przezyl restart — zbieram od %lu s, start #%lu, zdarzen %lu\n",
+    // Rozroznienie jak przy PIR wyzej — patrz komentarz tam.
+    LOG("LDR: histogram %s — zbieram od %lu s, start #%lu, zdarzen %lu\n",
+        sensStats().restoredLdr ? "ODTWORZONY Z NVS (byl zanik zasilania)"
+                                : "z RTC przezyl restart",
         (unsigned long)gLdr.collectedS, (unsigned long)gLdr.boots, (unsigned long)gLdr.evCount);
   } else {
     memset(&gLdr, 0, sizeof(gLdr));
@@ -337,6 +347,77 @@ void pvRtcBegin() {
     gPvRtc.magic = PV_RTC_MAGIC;
     LOG("PV: RTC puste lub z innego ukladu pol — zimny start, liczniki Modbusa wyzerowane\n");
   }
+}
+
+// --- (v166) ODTWORZENIE STATYSTYK PIR/LDR Z NVS PO ZANIKU ZASILANIA ---
+//
+// Wolane PRZED pirRtcBegin()/ldrRtcBegin() i to jest cala mechanika: te dwie funkcje
+// patrza wylacznie na `magic` w RTC, wiec jesli podlozymy im tu wazna kopie z NVS,
+// zobacza ja jako "dane, ktore przezyly restart" i policza ja jako kolejny start.
+// Odwrotna kolejnosc byla by katastrofalna: pirRtcBegin() zdazylby zrobic memset i
+// odtwarzalibysmy zbiory na wierzch swiezo wyzerowanej struktury.
+//
+// KIEDY ODTWARZAMY, A KIEDY NIE — i to jest tu jedyna decyzja, ktora ma znaczenie:
+//  * magic w RTC SIE ZGADZA (restart programowy, OTA, panic) => NIE RUSZAMY RTC.
+//    RTC jest wtedy SWIEZSZY niz NVS o cale okno miedzy zapisami (do 15 minut), wiec
+//    nadpisanie go kopia z flasha byloby cofnieciem pomiaru, a nie ratunkiem.
+//  * magic w RTC SIE NIE ZGADZA (zanik zasilania albo podbity uklad pol) => TO JEST
+//    ten przypadek, dla ktorego cala ta kopia powstala.
+// Obie struktury rozstrzygaja sie OSOBNO, dokladnie tak jak osobne sa ich magici:
+// podbicie ukladu pol LDR-a nie moze kosztowac tygodnia pomiaru PIR-a.
+//
+// KANDYDAT NA ZDARZENIE "ZOSTAWIONE SWIATLO" NIE PRZEZYWA ZANIKU ZASILANIA — i to
+// jest swiadoma roznica wzgledem restartu. Przy OTA przerwa trwa kilkanascie sekund
+// (zmierzone: gap_s = 5 s na trzy restarty), wiec scalenie ciaglosci przez taka dziure
+// jest uczciwe. Przerwa bez pradu nie ma gornego ograniczenia — moze trwac dobe.
+// Trzymanie kandydata przez taka dziure twierdziloby, ze swiatlo palilo sie caly czas,
+// czego NIE WIDZIELISMY. Zamykamy wiec kandydata: zdarzenia juz zapisane w pierscieniu
+// zostaja (durS przestaje rosnac), nowa ciaglosc zacznie sie od zera.
+void sensStatsRestore() {
+  const bool pirCold = gPir.magic != PIR_RTC_MAGIC;
+  const bool ldrCold = gLdr.magic != LDR_RTC_MAGIC;
+
+  if (!sensStatsLoad(pirCold ? &gPir : nullptr, ldrCold ? &gLdr : nullptr)) {
+    if (pirCold || ldrCold) {
+      LOG("PIR+LDR: w NVS nie ma jeszcze kopii zbiorow — zimny start liczy od zera\n");
+    }
+    return;
+  }
+  SensStats& st = sensStats();
+  // Restart programowy: kopia byla potrzebna tylko po to, zeby odzyskac powerGapS i
+  // coldStarts (inaczej najblizszy zapis wyzerowalby je w NVS). Nic wiecej.
+  if (!pirCold && !ldrCold) {
+    return;
+  }
+  st.restoredPir = pirCold && st.pirOk;
+  st.restoredLdr = ldrCold && st.ldrOk;
+  st.restored = st.restoredPir || st.restoredLdr;
+  if (!st.restored) {
+    LOG("PIR+LDR: kopia w NVS jest z INNEGO ukladu pol — nie wolno jej wczytac, "
+        "zimny start liczy od zera\n");
+    return;
+  }
+  ++st.coldStarts;
+  // Dlugosci przerwy TU jeszcze nie znamy: NTP odpowie za kilka-kilkanascie sekund,
+  // a jedyna miara to roznica dwoch epochow. Liczy ja loop() przy pierwszym pewnym
+  // czasie (patrz "DLUGOSC PRZERWY BEZ ZASILANIA"). Bez stempla zapisu nie ma czego
+  // odejmowac i wtedy przerwa po prostu zostaje nieznana.
+  st.outagePending = st.savedEpoch > 0;
+  if (st.restoredLdr) {
+    gLdr.candActive = 0;
+    gLdr.evSlot = 0xFFFFFFFF;
+  }
+  LOG("PIR+LDR: zbiory ODTWORZONE Z PAMIECI TRWALEJ (NVS) po zaniku zasilania — "
+      "PIR %lu s / %lu impulsow / %lu wyzwolen, LDR %lu s / %lu zdarzen swiatla; "
+      "odtworzenie #%lu, laczna przerwa bez pradu dotad %lu s%s\n",
+      (unsigned long)gPir.collectedS, (unsigned long)gPir.pulses,
+      (unsigned long)gPir.rises, (unsigned long)gLdr.collectedS,
+      (unsigned long)gLdr.evCount, (unsigned long)st.coldStarts,
+      (unsigned long)st.powerGapS,
+      (st.restoredPir && st.restoredLdr)
+          ? ""
+          : (st.restoredPir ? " (UWAGA: odtworzony tylko PIR — LDR liczy od zera)"
+                            : " (UWAGA: odtworzony tylko LDR — PIR liczy od zera)"));
 }
 
 // --- ETAP netTask: przeniesienie z POPRZEDNIEJ sesji do Diag (patrz NetStage w Log.h) ---
@@ -850,6 +931,11 @@ static void netTask(void*) {
   uint32_t nextFlightAt = 0;
   uint32_t nextOtaAt = 45000;   // pierwsze sprawdzenie po 45 s od startu
   uint32_t nextStoreAt = 0;
+  // (v166) Kopia statystyk PIR/LDR do NVS. Pierwszy zapis dopiero po pelnym okresie,
+  // a nie od razu przy starcie: gdyby szedl natychmiast, kazdy restart w petli
+  // (np. nadzorca netTask) przepisywalby do flasha ten sam stan co kilkadziesiat
+  // sekund, czyli robilby dokladnie to, przed czym broni kadencja 15 minut.
+  uint32_t nextSensStoreAt = cfg::SENS_STORE_MS;
   uint32_t nextRadarAt = 0;
   uint32_t nextBleAt = 20000;  // po WiFi i pierwszej pogodzie
   uint32_t nextGwAt = 12000;
@@ -1643,6 +1729,34 @@ static void netTask(void*) {
       nextStoreAt = millis() + cfg::PV_STORE_MS;
     }
 
+    // ---- (v166) trwala kopia statystyk PIR + LDR (klucz "sen1", 424 B) ----
+    // Osobny zegar, a nie doklejka do bloku wyzej: tamten chodzi co 5 minut, bo trzyma
+    // profile JEDNEJ DOBY kasowane o polnocy, a ten zbior ma horyzont TYGODNIA i
+    // kilkanascie minut jego utraty jest bez znaczenia. Uzasadnienie kadencji liczbami
+    // stoi przy cfg::SENS_STORE_MS.
+    //
+    // ZAPIS POZA gLock, wzorem pozostalych zapisow — ale z INNEGO powodu i warto to
+    // powiedziec wprost: gLock chroni modele rysowane przez rdzen 1, a gPir/gLdr nie sa
+    // nim chronione NIGDY. Pisze do nich ISR i loop(), czyta webTask, wszystko bez
+    // blokady (patrz "WSPOLBIEZNOSC" przy PirRtc w Log.h — mutex w ISR jest zabroniony).
+    // Kopia 424 B robiona w biegu moze wiec zlapac licznik w polowie inkrementacji;
+    // najgorszy przypadek to kopia rozjechana o JEDEN impuls, czyli dokladnie ten sam
+    // blad, ktory ten projekt swiadomie akceptuje przy kazdym odczycie /api/diag.
+    if (static_cast<int32_t>(now - nextSensStoreAt) >= 0) {
+      gNetStage.stageNow = NET_STAGE_NVS;
+      const bool wasFailed = sensStats().saveFailed;
+      if (!sensStatsSave(gPir, gLdr) && !wasFailed) {
+        // Melduje sie TYLKO na przejsciu w blad, a nie co 15 minut: inaczej pelna
+        // partycja NVS zalalaby kolowy bufor /api/log (3072 B, ~47 linii) wlasnym
+        // ostrzezeniem i wypchnela z niego wszystko inne. Cicha porazka zapisu jest
+        // natomiast nie do przyjecia — ujawnilaby sie dopiero przy zaniku pradu, czyli
+        // w chwili, w ktorej ta kopia jest jedyna rzecza, jaka mamy.
+        LOG("PIR+LDR: ZAPIS kopii do NVS NIE POWIODL SIE — po zaniku zasilania zbiory "
+            "przepadna (partycja NVS pelna?)\n");
+      }
+      nextSensStoreAt = millis() + cfg::SENS_STORE_MS;
+    }
+
     // ---- samoloty ----
     if (gFlightsNeeded && static_cast<int32_t>(millis() - nextFlightAt) >= 0) {
       gNetStage.stageNow = NET_STAGE_FLIGHTS;
@@ -1858,6 +1972,11 @@ void setup() {
   // Kolejnosc jest istotna: najpierw liczniki i wskaznik, dopiero na koncu attach.
   // Odwrotnie pierwsze zbocze trafiloby w gDiagIsr == nullptr i przepadloby, a gorzej —
   // pirRtcBegin() wyzerowaloby po nim liczniki albo doliczyloby je do smieci z RTC.
+  //
+  // (v166) PRZED pirRtcBegin()/ldrRtcBegin(), bo obie patrza wylacznie na `magic` w RTC:
+  // kopia z NVS musi juz tam lezec, zanim one zdecyduja "przezylo czy zimny start".
+  // Odwrotna kolejnosc konczy sie memsetem NA WIERZCH odtworzonych danych.
+  sensStatsRestore();
   pirRtcBegin();
   // PO pirRtcBegin(), bo seeduje gLdrBookedRises z gPir.rises — przed nim czytaloby albo
   // smiec z RTC (zimny start), albo wartosc, ktora pirRtcBegin() zaraz wyzeruje.
@@ -2252,6 +2371,45 @@ void loop() {
       const time_t tt = time(nullptr);
       if (tt > 1700000000) {
         gPvRtc.startedEpoch = static_cast<uint32_t>(tt) - gPvRtc.collectedS;
+      }
+    }
+
+    // --- (v166) DLUGOSC PRZERWY BEZ ZASILANIA ---
+    // Nie da sie jej policzyc w setup(): NTP jeszcze nie odpowiedzial, a jedyna miara
+    // to roznica DWOCH epochow — stempla ostatniego zapisu do NVS i chwili obecnej.
+    // Liczymy ja wiec przy pierwszym pewnym czasie i DOKLADNIE RAZ na sesje.
+    //
+    // DO collected_s TA PRZERWA NIE WCHODZI I WEJSC NIE MOZE. collected_s znaczy
+    // "sekundy REALNEGO zbierania" i jest MIANOWNIKIEM kazdej liczby "na dobe" w
+    // panelu — doliczenie do niego godzin bez pradu zanizyloby wszystkie te liczby
+    // o czas, w ktorym urzadzenie bylo martwe.
+    //
+    // NIE PRZESUWAMY TEZ startedEpoch. "Zbieram od" ma zostac PRAWDZIWA DATA poczatku
+    // pomiaru, a nie data przesunieta tak, zeby rachunek sie zgadzal. Skutek jest
+    // zamierzony: wall_s dalej obejmuje cale okno kalendarzowe, a gap_s (wall_s minus
+    // collected_s) dalej znaczy "ile pomiaru nie ma". Nowe pole power_gap_s mowi, ILE
+    // Z TEGO ZJADL BRAK PRADU, a reszta to restarty — i dopiero rozdzielone daja
+    // odpowiedz na pytanie "czemu w tym tygodniu jest dziura".
+    if (sensStats().outagePending) {
+      const time_t tt = time(nullptr);
+      if (tt > 1700000000) {
+        SensStats& st = sensStats();
+        st.outagePending = false;
+        const uint32_t nowE = static_cast<uint32_t>(tt);
+        if (nowE > st.savedEpoch) {
+          const uint32_t off = nowE - st.savedEpoch;
+          st.powerGapS += off;
+          LOG("PIR+LDR: przerwa BEZ ZASILANIA trwala %lu s — NIE doliczam jej do "
+              "collected_s; lacznie bez pradu %lu s (pole power_gap_s)\n",
+              (unsigned long)off, (unsigned long)st.powerGapS);
+        } else {
+          // Zegar nie jest pozniejszy niz stempel zapisu: zla strefa, zly serwer NTP
+          // albo stempel z przyszlosci. Odjecie unsigned wpisaloby tu ~4 mld sekund,
+          // czyli liczbe, ktora wygladalaby na pomiar. "Nie wiem" jest tu prawda.
+          LOG("PIR+LDR: czas z NTP nie jest pozniejszy niz stempel zapisu — dlugosci "
+              "przerwy bez zasilania NIE ZNAM, power_gap_s zostaje %lu s\n",
+              (unsigned long)st.powerGapS);
+        }
       }
     }
 

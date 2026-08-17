@@ -142,6 +142,23 @@ constexpr uint32_t PV_REFRESH_MS = 30UL * 1000UL;
 // Wracamy do 30 s natychmiast, gdy tylko falownik znów odpowie.
 constexpr uint32_t PV_REFRESH_NIGHT_MS = 5UL * 60UL * 1000UL;
 constexpr uint32_t PV_STORE_MS = 5UL * 60UL * 1000UL;  // zapis profilu do NVS
+// (v166) Kadencja zapisu trwalej kopii statystyk PIR/LDR (klucz NVS "sen1", 424 B).
+// LICZBY, a nie przeczucie:
+//  * CO TRACIMY. To histogramy okna TYGODNIOWEGO. Przy 15 minutach zanik zasilania
+//    cofa pomiar najwyzej o 900 s, czyli 0,15% siedmiodniowego zbioru (604800 s).
+//    Zmierzone dotad okno to 14481 s — nawet w nim 900 s to 6%, a przy docelowym
+//    tygodniu robi sie z tego szum. Kolejnego prysznica i tak nie zgubimy.
+//  * CO KOSZTUJE. 424 B co 15 min = 96 zapisow na dobe = ~41 kB/dobe. Obok tego, co
+//    ten sam netTask juz pisze: prof1 (584 B) i burn1 (296 B) co 5 min = 288 zapisow
+//    i ~253 kB/dobe oraz rh2 (1736 B) co 10 min = ~250 kB/dobe. Dokladamy wiec ~8%
+//    do istniejacego ruchu do flasha, czyli nie zmieniamy rzedu wielkosci zuzycia.
+//  * DLACZEGO NIE CZESCIEJ. Przy 5 minutach (kadencja profilu PV) byloby 288 zapisow
+//    na dobe i ~122 kB, czyli trzykrotnie wiecej zapisow za uratowanie 10 minut
+//    histogramu — a partycja NVS ma tu tylko 0x5000 B (20 kB) i jest wear-levelowana
+//    w swoim wlasnym, malym obszarze.
+//  * DLACZEGO NIE RZADZIEJ. Godzina znaczylaby, ze przypadkowy zanik pradu kasuje
+//    caly wieczor, w ktorym mozna bylo zebrac zdarzenie "zostawione swiatlo".
+constexpr uint32_t SENS_STORE_MS = 15UL * 60UL * 1000UL;
 constexpr uint32_t WIFI_RETRY_MS = 8000;
 constexpr uint32_t RADAR_REFRESH_MS = 5UL * 60UL * 1000UL;  // klatki radaru co ~10 min
 // Jakosc powietrza to srednie GODZINOWE — nowa probka raz na godzine, wiec 15 minut

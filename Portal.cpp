@@ -424,6 +424,7 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
   <h2>Bramki BLE</h2>
   <label>Bramki BLE — adresy (opcjonalnie)</label>
   <div id=gws></div>
+  <div id=gwstat style="margin:8px 0"></div>
   <button class=s onclick=saveGw()>Zapisz bramki</button>
   <div class=hint id=gmsg></div>
   <div class=hint>Bluetooth nie ma sieci kratowej — czujnik musi dosięgnąć odbiornika.
@@ -669,7 +670,12 @@ function fmtUptime(u){const dd=Math.floor(u/86400),hh=Math.floor(u%86400/3600),m
  if(u<86400)return hh+' h '+mm+' min';
  return dd+' d '+hh+' h';}
 // "ile temu" po ludzku (sekundy -> tekst). -1/undefined = nigdy.
-function agoTxt(s){if(s==null||s<0)return 'nigdy';if(s<60)return 'przed chwilą';
+// (v166) 4294967295 (0xFFFFFFFF) TEZ znaczy "nigdy": do v165 /api/ble wysylalo tam
+// -1 przepuszczone przez typ uint32 (patrz apiBleList) i panel malowal to jako
+// "49710 d temu", czyli "dawno, ale bylo" zamiast "NIGDY". Firmware juz tego nie
+// produkuje, ale ten sam panel serwuje takze urzadzenie po cofnieciu wersji, a
+// zaden prawdziwy wiek w sekundach nie ma jak dobic do 136 lat.
+function agoTxt(s){if(s==null||s<0||s>=4294967295)return 'nigdy';if(s<60)return 'przed chwilą';
  if(s<3600)return Math.floor(s/60)+' min temu';if(s<86400)return Math.floor(s/3600)+' h temu';
  return Math.floor(s/86400)+' d temu';}
 // polska mnogosc dla "raz/razy": 1 -> "raz", reszta -> "razy" (0,2,5,22... = razy).
@@ -795,8 +801,13 @@ async function liveTick(){
  //   wiek >= stale_s     -> bursztynowy + jawnie dopisane "prog: N".
  // Dopisek progu jest tu celowo: bez niego "12 min temu" na bursztynowo wyglada
  // jak usterka panelu, a nie jak przekroczona granica, ktora ma konkretna wartosc.
+ // (v166) BRAMKI BLE DOPISANE DO TEJ SAMEJ LISTY. Maja dokladnie te pola, ktorych
+ // ten renderer wymaga (ok_ago_s + stale_s), wiec nie potrzebuja wlasnej gałęzi —
+ // a to jest lista, na ktora wlasciciel patrzy, gdy pyta "co nie dziala". Tresc bledu
+ // ("HTTP -1") stoi przy sekcji Bramki BLE, patrz gwStat().
  const src=[['Pogoda',d.weather],['Falownik',pv],['Piec Viessmann',d.vi],
-  ['Powietrze',d.air],['Radar opadów',d.radar],['Samoloty',d.flights],['MQTT',d.mqtt]];
+  ['Powietrze',d.air],['Radar opadów',d.radar],['Samoloty',d.flights],['MQTT',d.mqtt],
+  ...(d.blegw||[]).map(g=>['Bramka BLE '+(g.i+1),g])];
  $('liveFresh').innerHTML=src.map(f=>{
   const o=f[1]||{};
   const v=(o.ok_ago_s==null?-1:o.ok_ago_s);
@@ -808,6 +819,7 @@ async function liveTick(){
   const lt=lim<60?lim+' s':(lim<3600?Math.round(lim/60)+' min':Math.round(lim/3600)+' h');
   const note=old?` <span style="color:var(--mute)">(próg ${lt})</span>`:'';
   return `<div class=frow><span class=fk>${f[0]}</span><span style="color:${c}">${agoTxt(v)}${note}</span></div>`;}).join('');
+ gwStat(d);   // (v166) stan bramek BLE — ta sama migawka, zero dodatkowych zapytan
  if($('liveDot'))$('liveDot').textContent='● odświeżono '+new Date().toLocaleTimeString('pl-PL');
 }
 // --- OBECNOSC · SWIATLO · RUCH (integracja prototypu): logika i wyglad z prototypu, dane
@@ -847,12 +859,38 @@ async function obec(){
  // swiatlo ciemno/zmierzch/jasno
  const pct=x=>Math.round(x/totL*100);
  const brow=(k,v,frac,col)=>`<div class=brow><span class=k>${k}</span><span class=track><span class=fill style="width:${(frac*100).toFixed(0)}%;background:${col}"></span></span><span class=v>${v}</span></div>`;
- $('obecLight').innerHTML=brow('Ciemno',pct(dark)+'%',dark/totL,'var(--second)')+brow('Zmierzch',pct(mid)+'%',mid/totL,'#B8C6DD')+brow('Jasno',pct(bright)+'%',bright/totL,'var(--warn)')+`<div class=gnote>„Jasno” to poziom LDR ≥ ~640 mV (światło włączone albo dzień przez okno). Ok. ${pl(brightHDay)} h/dobę.</div>`;
+ // (v166) KOLORY, KTORE COS ZNACZA. Do v165 wszystkie trzy paski szly na jednym
+ // szarym var(--second) plus jeden zakodowany na sztywno #B8C6DD, wiec trzy rozne
+ // stany wygladaly identycznie i wykres nie komunikowal niczego. Teraz kazdy pasek
+ // bierze zmienna Z PALETY PANELU (dziala w obu motywach, zadnych nowych barw):
+ //   Ciemno   -> var(--second): swiatlo zgaszone. Szarosc NIE jest tu brakiem
+ //               pomyslu, tylko trescia — to stan "nic sie nie dzieje".
+ //   Zmierzch -> var(--accent): 32-640 mV, czyli STREFA SPORNA. Tu mieszka zmierzone
+ //               "tylko prysznic" (603-617 mV), ktore nie dosiega progu
+ //               LDR_DIM_UP_MV = 650 — cala stawka pomiaru LDR (patrz LdrRtc w Log.h).
+ //               Akcent, bo to jest miejsce, na ktore trzeba patrzec.
+ //   Jasno    -> var(--warn): swiatlo wlaczone. TEN SAM kolor, ktorego uzywa
+ //               ostrzezenie "Mozliwe zostawione swiatlo" kilka linijek nizej —
+ //               pasek i alarm mowia o tej samej rzeczy, wiec maja jeden kolor.
+ $('obecLight').innerHTML=brow('Ciemno',pct(dark)+'%',dark/totL,'var(--second)')+brow('Zmierzch',pct(mid)+'%',mid/totL,'var(--accent)')+brow('Jasno',pct(bright)+'%',bright/totL,'var(--warn)')+`<div class=gnote>Kosze LDR: <b style="color:var(--second)">ciemno</b> &lt; 32 mV, <b style="color:var(--accent)">zmierzch</b> 32–640 mV (tu wpada samo światło pod prysznicem, zmierzone 603–617 mV), <b style="color:var(--warn)">jasno</b> ≥ 640 mV (światło włączone albo dzień przez okno). Ok. ${pl(brightHDay)} h/dobę jasno.</div>`;
  // dlugosc ruchu
  const names=['<0,1 s','0,1–1 s','1–3 s','3–10 s','10–60 s','>60 s'];
  const wtot=wid.reduce((a,b)=>a+b,0)||1,wmax=Math.max(...wid,1);
- let drows='';wid.forEach((v,i)=>{if(v)drows+=`<div class=brow><span class=k>${names[i]}</span><span class=track><span class=fill style="width:${(v/wmax*100).toFixed(0)}%;background:var(--warn)"></span></span><span class=v>${Math.round(v/wtot*100)}%</span></div>`;});
- $('obecDur').innerHTML=(drows||'<div class=gnote>Brak zakończonych impulsów.</div>')+`<div class=gnote>Krótkie impulsy 1–3 s to ktoś w ruchu; dłuższe (3–10 s) to zwykle wchodzenie/wychodzenie.</div>`;
+ // (v166) TU JEDEN KOLOR MA SENS I ZOSTAJE — inaczej niz przy świetle wyżej. Powód:
+ // to jest JEDNA wielkość (szerokość impulsu) pocięta na rosnące przedziały, a nie
+ // trzy różne stany. Malowanie każdego kosza inaczej sugerowałoby podział, którego
+ // w danych nie ma. Zmienia się tylko odcień: var(--accent) zamiast var(--warn),
+ // żeby pasek nie udawał ostrzeżenia — dłuższy impuls nie jest niczym złym.
+ // WYJĄTEK JEST JEDEN i jest istotowy: kosz <0,1 s to NIE RUCH. AM312 daje impuls
+ // ~2 s, więc cokolwiek poniżej 100 ms to szum na wejściu (patrz PirRtc w Log.h) —
+ // i tylko on dostaje var(--err), bo jego niezerowa wartość unieważnia resztę liczb.
+ let drows='';wid.forEach((v,i)=>{if(v)drows+=`<div class=brow><span class=k>${names[i]}</span><span class=track><span class=fill style="width:${(v/wmax*100).toFixed(0)}%;background:${i===0?'var(--err)':'var(--accent)'}"></span></span><span class=v>${Math.round(v/wtot*100)}%</span></div>`;});
+ // Opis POPRAWIONY: do v165 stało tu "krótkie impulsy 1-3 s to ktoś w ruchu; dłuższe
+ // (3-10 s) to zwykle wchodzenie/wychodzenie" — a to nieprawda dla AM312. Ten moduł
+ // jest JEDNORAZOWY (~2 s na wyzwolenie), więc kosz 1-3 s to po prostu jeden normalny
+ // impuls, niezależnie od tego, jak długo ktoś się ruszał. Dłuższe kosze znaczą
+ // retrygowanie, czyli ruch NIEPRZERWANY. Odwrotnie niż mówił stary opis.
+ $('obecDur').innerHTML=(drows||'<div class=gnote>Brak zakończonych impulsów.</div>')+`<div class=gnote>Kosz <b>1–3 s</b> to normalny, pojedynczy impuls AM312 (~2 s) — tyle trwa JEDNO wyzwolenie, niezależnie od długości ruchu. Kosze dłuższe (3–10 s i więcej) to retrygowanie, czyli ruch nieprzerwany. Kosz <b style="color:var(--err)">&lt;0,1 s</b> to nie ruch, tylko szum na wejściu — jeśli jest niezerowy, reszta liczb jest niepewna.</div>`;
  // DETEKTOR "zostawione swiatlo" (task B) — SZACUNEK z histogramow, nie zdarzenia w czasie.
  // brightShare = udzial czasu "jasno"; presenceShare = udzial godzin z JAKIMKOLWIEK ruchem
  // (gorna granica obecnosci — konserwatywnie, zeby nie alarmowac na wyrost).
@@ -866,7 +904,13 @@ async function obec(){
   $('obecLeft').innerHTML=`<div class="gbox okb">Udział czasu „jasno” (${Math.round(brightShare*100)}%) nie przewyższa wyraźnie obecności (~${hoursWithMotion} godz./dobę) — brak sygnału zostawionego światła. <span style="color:var(--mute)">Szacunek z histogramów, nie zdarzenia w czasie rzeczywistym.</span></div>`;
  }
  $('obecInsight').innerHTML=days>0?`<b>Co z tego wynika:</b> obecność koncentruje się ${busiest>=0?('wokół <b>'+String(busiest).padStart(2,'0')+':00</b>'):'w kilku porach doby'}. Dzienny ruch to ok. <b>${motMinDay} min</b> aktywnego czujnika w ~<b>${visitsDay} wejściach</b>. Światło jest jasne ~<b>${pl(brightHDay)} h/dobę</b> — warto sprawdzić, czy te godziny pokrywają się z obecnością.`:'Dane się zbierają — wróć po kilku godzinach.';
- $('obecFoot').textContent='Dane na żywo z /api/diag (sensory PIR + LDR, liczniki przeżywają restart/OTA). Liczby „na dobę” liczone z okna obserwacji (collected_s), nie z uptime.';
+ // (v166) Stopka mowi teraz TAKZE o trwalosci — bo to bylo zgloszenie wlasciciela
+ // ("po restarcie brak danych"). Rozroznienie jest istotne: restart/OTA lapie RTC,
+ // zanik zasilania lapie dopiero kopia w NVS, a czas bez pradu NIE wchodzi do
+ // collected_s (jest osobno, w power_gap_s) — inaczej liczby "na dobę" zanizalby
+ // czas, w ktorym urzadzenie bylo martwe.
+ const ps=s.persist||{},pg=ps.power_gap_s||0;
+ $('obecFoot').innerHTML='Dane na żywo z /api/diag (sensory PIR + LDR). Liczniki przeżywają restart i OTA (pamięć RTC) oraz <b>zanik zasilania</b> (kopia w NVS, zapis co '+Math.round((ps.save_period_s||900)/60)+' min'+(ps.restored_now?', ta sesja wstała właśnie z tej kopii':'')+(ps.save_failed?' — <b class=err>ostatni zapis się NIE UDAŁ</b>':'')+'). Liczby „na dobę” liczone z okna obserwacji (collected_s), nie z uptime'+(pg>0?'; czas bez prądu ('+Math.round(pg/60)+' min) jest z niego wyłączony':'')+'.';
 }
 // --- ZDROWIE URZADZENIA (task C): uptime, awarie, sterta (ostrzezenie gdy najwiekszy blok
 // < 40 kB), radar/PSRAM, WiFi — wszystko z /api/diag. ---
@@ -1053,6 +1097,7 @@ async function diagPills(){
    else if(p.ok_ago_s>=0&&p.ok_ago_s<plim){t='✓ połączony';c='ok';}
    $('sInv').textContent=t;$('sInv').className='sig '+c;
   }
+  gwStat(d);   // (v166) stan bramek BLE — bez dodatkowego zapytania, patrz gwStat()
  }catch(e){}
 }
 function kb(b){if(b==null)return '—';if(b>=1048576)return (b/1048576).toFixed(2)+' MB';if(b>=1024)return (b/1024).toFixed(1)+' kB';return b+' B';}
@@ -1157,6 +1202,16 @@ function shotDot(){
 document.addEventListener('visibilitychange',()=>{
  live=!document.hidden;shotDot();liveSync();});
 // --- czujniki BLE ---
+// (v166) Jedno ramie drogi sygnalu: sila + wiek. Zwraca "nigdy", gdy z tej strony NIE
+// PRZYSZLA ANI JEDNA ramka — i to jest cala pointa, bo do v165 panel mowil tylko
+// lakoniczne "· przez bramke" albo nic, wiec "bramka nie slyszy tego czujnika" i
+// "bramka nie zyje od trzech dni" wygladaly IDENTYCZNIE (czyli tak samo).
+// rssi == 0 przy znanym wieku znaczy "ramka byla, ale bez sensownego RSSI"
+// (saneRssi() w BleGateway.cpp odrzuca 0 dBm — to najsilniejszy sygnal swiata).
+function bleArm(rssi,age){
+ if(age==null||age<0||age>=4294967295)return '<span style="color:var(--mute)">nigdy</span>';
+ return (rssi?rssi+' dBm':'sygnał ?')+' · '+agoTxt(age);
+}
 async function bles(){
  let r;
  try{r=await(await fetch('/api/ble')).json();}catch(e){return}
@@ -1165,10 +1220,24 @@ async function bles(){
  $('bles').innerHTML=r.map((s,i)=>{
   const st = s.valid ? `${s.t.toFixed(1)}°C · ${s.h.toFixed(0)}% · bat ${s.bat}%`
        : (s.needsKey ? '<span class=err>brak klucza</span>' : 'czekam na dane');
-  const src = s.gw ? ' <span style="color:#2563C4">· przez bramkę</span>' : '';
+  // var(--accent) zamiast zakodowanego #2563C4: ten sam kolor w motywie jasnym,
+  // czytelny takze w ciemnym (tam #5B8DEF) — patrz paleta na gorze pliku.
+  const src = s.gw ? ' <span style="color:var(--accent)">· przez bramkę</span>' : '';
+  // (v166) DROGA SYGNALU W JEDNEJ LINIJCE. Wlasciciel chce widziec przy KAZDYM
+  // czujniku, czy odczyt przyszedl wprost do ESP32, czy przez bramke — i jak silny
+  // oraz jak swiezy jest KAZDY z tych dwoch odczytow. Dane byly w /api/ble od dawna
+  // (rssi_own/own_age/rssi_gw/gw_age/gw_own), panel ich po prostu nie pokazywal.
+  // Numer bramki dopisujemy tylko wtedy, gdy czujnik ma OPIEKUNA (gw_own >= 0) —
+  // przy jednej bramce to zbedny szum, przy trzech to jedyny sposob, zeby wiedziec,
+  // ktora z nich go slyszy (arbitraz z histereza 6 dB, patrz BleGateway.h).
+  // "używa" bierze sie z s.gw, czyli z tego, ktora droga przyszla OSTATNIA przyjeta
+  // ramka — a nie z tego, ktora ma lepsze RSSI.
+  const gwn = (s.gw_own!=null&&s.gw_own>=0) ? ' '+(s.gw_own+1) : '';
+  const path = `<div class=sig style="margin-top:6px;line-height:1.6">bezpośrednio: ${bleArm(s.rssi_own,s.own_age)} · przez bramkę${gwn}: ${bleArm(s.rssi_gw,s.gw_age)} · używa: <b>${s.gw?'bramki':'własnego radia'}</b></div>`;
   return `<li style="display:block">
    <div style="display:flex;justify-content:space-between">
     <b>${esc(s.name||s.mac)}</b><span class=sig>${st} · ${s.rssi} dBm${src}</span></div>
+   ${path}
    <div class=row style="margin-top:8px">
     <input id=bn${i} placeholder="nazwa (np. Łazienka)" value="${esc(s.name||'')}">
     <input id=bk${i} placeholder="${s.hasKey?'klucz zapisany':'bindkey (32 znaki hex)'}"
@@ -1178,6 +1247,36 @@ async function bles(){
    <div class=sig style="margin-top:6px">${s.mac}</div></li>`;
  }).join('');
 }
+// (v166) STAN BRAMEK W PANELU, a nie tylko w dzienniku. Objaw: bramka nie odpowiadala
+// od dawna (w /api/log leci "Bramka BLE 1: ... -> HTTP -1" co 25 s), a panel nie mowil
+// o tym ANI SLOWA — czujniki po prostu cicho przestawaly dochodzic. To ta sama klasa
+// bledu, ktora naprawialo v158 przy zrodlach danych, i lek jest ten sam: wiek ostatniej
+// UDANEJ odpowiedzi, prog swiezosci Z URZADZENIA (blegw::STALE_S) i tresc bledu.
+//
+// Rysowane z /api/diag, wiec bez ANI JEDNEGO dodatkowego zapytania: wolane z diagPills()
+// (co 60 s, zawsze) i z liveTick() (co 5 s, gdy sekcja "Na żywo" jest na wierzchu).
+// Kadencja odpytywania bramki to 20 s, wiec 60 s w zupelnosci wystarcza — dlatego NIE
+// dokladamy fetcha do bles(), ktore chodzi co 20 s i sciagaloby wtedy 10 kB diagnostyki
+// tylko po to, zeby przepisac trzy liczby.
+function gwStat(d){
+ const el=$('gwstat');if(!el)return;
+ const g=d.blegw||[];
+ if(!g.length){el.innerHTML='<div class="hint" style="color:var(--mute)">Żadna bramka nie jest skonfigurowana — czujniki docierają wyłącznie własnym radiem.</div>';return;}
+ el.innerHTML=g.map(x=>{
+  const v=(x.ok_ago_s==null?-1:x.ok_ago_s),lim=(x.stale_s==null?180:x.stale_s);
+  const bad=!!(x.err&&x.err.length);
+  // Trzy stany, jak w v158, plus czwarty wlasny: "nigdy nie odpowiedziala".
+  //  blad w err        -> czerwony, bo ostatnia proba padla i wiadomo dlaczego,
+  //  nigdy (ok < 0)    -> czerwony, bo bramka wpisana i milczaca to usterka,
+  //                       a nie "brak danych" (to nie jest cudzy serwer),
+  //  wiek >= stale_s   -> bursztynowy z jawnym progiem,
+  //  reszta            -> zielony.
+  const c=(bad||v<0)?'var(--err)':(v>=lim?'var(--warn)':'var(--ok)');
+  const what=bad?('nie odpowiada: '+esc(x.err)):(v<0?'ani jednej odpowiedzi':(x.frames+' ramek w ostatniej odpowiedzi'));
+  const lt=lim<60?lim+' s':Math.round(lim/60)+' min';
+  return `<div class=frow><span class=fk>Bramka ${x.i+1}</span><span style="color:${c}">${what} · ostatnia udana: ${agoTxt(v)}${(!bad&&v>=lim)?' (próg '+lt+')':''}</span></div>`;
+ }).join('');
+}
 async function saveGw(){
  $('gmsg').textContent='...';
  const hosts=[...document.querySelectorAll('[id^=blegw]')].map(e=>e.value.trim());
@@ -1185,6 +1284,10 @@ async function saveGw(){
   body:JSON.stringify({hosts:hosts})})).json();
  $('gmsg').className='hint '+(r.ok?'ok':'err');$('gmsg').textContent=r.msg;
  load();   // lista zageszcza sie po stronie urzadzenia — pokaz realny stan, nie wpisany
+ // Zapis kasuje backoff (blegw::retryNow), wiec pierwsza proba pod nowy adres idzie
+ // w ciagu ~20 s. Odswiezamy status od razu i jeszcze raz po 25 s — inaczej wlasciciel
+ // patrzylby przez minute na stan sprzed zapisu i nie wiedzial, czy adres jest dobry.
+ diagPills();setTimeout(diagPills,25000);
 }
 async function meters(){
  const r=await(await fetch('/api/meter')).json();
@@ -2587,6 +2690,28 @@ void apiDiag() {
   m["published"] = d.mqttPublished;
   m["err"] = d.mqttErr;
 
+  // --- (v166) BRAMKI BLE: stan KAZDEJ z osobna ---
+  // TA SAMA KLASA BLEDU, KTORA NAPRAWIALO v158 przy zrodlach danych: bramka nie
+  // odpowiadala od dawna ("Bramka BLE 1: ... -> HTTP -1" co 25 s), a panel nie mowil
+  // o tym ANI SLOWA — jedynym sladem byl kolowy bufor /api/log, czyli okno ~6 minut.
+  // Czujniki po prostu cicho przestawaly dochodzic i wygladalo to jak slabe radio.
+  // Stad ten sam uklad pol, co przy pogodzie/falowniku/MQTT: ok_ago_s + stale_s + err.
+  //
+  // BEZ ADRESU. Panel i tak ma adresy z /api/settings (to on je tam wpisal), a
+  // /api/diag bywa wklejane do zgloszen bledow do publicznego repo — dokladnie ta sama
+  // zasada, co przy falowniku wyzej. Wystarczy INDEKS slotu; "Bramka 1" w panelu i
+  // "Bramka BLE 1" w dzienniku to ten sam numer.
+  JsonArray gws = j["blegw"].to<JsonArray>();
+  for (int i = 0; i < blegw::SLOTS; ++i) {
+    if (blegw::host(i)[0] == '\0') continue;   // pusty slot to nie awaria, tylko brak
+    JsonObject g = gws.add<JsonObject>();
+    g["i"] = i;
+    g["ok_ago_s"] = ago(blegw::lastOkAt(i));   // -1 = ani jednej udanej odpowiedzi
+    g["stale_s"] = blegw::STALE_S;
+    g["frames"] = blegw::lastCount(i);         // ramek w ostatniej udanej odpowiedzi
+    g["err"] = blegw::lastError(i);            // "" = ostatnia proba sie udala
+  }
+
   // --- DOTYK GPIO7: ile gestow policzylismy i ile ODRZUCILISMY ---
   // (v158) Do v157 nie bylo TU NICZEGO, a w logu widac bylo wylacznie stukniecia
   // UDANE ("Dotyk V3: nastepny ekran"). Zgloszenie "pojedyncze stukniecia nie zawsze
@@ -2651,6 +2776,11 @@ void apiDiag() {
       const uint32_t wall = static_cast<uint32_t>(nowT) - gPir.startedEpoch;
       pir["wall_s"] = wall;
       pir["gap_s"] = wall > gPir.collectedS ? wall - gPir.collectedS : 0;
+      // (v166) Ile z gap_s zjadl BRAK PRADU, a nie restarty. Stoi TUTAJ, tuz przy
+      // gap_s, a nie tylko w sensors.persist, bo bez tej liczby obok gap_s czyta sie
+      // jak "tyle pomiaru zjadly aktualizacje" — a po zaniku zasilania to nieprawda
+      // i roznica bywa rzedu godzin zamiast sekund.
+      pir["power_gap_s"] = sensStats().powerGapS;
     }
   } else {
     pir["started_epoch"] = nullptr;
@@ -2712,6 +2842,11 @@ void apiDiag() {
       // Roznica wall_s - collected_s = ile pomiaru zjadly restarty. To jedyna liczba,
       // ktora mowi, na ile temu histogramowi mozna ufac po tygodniu wydan OTA.
       lm["gap_s"] = wall > gLdr.collectedS ? wall - gLdr.collectedS : 0;
+      // Ta sama liczba, co w pir_meas, i to nie jest pomylka: obie struktury tykaja z
+      // jednego `dt` w loop() i obie sa odtwarzane w tej samej chwili, wiec przerwa bez
+      // pradu jest dla nich identyczna. Powtarzamy ja przy KAZDYM gap_s, bo to gap_s
+      // jest liczba, ktora bez niej klamie.
+      lm["power_gap_s"] = sensStats().powerGapS;
     }
   } else {
     lm["started_epoch"] = nullptr;   // NTP jeszcze nigdy nie dal czasu
@@ -2781,6 +2916,26 @@ void apiDiag() {
       "wlasnie one sa przedmiotem sporu — detektor nie moze zalezec od wielkosci, ktora "
       "pomiar ma rozstrzygnac. dur_s liczy sie w collected_s, wiec restart pauzuje "
       "zdarzenie, zamiast doliczac czas, ktorego nie widzielismy.";
+
+  // --- (v166) TRWALA KOPIA W NVS: co przezyje ZANIK ZASILANIA ---
+  // Bez tej sekcji odpowiedz na pytanie "czy moje dane sa bezpieczne" wymagalaby
+  // wylaczenia zasilania i sprawdzenia — czyli zrobienia dokladnie tego, przed czym
+  // ta kopia broni. save_ok_ago_s < save_period_s znaczy "zapisy ida"; save_failed
+  // znaczy, ze NVS odmowilo i po najblizszym zaniku pradu zbiory PRZEPADNA.
+  const SensStats& ss = sensStats();
+  JsonObject sp = sen["persist"].to<JsonObject>();
+  sp["key"] = "sen1";
+  sp["bytes"] = sensStatsBytes();
+  sp["save_period_s"] = cfg::SENS_STORE_MS / 1000;
+  sp["save_ok_ago_s"] = ago(ss.saveOkAt);   // -1 = w TEJ sesji jeszcze ani razu
+  sp["save_failed"] = ss.saveFailed;
+  sp["restored_now"] = ss.restored;         // ta sesja wstala na danych z NVS
+  sp["cold_restores"] = ss.coldStarts;      // ile razy w ogole (kumulacyjnie)
+  sp["power_gap_s"] = ss.powerGapS;
+  sp["note"] =
+      "kopia gPir+gLdr w NVS; RTC zostaje pamiecia podreczna. Po restarcie programowym "
+      "NIE odtwarzamy (RTC jest swiezszy), po zaniku zasilania odtwarzamy. power_gap_s "
+      "to czas BEZ PRADU — nie wchodzi do collected_s, ale wchodzi do gap_s.";
 
   String out;
   serializeJsonPretty(j, out);
@@ -3131,12 +3286,20 @@ void apiBleList() {
     o["h"] = s.humidity;
     o["bat"] = s.batteryPct;
     o["rssi"] = s.rssi;
-    o["age_s"] = s.seenAt ? (millis() - s.seenAt) / 1000 : -1;
+    // (v166) BLAD TYPU, ZLAPANY NA ZYWYCH DANYCH. `warunek ? uint32 : -1` ma typ
+    // wspolny UINT32, wiec -1 wychodzilo z tego jako 4294967295 — i tak wlasnie
+    // stalo w /api/ble przy kazdym czujniku, ktorego bramka nigdy nie slyszala
+    // ("gw_age": 4294967295). Panel czytal to jako 49710 dni temu, czyli "dawno,
+    // ale bylo" zamiast "NIGDY". Rzutujemy jawnie na int32_t.
+    // Panel dodatkowo BRONI SIE przed stara wartoscia (agoTxt traktuje 0xFFFFFFFF
+    // jak "nigdy"), bo urzadzenie z poprzednim firmware'em serwuje wciaz ten sam
+    // panel i cofniecie wersji nie moze przywrocic tamtego napisu.
+    o["age_s"] = s.seenAt ? static_cast<int32_t>((millis() - s.seenAt) / 1000) : -1;
     o["gw"] = s.viaGw;
     o["rssi_own"] = s.rssiOwn;      // 0 = nasze radio go nie slyszy
     o["rssi_gw"] = s.rssiGw;
-    o["own_age"] = s.ownAt ? (millis() - s.ownAt) / 1000 : -1;
-    o["gw_age"] = s.gwAt ? (millis() - s.gwAt) / 1000 : -1;
+    o["own_age"] = s.ownAt ? static_cast<int32_t>((millis() - s.ownAt) / 1000) : -1;
+    o["gw_age"] = s.gwAt ? static_cast<int32_t>((millis() - s.gwAt) / 1000) : -1;
 
     // Co slyszy KAZDA bramka z osobna — to jest narzedzie do rozstawiania bramek
     // i czujnikow. Bez tego przy trzech bramkach widac tylko wynik arbitrazu, czyli

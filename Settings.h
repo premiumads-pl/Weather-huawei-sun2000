@@ -248,6 +248,54 @@ void pvHistoryClear();
 void pvMeterBaseLoad(struct PvMeterBase& b);
 void pvMeterBaseSave(const struct PvMeterBase& b);
 
+// --- (v166) TRWALA KOPIA STATYSTYK PIR + LDR (klucz "sen1") ------------------
+// gPir i gLdr siedza w pamieci RTC, a ta przezywa OTA, panic i watchdog, ale NIE
+// przezywa zaniku napiecia (patrz PirRtc w Log.h). Dokladnie to sie stalo 16.08.2026:
+// wlasciciel wylaczyl zasilanie i wielotygodniowe zbiory wystartowaly od zera.
+// Kopia w NVS jest LEKIEM NA ZANIK ZASILANIA i niczym wiecej — RTC zostaje pamiecia
+// podreczna "na goraco", jego uklad pol i adresy sa NIETKNIETE.
+//
+// Ten stan zyje w DRAM przez cala sesje: czesc pol wraca z NVS przy starcie
+// (savedEpoch/powerGapS/coldStarts), reszta opisuje TA sesje. Jedna instancja,
+// dokladnie jak settings() — bo czytaja go trzy zadania: setup()/loop() (rdzen 1),
+// netTask (zapis) i webTask (/api/diag).
+struct SensStats {
+  uint32_t savedEpoch = 0;    // epoch ostatniego zapisu WCZYTANY z NVS; 0 = nie wiem
+                              // (zapisano, zanim NTP dal czas) i wtedy dlugosci przerwy
+                              // bez pradu NIE DA sie policzyc — patrz sensStatsSave()
+  uint32_t powerGapS = 0;     // sumaryczne sekundy BEZ ZASILANIA. NIE wchodza do
+                              // collected_s (wtedy nic nie zbieralismy), ale musza byc
+                              // widoczne, bo inaczej dziura w pomiarze wyglada jak
+                              // czas zjedzony przez restarty
+  uint32_t coldStarts = 0;    // ile razy zbiory wrocily z NVS po zaniku napiecia
+  uint32_t saveOkAt = 0;      // millis() ostatniego UDANEGO zapisu, 0 = ani razu
+  bool pirOk = false;         // kopia w NVS ma uklad pol PirRtc zgodny z tym firmware'em
+  bool ldrOk = false;         // to samo dla LdrRtc — rozstrzygane OSOBNO, tak jak osobne
+                              // sa magici obu struktur w RTC
+  // TA sesja wstala na danych z NVS, a nie z RTC — OSOBNO dla kazdej struktury.
+  // Rozbite na dwa pola, bo jedno klamaloby: przy samym podbiciu LDR_RTC_MAGIC
+  // (uklad pol LDR-a) PIR wstaje z RTC, a LDR z zera — i dziennik PIR-a raportowalby
+  // wtedy "odtworzone z NVS" o licznikach, ktore z NVS nie przyszly. `restored` to
+  // suma logiczna obu, do jednego zdania w panelu.
+  bool restoredPir = false;
+  bool restoredLdr = false;
+  bool restored = false;      // restoredPir || restoredLdr
+  bool outagePending = false; // czekamy na pierwszy czas z NTP, zeby zmierzyc przerwe
+  bool saveFailed = false;    // ostatni zapis do NVS sie NIE udal (pelna partycja?) —
+                              // bez tego pola awaria zapisu jest niema az do zaniku pradu
+};
+SensStats& sensStats();
+
+// Wczytuje kopie. Wskaznik rowny nullptr znaczy "tej struktury NIE odtwarzaj" — tak
+// zglasza sie restart programowy, po ktorym RTC jest SWIEZSZY niz NVS. Zwraca true,
+// gdy w NVS byl wazny blob (niezaleznie od tego, czy cokolwiek odtworzono).
+bool sensStatsLoad(struct PirRtc* pir, struct LdrRtc* ldr);
+// Zapis z netTask, poza gLock. Zwraca false, gdy NVS odmowilo — patrz saveFailed.
+bool sensStatsSave(const struct PirRtc& pir, const struct LdrRtc& ldr);
+// Rozmiar blobu w bajtach, do /api/diag — zeby liczba w panelu nie rozjechala sie
+// z kodem przy najblizszej zmianie struktur.
+uint32_t sensStatsBytes();
+
 // --- historia czujnikow BLE (24 h, ruchome okno; przezywa zanik zasilania) ---
 void roomHistoryLoad(struct RoomHistory& h);
 void roomHistorySave(const struct RoomHistory& h);

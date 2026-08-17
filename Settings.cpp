@@ -4,6 +4,7 @@
 #include <Preferences.h>
 #include <cstring>
 
+#include "Log.h"        // PirRtc/LdrRtc + ich magici — trwala kopia statystyk ("sen1")
 #include "PvData.h"
 #include "GasMeter.h"
 #include "RoomHistory.h"
@@ -891,4 +892,131 @@ void burnerHistorySave(const BurnerHistory& h) {
   for (int i = 0; i < BurnerHistory::SLOTS; ++i) b.filled[i] = h.filled[i] ? 1 : 0;
   prefs.putBytes(K_BURN, &b, sizeof(b));
   prefs.end();
+}
+
+// ------------- (v166) TRWALA KOPIA STATYSTYK PIR + LDR (klucz "sen1") --------
+// OBJAW ZGLOSZONY PRZEZ WLASCICIELA: "po restarcie brak danych, a powinny zostac"
+// w sekcji panelu "Obecnosc · Swiatlo · Ruch".
+//
+// STAN FAKTYCZNY, SPRAWDZONY NA ZYWO: restart PROGRAMOWY dane PRZEZYWAJA — w
+// dzienniku urzadzenia stoi wprost "PIR: liczniki z RTC przezyly restart — zbieram
+// od 14242 s, start #3". Gina przy ZANIKU NAPIECIA: gPir i gLdr siedza w sekcji
+// .rtc_noinit, a ta przezywa OTA, panic, watchdog i brownout, ale nie odlaczenie
+// zasilania (pelne uzasadnienie przy PirRtc w Log.h). 16.08.2026 wlasciciel
+// wylaczyl zasilanie recznie i wielotygodniowe zbiory wystartowaly od zera.
+//
+// LEK: kopia w NVS. RTC ZOSTAJE pamiecia podreczna "na goraco" — nic sie stamtad
+// nie przenosi, uklad pol i ADRESY (gPir @ 0x50000200, gLdr @ 0x500002c0) sa
+// NIETKNIETE, bo kazda ich zmiana kasuje zbiory przy najblizszym OTA.
+//
+// WLASNY KLUCZ, NIE DOKLEJANIE DO ISTNIEJACEGO BLOBU — ten sam wzorzec, co przy
+// "mtr1" i "prof1": osobna struktura, pole wersji, kontrola rozmiaru w czasie
+// kompilacji. Rozmiary blobow w przestrzeni "pvday" sa PARAMI ROZNE (prof1 = 584,
+// rh2 = 1736, gas1 = 252, burn1 = 296, mtr1 = 24, airh = 52, sen1 = 424), wiec
+// pomylka o klucz nie przejdzie przez kontrole getBytesLength().
+//
+// DLACZEGO KOPIA 1:1 CALYCH STRUKTUR, A NIE WYBRANE POLA: przepisywanie pole po
+// polu wymaga pamietania o KAZDYM nowym polu PirRtc/LdrRtc, a zapomniane pole nie
+// wywala kompilacji — po cichu wraca z NVS jako zero. Kopia calosci ma za to jedna
+// twarda zalete: `magic` KAZDEJ struktury jedzie razem z danymi, a jego dolny bajt
+// to WERSJA UKLADU POL. Podbicie PIR_RTC_MAGIC uniewaznia wiec kopie w NVS dokladnie
+// tak samo, jak uniewaznia zawartosc RTC — jednym ruchem i bez drugiej numeracji
+// do pilnowania. static_assert nizej lapie kazda zmiane ROZMIARU.
+namespace {
+
+struct SensStatsBlob {
+  uint16_t ver;
+  uint16_t pad;          // jawne wyrownanie, zeby rozmiar nie zalezal od kompilatora
+  uint32_t savedEpoch;   // epoch chwili zapisu; 0 = zapisano, zanim NTP dal czas
+  uint32_t powerGapS;    // sumaryczne sekundy BEZ ZASILANIA (patrz SensStats)
+  uint32_t coldStarts;   // ile razy zbiory wrocily z NVS po zaniku napiecia
+  PirRtc pir;            // kopia 1:1, RAZEM z magic (= wersja ukladu pol)
+  LdrRtc ldr;            // kopia 1:1, RAZEM z magic
+};
+
+constexpr uint16_t SENS_VER = 1;
+constexpr const char* K_SENS = "sen1";
+
+static_assert(sizeof(PirRtc) == 192,
+              "zmienil sie uklad PirRtc - podbij PIR_RTC_MAGIC (Log.h) ORAZ klucz NVS "
+              "na \"sen2\"; sam podbity magic uniewazni kopie, ale rozmiar blobu i tak "
+              "przestanie pasowac do wpisu w NVS");
+static_assert(sizeof(LdrRtc) == 216,
+              "zmienil sie uklad LdrRtc - podbij LDR_RTC_MAGIC (Log.h) ORAZ klucz NVS "
+              "na \"sen2\" (jak wyzej)");
+static_assert(sizeof(SensStatsBlob) == 424,
+              "zmienil sie uklad kopii statystyk - podbij klucz NVS na \"sen2\", "
+              "inaczej stary blob wczyta sie jako nowy (cicha korupcja)");
+
+SensStats gSensStats;
+
+}  // namespace
+
+SensStats& sensStats() { return gSensStats; }
+
+uint32_t sensStatsBytes() { return static_cast<uint32_t>(sizeof(SensStatsBlob)); }
+
+bool sensStatsLoad(PirRtc* pir, LdrRtc* ldr) {
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, true)) {
+    return false;
+  }
+  // Blob na stosie: 424 B. Wolane z setup(), gdzie stos glowny ma 8 kB — a jedyna
+  // alternatywa (statyczny bufor) kosztowalaby te 424 B RAM-u NA STALE, przy barierze
+  // 76000 B i zapasie rzedu dwoch kilobajtow.
+  SensStatsBlob b{};
+  const bool ok = prefs.getBytesLength(K_SENS) == sizeof(b) &&
+                  prefs.getBytes(K_SENS, &b, sizeof(b)) == sizeof(b) &&
+                  b.ver == SENS_VER;
+  prefs.end();
+  if (!ok) {
+    return false;
+  }
+
+  gSensStats.savedEpoch = b.savedEpoch;
+  gSensStats.powerGapS = b.powerGapS;
+  gSensStats.coldStarts = b.coldStarts;
+  // Magic w kopii to WERSJA UKLADU POL tej struktury. Gdy sie nie zgadza, blob
+  // pochodzi z firmware'u o innym ukladzie i wczytany 1:1 dalby liczby wygladajace
+  // sensownie, a bedace smieciem — to ta sama zasada, co przy odczycie RTC.
+  gSensStats.pirOk = b.pir.magic == PIR_RTC_MAGIC;
+  gSensStats.ldrOk = b.ldr.magic == LDR_RTC_MAGIC;
+  // memcpy, a nie przypisanie: obie struktury maja pola `volatile` (pisze do nich ISR),
+  // a kopiowanie ich przypisaniem to w C++20 teren ostrzezenia -Wvolatile. Kopia
+  // bajtowa jest tu poprawna, bo obie struktury to same wyrownane uint32.
+  if (pir != nullptr && gSensStats.pirOk) memcpy(pir, &b.pir, sizeof(b.pir));
+  if (ldr != nullptr && gSensStats.ldrOk) memcpy(ldr, &b.ldr, sizeof(b.ldr));
+  return true;
+}
+
+bool sensStatsSave(const PirRtc& pir, const LdrRtc& ldr) {
+  // Zapis smiecia jest GORSZY niz brak zapisu: nadpisalby dobra kopie zbiorem,
+  // ktorego i tak nie wolno wczytac. Gdy ZADNA ze struktur nie ma waznego znacznika,
+  // nie mamy czego utrwalac.
+  if (pir.magic != PIR_RTC_MAGIC && ldr.magic != LDR_RTC_MAGIC) {
+    return false;
+  }
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, false)) {
+    gSensStats.saveFailed = true;
+    return false;
+  }
+  SensStatsBlob b{};
+  b.ver = SENS_VER;
+  // 0 = "nie wiem, kiedy". CELOWO nie przepisujemy tu starego stempla: przerwe bez
+  // pradu liczymy jako roznice DWOCH epochow, wiec stempel sprzed dwoch dni pracy bez
+  // NTP kazalby doliczyc te dwa dni do power_gap_s, czyli SKLAMAC. Brak stempla konczy
+  // sie utrata JEDNEJ liczby (dlugosci przerwy), a nie zafalszowaniem statystyki.
+  const time_t nowT = time(nullptr);
+  b.savedEpoch = (nowT > 1700000000) ? static_cast<uint32_t>(nowT) : 0;
+  b.powerGapS = gSensStats.powerGapS;
+  b.coldStarts = gSensStats.coldStarts;
+  memcpy(&b.pir, &pir, sizeof(b.pir));
+  memcpy(&b.ldr, &ldr, sizeof(b.ldr));
+  const size_t n = prefs.putBytes(K_SENS, &b, sizeof(b));
+  prefs.end();
+
+  gSensStats.saveFailed = n != sizeof(b);
+  if (!gSensStats.saveFailed) gSensStats.saveOkAt = millis();
+  return !gSensStats.saveFailed;
 }
