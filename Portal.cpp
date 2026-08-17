@@ -1582,7 +1582,7 @@ function pmDrawStacks(d){
   var sp=r[1]||0,used=Math.max(0,cap-sp),p=cap>0?Math.round(used/cap*100):0;
   return '<div class=brow><span class=k style="width:auto;flex:0 0 46%">'+r[0]+'</span><span class=track><span class=fill style="width:'+p+'%;background:'+(p>90?'var(--err)':(p>80?'var(--warn)':'var(--ok)'))+'"></span></span><span class=v>'+kb(sp)+'</span></div>';}).join('');
  h+='<div class=gnote>Pasek pokazuje, ile stosu zostało kiedykolwiek zużyte; liczba z prawej to zapas, którego <b>nigdy</b> nie tknięto. Oba zadania dostają po '+kb(cap)+'. Przepełnienie stosu to natychmiastowa awaria całego urządzenia, więc ten zapas jest marginesem bezpieczeństwa, a nie zmarnowaną pamięcią.</div>';
- h+='<div class=gbox>Do v170 panel podawał tutaj liczby <b>czterokrotnie za duże</b>: kod mnożył wynik przez rozmiar słowa, a ESP-IDF podaje tę wielkość <b>w bajtach</b>, inaczej niż zwykły FreeRTOS. Jest to napisane wprost w nagłówku tego rdzenia i potwierdzone deasemblacją jego biblioteki. Od v171 liczby są prawdziwe — to <b>nie jest nowe zużycie, tylko poprawiony pomiar</b>.</div>';
+ h+='<div class=gbox>To jest <b>najmniejszy zapas, jaki kiedykolwiek wystąpił</b> od uruchomienia, a nie zapas w tej chwili — wielkość tylko maleje. ESP-IDF podaje ją <b>w bajtach</b>, inaczej niż zwykły FreeRTOS, który liczy w słowach; jest to napisane wprost w nagłówku tego rdzenia. Zadania mają po 16 kB, więc zapas rzędu kilku kB jest zdrowy, a spadek poniżej ~1 kB byłby powodem do niepokoju.</div>';
  $('pmStacks').innerHTML=h;
 }
 // kolejna klatka dopiero, gdy poprzednia dojdzie — nie zalewamy urządzenia. Checkbox

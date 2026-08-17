@@ -1689,19 +1689,24 @@ static void netTask(void*) {
     }
 
     // ---- ile stosu naprawde zuzywaja zadania (do przyciecia 2 x 16 kB) ----
-    // (v171) SKASOWANE MNOZENIE PRZEZ sizeof(StackType_t). Ta funkcja w ESP-IDF oddaje
-    // wynik W BAJTACH, a nie w slowach jak w zwyklym FreeRTOS-ie — mnozenie przez 4
-    // zawyzalo raportowany zapas CZTEROKROTNIE. Sprawdzone dwoma niezaleznymi drogami,
-    // bo to jest dokladnie ta klasa pomylki, ktorej nie wolno przyjac na wiare:
-    //  1) naglowek TEGO rdzenia (tools/esp32s3-libs/3.3.10/include/freertos/
-    //     FreeRTOS-Kernel/include/freertos/task.h, opis uxTaskGetStackHighWaterMark):
-    //     "the minimum free stack space there has been in bytes (as opposed to words
-    //     in the standard FreeRTOS documentation)";
-    //  2) deasemblacja libfreertos.a z tego samego rdzenia: funkcja liczy bajty
-    //     wypelniacza 0xA5 (l8ui + porownanie + addi 1) i zwraca licznik BEZ dzielenia
-    //     przez 4. Tak samo wypelniane jest pole usStackHighWaterMark w TaskStatus_t.
-    // Skutek dla liczb, ktore panel pokazywal do v170: "zapas sieci 8,4 kB" znaczylo
-    // w rzeczywistosci 2,1 kB z 16 kB stosu. Margines jest wiec ~13%, a nie ~52%.
+    // Ta funkcja w ESP-IDF oddaje wynik W BAJTACH, a nie w slowach jak w zwyklym
+    // FreeRTOS-ie — mowi to wprost naglowek TEGO rdzenia (tools/esp32s3-libs/3.3.10/
+    // include/freertos/FreeRTOS-Kernel/include/freertos/task.h): "the minimum free
+    // stack space there has been in bytes (as opposed to words in the standard
+    // FreeRTOS documentation)". Dlatego NIE MNOZYMY tu przez nic.
+    //
+    // SPROSTOWANIE DO v171 — zeby nikt tego nie "naprawil" w zla strone.
+    // v171 skasowalo stad mnozenie przez sizeof(StackType_t) i oglosilo w opisie
+    // wydania oraz w panelu, ze do v170 liczby byly CZTEROKROTNIE ZAWYZONE, a realny
+    // margines to ~13%, nie ~52%. TO BYLO NIEPRAWDA i zostalo sprostowane w v172.
+    // Powod: na Xtensie portmacro.h tego rdzenia ma `#define portSTACK_TYPE uint8_t`
+    // (linia 88), wiec sizeof(StackType_t) == 1 i tamto mnozenie bylo MNOZENIEM PRZEZ
+    // JEDEN — czyli bez zadnego skutku. Liczby sprzed v171 byly poprawne, tak samo jak
+    // te po nim. Potwierdza to pomiar na zywo: v170 raportowal zapas sieci 8564 B,
+    // v171 (juz bez mnozenia) 8428 B — te same rzedy wielkosci, a nie roznica 4x.
+    // Skasowanie mnozenia zostaje, bo mnozenie przez jeden tylko mylilo czytajacego.
+    // WNIOSEK OGOLNY: samo znalezienie roznicy miedzy dokumentacja a rdzeniem nie
+    // wystarczy — trzeba jeszcze sprawdzic, ile wynosi rozmiar typu NA TEJ platformie.
     if (gNetTask != nullptr) {
       diag().stackNet = uxTaskGetStackHighWaterMark(gNetTask);
     }
