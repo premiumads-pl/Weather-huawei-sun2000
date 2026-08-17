@@ -57,15 +57,26 @@ bool isCrash(uint8_t r) {
 
 // Znacznik "ta wersja właśnie wchodzi w okres próbny". Rozliczany przy NASTĘPNYM
 // starcie: jeśli obudzimy się na innej wersji, to znaczy, że tamta nie przeżyła.
+// (v168) Wynik zapisu idzie do wspolnej tabeli NVS (/api/diag sekcja nvs, slot
+// "otaguard/*"). STAWKA JEST TU WYZSZA NIZ PRZY WYKRESACH: gdy ten znacznik nie
+// wejdzie do flasha, straznik przy nastepnym starcie nie zobaczy okresu probnego
+// i moze uznac DZIALAJACA wersje za nieudana. Do v167 ta galaz byla calkowicie
+// niema, a urzadzenie jest TYLKO-OTA — cofniecie dobrego firmware'u to jedyna
+// awaria w tym pliku, ktorej nie da sie naprawic zdalnie.
+//
+// KASOWANIE (version == 0) do licznikow NIE wchodzi: remove() zwalnia wpisy,
+// wiec nie ma jak zabraknac na nie miejsca, a false znaczy najczesciej "klucza
+// i tak nie bylo" — czyli dokladnie stan, ktory chcielismy osiagnac.
 void nvsSetTrial(int version) {
   Preferences p;
   if (!p.begin(NS, false)) {
+    nvsMarkWrite(NVS_SLOT_OTA, false);
     return;
   }
   if (version == 0) {
     p.remove("trialver");
   } else {
-    p.putInt("trialver", version);
+    nvsMarkWrite(NVS_SLOT_OTA, p.putInt("trialver", version) == sizeof(int32_t));
   }
   p.end();
 }
@@ -73,14 +84,16 @@ void nvsSetTrial(int version) {
 void nvsSetBad(int version, uint8_t count) {
   Preferences p;
   if (!p.begin(NS, false)) {
+    nvsMarkWrite(NVS_SLOT_OTA, false);
     return;
   }
   if (version == 0) {
     p.remove("badver");
     p.remove("badcnt");
   } else {
-    p.putInt("badver", version);
-    p.putUChar("badcnt", count);
+    bool ok = p.putInt("badver", version) == sizeof(int32_t);
+    ok &= p.putUChar("badcnt", count) == sizeof(uint8_t);
+    nvsMarkWrite(NVS_SLOT_OTA, ok);
   }
   p.end();
 }
@@ -234,12 +247,17 @@ void otaGuardBegin() {
     diag().prevResetReason = p.getUChar("rst", 0);
 
     uint16_t panics = p.getUShort("panics", 0);
+    bool ok = true;
     if (isCrash(rr) && panics < 0xFFFF) {
       ++panics;
-      p.putUShort("panics", panics);
+      ok &= p.putUShort("panics", panics) == sizeof(uint16_t);
     }
     diag().panicCount = panics;
-    p.putUChar("rst", rr);
+    // Powod resetu dla NASTEPNEJ sesji. Gdy nie wejdzie, /api/diag pokaze po
+    // restarcie "prev_reason" sprzed dwoch sesji i nikt sie o tym nie dowie —
+    // dlatego wynik liczy sie do tego samego licznika, co reszta "otaguard/*".
+    ok &= p.putUChar("rst", rr) == sizeof(uint8_t);
+    nvsMarkWrite(NVS_SLOT_OTA, ok);
 
     gBadVersion = p.getInt("badver", 0);
     gBadCount = p.getUChar("badcnt", 0);

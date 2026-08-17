@@ -238,6 +238,71 @@ struct Settings {
 
 Settings& settings();
 
+// ============ (v168) NADZOR NAD ZAPISAMI DO NVS — zaden nie moze milczec ======
+//
+// OBJAW, KTORY TO URUCHOMIL (17.08.2026): po restarcie zniknal CALY dzisiejszy
+// profil doby PV — ekran PRAD pokazywal pusty wykres poza slupkiem z biezacego
+// slotu, chociaz czterdziesci minut wczesniej wykres byl pelny. Nie dalo sie
+// rozstrzygnac, czy zawiodl ZAPIS (w NVS zostal profil z wczoraj, a pierwszy
+// push() z dzisiejszym tm_yday go skasowal), czy ODCZYT — bo do v167 ANI JEDNA
+// z funkcji zapisu nie patrzyla na wynik `putBytes`/`putString`, a `putBytes`
+// zwraca 0 wlasnie wtedy, gdy nvs_set_blob odmowil.
+//
+// DLACZEGO LICZNIK PER KLUCZ, A NIE ZBIORCZY: bloby w przestrzeni "pvday" roznia
+// sie rozmiarem o dwa rzedy wielkosci (mtr1 = 24 B, rh2 = 1736 B) i kadencja
+// (mtr1 raz na dobe, prof1 co 5 min). Brak miejsca w NVS uderza NAJPIERW w
+// najwiekszy blob przy najgestszym zapisie — licznik zbiorczy powiedzialby
+// "cos nie wchodzi", a per klucz mowi "nie wchodzi rh2, a mtr1 wchodzi", czyli
+// od razu rozstrzyga, czy to ciasnota, czy awaria calej partycji. Koszt: dziewiec
+// slotow po 12 B = 108 B RAM przy barierze 76000 B.
+//
+// Przestrzenie konfiguracji ("pogoda") i straznika OTA ("otaguard") maja po
+// JEDNYM slocie zbiorczym — tam pojedynczy zapis to kilkanascie osobnych kluczy
+// po 1-2 wpisy i rozbijanie ich na licznik kazdego z osobna kosztowaloby wiecej
+// RAM-u niz wnosi wiedzy: dla wlasciciela liczy sie "ustawienia sie zapisaly
+// czy nie", a nie ktore z trzydziestu pol.
+enum NvsSlot : uint8_t {
+  NVS_SLOT_PROF = 0,   // "prof1"  — profil doby PV
+  NVS_SLOT_ROOMS,      // "rh2"    — historia czujnikow BLE (24 h)
+  NVS_SLOT_BURN,       // "burn1"  — profil doby palnika
+  NVS_SLOT_GAS,        // "gas1"   — dzienny log gazu (120 dni)
+  NVS_SLOT_AIR,        // "airh"   — historia jakosci powietrza (7 dni)
+  NVS_SLOT_METER,      // "mtr1"   — baza licznikow miernika z polnocy
+  NVS_SLOT_SENS,       // "sen1"   — kopia statystyk PIR + LDR
+  NVS_SLOT_CFG,        // przestrzen "pogoda"   — zbiorczo (WiFi, MQTT, Viessmann...)
+  NVS_SLOT_OTA,        // przestrzen "otaguard" — zbiorczo (trialver/badver/rst/panics)
+  NVS_SLOT_COUNT
+};
+
+struct NvsWriteStat {
+  uint32_t okAt = 0;    // millis() ostatniego UDANEGO zapisu; 0 = w tej sesji ani razu
+  uint16_t oks = 0;     // udane zapisy od startu (przekreca sie — to licznik, nie budzet)
+  uint16_t fails = 0;   // nieudane zapisy od startu
+  bool failed = false;  // stan BIEZACY: ostatni zapis tego klucza sie nie udal
+};
+
+// Odczyt do /api/diag. `slot` spoza zakresu oddaje slot pusty, zeby panel nie
+// musial powtarzac kontroli zakresu przy kazdym polu.
+const NvsWriteStat& nvsStat(uint8_t slot);
+// Nazwa klucza (albo "przestrzen/*" dla slotow zbiorczych) — jedno zrodlo prawdy,
+// zeby napis w panelu nie rozjechal sie z kluczem uzywanym przy zapisie.
+const char* nvsSlotKey(uint8_t slot);
+// Rozmiar utrwalanego blobu w bajtach; 0 dla slotow zbiorczych (tam kazdy klucz
+// ma swoj rozmiar i jedna liczba bylaby klamstwem).
+uint16_t nvsSlotBytes(uint8_t slot);
+// Ile WPISOW NVS (po 32 B) kosztuje ten blob. Blob placi 2 wpisy narzutu (indeks
+// blobu + naglowek fragmentu) plus 1 wpis na kazde rozpoczete 32 B danych — tak to
+// opisuje nvs.h przy nvs_set_blob. Liczymy tu, a nie w panelu, zeby tabela
+// zajetosci w /api/diag pochodzila z KODU, a nie z recznego rachunku w JS.
+uint16_t nvsSlotEntries(uint8_t slot);
+// Zglosza wynik zapisu spoza Settings.cpp — dzis wylacznie z OtaGuard.cpp, ktory
+// ma wlasna przestrzen NVS ("otaguard") i wlasny obiekt Preferences, a mimo to
+// musi trafic do TEJ SAMEJ tabeli: gdy zabraknie miejsca w partycji, przestanie
+// sie zapisywac takze znacznik okresu probnego, a wtedy straznik OTA cofa wersje,
+// ktora w rzeczywistosci dziala. Wpis do dziennika leci raz, na przejsciu w stan
+// bledu — dokladnie jak przy blobach historii.
+void nvsMarkWrite(uint8_t slot, bool ok);
+
 // --- profil produkcji PV z bieżącego dnia (trwały po zaniku zasilania) ---
 void pvHistoryLoad(struct PvHistory& h);
 void pvHistorySave(const struct PvHistory& h);

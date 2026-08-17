@@ -15,16 +15,100 @@ Settings gSettings;
 constexpr const char* NS_CFG = "pogoda";
 constexpr const char* NS_PV = "pvday";
 
+// ======== (v168) NADZOR NAD ZAPISAMI DO NVS — patrz komentarz w Settings.h ====
+NvsWriteStat gNvsStat[NVS_SLOT_COUNT];
+const NvsWriteStat kNvsEmpty{};
+
+// Kolejnosc MUSI odpowiadac enumowi NvsSlot. static_assert nizej pilnuje tylko
+// dlugosci — przestawienia dwoch pozycji nie zlapie nic procz czytania, wiec przy
+// dopisywaniu slotu dopisz go NA KONCU obu tablic, jak w enumie.
+constexpr const char* kNvsKey[NVS_SLOT_COUNT] = {
+    "prof1", "rh2", "burn1", "gas1", "airh", "mtr1", "sen1",
+    "pogoda/*", "otaguard/*"};
+// Rozmiary blobow. Te same liczby pilnuja static_asserty przy kazdej strukturze
+// nizej w tym pliku — gdy ktorys blob zmieni rozmiar, kompilacja padnie TAM,
+// a nie tutaj, wiec ta tablica nie moze sie po cichu rozjechac z rzeczywistoscia.
+constexpr uint16_t kNvsBytes[NVS_SLOT_COUNT] = {584, 1736, 296, 252, 52, 24, 424, 0, 0};
+
+static_assert(sizeof(kNvsKey) / sizeof(kNvsKey[0]) == NVS_SLOT_COUNT,
+              "tablica nazw kluczy NVS rozjechala sie z enumem NvsSlot");
+static_assert(sizeof(kNvsBytes) / sizeof(kNvsBytes[0]) == NVS_SLOT_COUNT,
+              "tablica rozmiarow blobow NVS rozjechala sie z enumem NvsSlot");
+
+// Jedyne miejsce, w ktorym rozstrzyga sie "zapis sie udal czy nie".
+//
+// DO DZIENNIKA TYLKO NA PRZEJSCIU STANU — to nie jest oszczednosc na estetyke.
+// Bufor /api/log ma 3072 B (Log.cpp:7), czyli okno rzedu SZESCIU MINUT przy
+// normalnym ruchu, a te zapisy leca co 5 minut. Wpis przy KAZDEJ nieudanej probie
+// wypchnalby z bufora wszystko inne i awaria zapisu zamiotlaby wlasny kontekst —
+// czyli dokladnie te linie, ktore pozwalaja zrozumiec, co sie dzialo naokolo.
+// Trwaly slad zostaje w licznikach, ktore widac w /api/diag bez limitu czasu.
+// Ten sam wzorzec, co przy "sen1" w v166 (saveFailed + sekcja sensors.persist).
+//
+// WYSCIG: gNvsStat pisza DWA zadania — netTask (historie, viSave) i webTask
+// (zapis z panelu). Kolizja moze zgubic jeden przyrost licznika i nic wiecej:
+// pola sa 16- i 32-bitowe, wiec na tym rdzeniu zapis jest niepodzielny, a `failed`
+// jest ustawiane na te sama wartosc z obu stron. Blokada kosztowalaby wiecej
+// (trzeba by ja brac WEWNATRZ sciezki zapisu do flash) niz warta jest dokladnosc
+// licznika diagnostycznego. Ta sama zasada, co przy gSensStats w v166.
+void nvsMark(uint8_t slot, bool ok) {
+  if (slot >= NVS_SLOT_COUNT) return;
+  NvsWriteStat& s = gNvsStat[slot];
+  if (ok) {
+    if (s.oks < 0xFFFF) ++s.oks;
+    s.okAt = millis();
+    if (s.failed) {
+      s.failed = false;
+      LOG("NVS: zapis \"%s\" znowu dziala (nieudanych od startu: %u)\n",
+          kNvsKey[slot], static_cast<unsigned>(s.fails));
+    }
+    return;
+  }
+  if (s.fails < 0xFFFF) ++s.fails;
+  if (!s.failed) {
+    s.failed = true;
+    LOG("NVS: ZAPIS \"%s\" NIEUDANY — te dane NIE przezyja restartu. "
+        "Zajetosc partycji: /api/diag sekcja nvs\n",
+        kNvsKey[slot]);
+  }
+}
+
+// Zapis blobu Z KONTROLA WYNIKU. `putBytes` oddaje liczbe zapisanych bajtow, a 0
+// znaczy, ze nvs_set_blob albo nvs_commit odmowilo (Preferences.cpp) — do v167
+// ta liczba byla wszedzie ignorowana i awaria zapisu byla calkowicie niema.
+bool nvsPutBytes(Preferences& p, uint8_t slot, const char* key, const void* data, size_t n) {
+  const bool ok = p.putBytes(key, data, n) == n;
+  nvsMark(slot, ok);
+  return ok;
+}
+
+// Zapis napisu Z KONTROLA WYNIKU — do slotow zbiorczych, gdzie wynik zbiera sie
+// przez `&=` przez cala funkcje i dopiero na koncu idzie do nvsMark().
+//
+// PULAPKA, KTORA TU MIESZKA: Preferences::putString zwraca strlen(value), wiec dla
+// PUSTEGO napisu oddaje 0 TAKZE PO UDANYM ZAPISIE — a 0 to jednoczesnie kod bledu.
+// Porownanie "> 0" uznaloby wiec kazde puste pole (mquser, mqpass, bgw1, bgw2,
+// viinst na urzadzeniu bez pieca) za awarie i panel swiecilby na czerwono bez
+// powodu. Jedyna poprawna kontrola to rownosc z dlugoscia tego, co zapisujemy.
+bool putStrOk(Preferences& p, const char* key, const char* v) {
+  return p.putString(key, v) == strlen(v);
+}
+
 // Klucze listy bramek. Slot 0 zostaje pod historycznym "blegw" (patrz Settings.h),
 // reszta dostaje wlasne klucze. Jedno miejsce, bo zapisuja to DWIE funkcje:
 // save() (calosc konfiguracji z panelu) i bleGwSave() (sama lista).
-void bleGwWrite(Preferences& prefs, const Settings& s) {
-  prefs.putString("blegw", s.bleGwHost);
+// (v168) Zwraca false, gdy ktorykolwiek z kluczy nie wszedl. Wolajacy dokleja ten
+// wynik do swojego `&=` i dopiero on melduje o awarii — inaczej jeden zapis listy
+// bramek zglosilby sie w dzienniku osobno od zapisu reszty konfiguracji, chociaz
+// to ta sama operacja i ta sama przyczyna.
+bool bleGwWrite(Preferences& prefs, const Settings& s) {
+  bool ok = putStrOk(prefs, "blegw", s.bleGwHost);
   for (int i = 1; i < Settings::BLE_GW; ++i) {
     char k[8];
     snprintf(k, sizeof(k), "bgw%d", i);
-    prefs.putString(k, s.bleGwAt(i));
+    ok &= putStrOk(prefs, k, s.bleGwAt(i));
   }
+  return ok;
 }
 
 // Host wchodzi bez zmian do "http://%s/script/1/ble", wiec przepuszczamy wylacznie
@@ -58,6 +142,32 @@ bool bleGwHostOk(const char* h) {
 
 Settings& settings() {
   return gSettings;
+}
+
+// --- (v168) odczyt nadzoru nad zapisami do NVS (do /api/diag) ----------------
+const NvsWriteStat& nvsStat(uint8_t slot) {
+  return slot < NVS_SLOT_COUNT ? gNvsStat[slot] : kNvsEmpty;
+}
+
+void nvsMarkWrite(uint8_t slot, bool ok) {
+  nvsMark(slot, ok);
+}
+
+const char* nvsSlotKey(uint8_t slot) {
+  return slot < NVS_SLOT_COUNT ? kNvsKey[slot] : "?";
+}
+
+uint16_t nvsSlotBytes(uint8_t slot) {
+  return slot < NVS_SLOT_COUNT ? kNvsBytes[slot] : 0;
+}
+
+uint16_t nvsSlotEntries(uint8_t slot) {
+  const uint16_t b = nvsSlotBytes(slot);
+  if (b == 0) return 0;   // slot zbiorczy — nie ma JEDNEGO rozmiaru, patrz Settings.h
+  // 2 wpisy narzutu (indeks blobu + naglowek fragmentu) + 1 wpis na kazde
+  // rozpoczete 32 B danych. Zrodlo: opis nvs_set_blob w nvs.h ESP-IDF ("uses 2
+  // overhead and 1 entry per each 32 bytes of new data").
+  return static_cast<uint16_t>(2 + (b + 31) / 32);
 }
 
 void Settings::load() {
@@ -171,25 +281,30 @@ void Settings::load() {
 void Settings::save() {
   Preferences prefs;
   if (!prefs.begin(NS_CFG, false)) {
+    // (v168) Nieudane otwarcie przestrzeni to TEZ nieudany zapis — do v167 ta galaz
+    // wracala w milczeniu i panel pokazywal "zapisano" po operacji, ktora nie
+    // dotknela flasha. Liczy sie jako jedna nieudana proba slotu zbiorczego.
+    nvsMark(NVS_SLOT_CFG, false);
     return;
   }
-  prefs.putString("ssid", ssid);
-  prefs.putString("pass", pass);
-  prefs.putString("city", city);
-  prefs.putString("mb", modbusHost);
-  prefs.putFloat("lat", lat);
-  prefs.putFloat("lon", lon);
-  prefs.putUShort("mbport", modbusPort);
-  prefs.putUShort("peak", pvPeakW);
-  prefs.putBool("ota", otaEnabled);
-  prefs.putString("mqhost", mqttHost);
-  prefs.putString("mquser", mqttUser);
-  prefs.putString("mqpass", mqttPass);
-  prefs.putString("mqpre", mqttPrefix);
-  prefs.putUShort("mqport", mqttPort);
-  prefs.putBool("mqen", mqttEnabled);
-  bleGwWrite(prefs, *this);
+  bool ok = putStrOk(prefs, "ssid", ssid);
+  ok &= putStrOk(prefs, "pass", pass);
+  ok &= putStrOk(prefs, "city", city);
+  ok &= putStrOk(prefs, "mb", modbusHost);
+  ok &= prefs.putFloat("lat", lat) == sizeof(float);
+  ok &= prefs.putFloat("lon", lon) == sizeof(float);
+  ok &= prefs.putUShort("mbport", modbusPort) == sizeof(uint16_t);
+  ok &= prefs.putUShort("peak", pvPeakW) == sizeof(uint16_t);
+  ok &= prefs.putBool("ota", otaEnabled) == sizeof(uint8_t);
+  ok &= putStrOk(prefs, "mqhost", mqttHost);
+  ok &= putStrOk(prefs, "mquser", mqttUser);
+  ok &= putStrOk(prefs, "mqpass", mqttPass);
+  ok &= putStrOk(prefs, "mqpre", mqttPrefix);
+  ok &= prefs.putUShort("mqport", mqttPort) == sizeof(uint16_t);
+  ok &= prefs.putBool("mqen", mqttEnabled) == sizeof(uint8_t);
+  ok &= bleGwWrite(prefs, *this);
   prefs.end();
+  nvsMark(NVS_SLOT_CFG, ok);
 }
 
 // Osobno od save(): skorka klika sie z panelu niezaleznie od reszty formularzy
@@ -204,11 +319,16 @@ bool Settings::setTheme(uint8_t t) {
   theme = t;
   Preferences prefs;
   if (!prefs.begin(NS_CFG, false)) {
+    nvsMark(NVS_SLOT_CFG, false);
     return false;
   }
-  prefs.putUChar("theme", theme);
+  const bool ok = prefs.putUChar("theme", theme) == sizeof(uint8_t);
   prefs.end();
-  return true;
+  nvsMark(NVS_SLOT_CFG, ok);
+  // (v168) Zwracamy PRAWDE o zapisie, a nie stale true. Panel pokazuje po tym
+  // "zapisano" — a przy pelnym NVS skorka wracalaby po restarcie do poprzedniej
+  // i wygladalo by to na blad rysowania, nie na blad zapisu.
+  return ok;
 }
 
 // Jedno zrodlo prawdy o zakresach ustawien wyswietlacza. Godziny do 0..23; czas
@@ -243,17 +363,19 @@ bool Settings::saveTuning(uint8_t nStart, uint8_t nEnd, uint16_t dwell,
 
   Preferences prefs;
   if (!prefs.begin(NS_CFG, false)) {
+    nvsMark(NVS_SLOT_CFG, false);
     return false;
   }
-  prefs.putUChar("nstart", nightStartH);
-  prefs.putUChar("nend", nightEndH);
-  prefs.putUShort("dwell", dwellS);
-  prefs.putUChar("blday", blDay);
-  prefs.putUChar("bldim", blDim);
-  prefs.putUChar("blnight", blNight);
-  prefs.putBool("arot", autoRotate);
+  bool ok = prefs.putUChar("nstart", nightStartH) == sizeof(uint8_t);
+  ok &= prefs.putUChar("nend", nightEndH) == sizeof(uint8_t);
+  ok &= prefs.putUShort("dwell", dwellS) == sizeof(uint16_t);
+  ok &= prefs.putUChar("blday", blDay) == sizeof(uint8_t);
+  ok &= prefs.putUChar("bldim", blDim) == sizeof(uint8_t);
+  ok &= prefs.putUChar("blnight", blNight) == sizeof(uint8_t);
+  ok &= prefs.putBool("arot", autoRotate) == sizeof(uint8_t);
   prefs.end();
-  return true;
+  nvsMark(NVS_SLOT_CFG, ok);
+  return ok;
 }
 
 const char* Settings::bleGwAt(int i) const {
@@ -317,10 +439,12 @@ void Settings::bleGwSave() {
 
   Preferences prefs;
   if (!prefs.begin(NS_CFG, false)) {
+    nvsMark(NVS_SLOT_CFG, false);
     return;
   }
-  bleGwWrite(prefs, *this);
+  const bool ok = bleGwWrite(prefs, *this);
   prefs.end();
+  nvsMark(NVS_SLOT_CFG, ok);
 }
 
 // Osobno od save(): refresh token zmienia sie co 180 dni, a IDy raz. Nie ma po co
@@ -328,25 +452,35 @@ void Settings::bleGwSave() {
 void Settings::viSave() {
   Preferences prefs;
   if (!prefs.begin(NS_CFG, false)) {
+    nvsMark(NVS_SLOT_CFG, false);
     return;
   }
-  prefs.putString("vicid", viClientId);
-  prefs.putString("viref", viRefresh);
-  prefs.putString("viinst", viInstallation);
-  prefs.putString("vigw", viGateway);
-  prefs.putUInt("viat", viAuthAt);
-  prefs.putUInt("virt", viRefreshAt);   // ostatnie udane odswiezenie — patrz Settings.h
-  prefs.putBool("vien", viEnabled);
+  bool ok = putStrOk(prefs, "vicid", viClientId);
+  // (v168) NAJDROZSZY POJEDYNCZY KLUCZ W CALYM NVS. Bufor ma 600 B, a token
+  // rzeczywiscie potrafi go zapelnic — to do 20 wpisow po 32 B, czyli tyle, ile
+  // caly profil doby PV. Jesli kiedykolwiek zabraknie miejsca w partycji, ta linia
+  // jest pierwszym podejrzanym i pierwszym kandydatem do skrocenia; dlatego wynik
+  // jej zapisu MUSI byc widoczny, a nie tylko domniemany.
+  ok &= putStrOk(prefs, "viref", viRefresh);
+  ok &= putStrOk(prefs, "viinst", viInstallation);
+  ok &= putStrOk(prefs, "vigw", viGateway);
+  ok &= prefs.putUInt("viat", viAuthAt) == sizeof(uint32_t);
+  // ostatnie udane odswiezenie — patrz Settings.h
+  ok &= prefs.putUInt("virt", viRefreshAt) == sizeof(uint32_t);
+  ok &= prefs.putBool("vien", viEnabled) == sizeof(uint8_t);
   prefs.end();
+  nvsMark(NVS_SLOT_CFG, ok);
 }
 
 void Settings::meterSave() {
   Preferences prefs;
   if (!prefs.begin(NS_CFG, false)) {
+    nvsMark(NVS_SLOT_CFG, false);
     return;
   }
-  prefs.putBytes("mets", meters, sizeof(meters));
+  const bool ok = prefs.putBytes("mets", meters, sizeof(meters)) == sizeof(meters);
   prefs.end();
+  nvsMark(NVS_SLOT_CFG, ok);
 }
 
 // Trzymamy posortowane po dacie. Ten sam dzien = nadpisanie (poprawka literowki).
@@ -450,20 +584,26 @@ bool Settings::bleSet(const char* mac, const char* name, const char* keyHex) {
   char k[8];
   Preferences prefs;
   if (!prefs.begin(NS_CFG, false)) {
+    nvsMark(NVS_SLOT_CFG, false);
     return false;
   }
   snprintf(k, sizeof(k), "b%dmac", slot);
-  prefs.putString(k, c.mac);
+  bool ok = putStrOk(prefs, k, c.mac);
   snprintf(k, sizeof(k), "b%dnam", slot);
-  prefs.putString(k, c.name);
+  ok &= putStrOk(prefs, k, c.name);
   snprintf(k, sizeof(k), "b%dkey", slot);
   if (c.hasKey) {
-    prefs.putBytes(k, c.key, 16);
+    ok &= prefs.putBytes(k, c.key, 16) == 16;
   } else {
+    // remove() na NIEISTNIEJACYM kluczu zwraca false i to nie jest awaria —
+    // czujnik bez bindkey nigdy go tu nie mial. Do wyniku NIE wchodzi.
     prefs.remove(k);
   }
   prefs.end();
-  return true;
+  nvsMark(NVS_SLOT_CFG, ok);
+  // (v168) Zwracamy PRAWDE o zapisie: panel po `true` wypisuje "czujnik zapisany",
+  // a przy nieudanym zapisie nazwa i klucz wrocilyby po restarcie do poprzednich.
+  return ok;
 }
 
 void Settings::clearWifi() {
@@ -471,8 +611,13 @@ void Settings::clearWifi() {
   pass[0] = '\0';
   Preferences prefs;
   if (!prefs.begin(NS_CFG, false)) {
+    nvsMark(NVS_SLOT_CFG, false);
     return;
   }
+  // KASOWANIE, nie zapis: remove() zwalnia wpisy, wiec nie ma jak zabraknac miejsca,
+  // a false znaczy tu najczesciej "klucza i tak nie bylo" (urzadzenie bez WiFi).
+  // Do licznikow nie wchodzi — inaczej pierwsze "zapomnij siec" na czystym
+  // urzadzeniu zapalaloby w panelu awarie NVS.
   prefs.remove("ssid");
   prefs.remove("pass");
   prefs.end();
@@ -527,10 +672,17 @@ void pvHistoryLoad(PvHistory& h) {
 
   Preferences prefs;
   if (!prefs.begin(NS_PV, true)) {
+    // Na czystym urzadzeniu przestrzen jeszcze nie istnieje — to normalny pierwszy
+    // start, nie awaria. Ale po restarcie urzadzenia, ktore chodzi od miesiecy, ta
+    // sama galaz znaczy juz cos zupelnie innego, wiec nie wolno jej przemilczec.
+    LOG("PV: przestrzen NVS \"%s\" niedostepna do odczytu — profil doby pusty\n", NS_PV);
     return;
   }
   PvProfileBlob b{};
-  const bool ok = prefs.getBytesLength(K_PV_PROF) == sizeof(b) &&
+  // Dlugosc W OSOBNEJ ZMIENNEJ, zeby dalo sie ja wypisac w galezi bledu. Bez tego
+  // "nie wczytalem" nie odroznia braku klucza (0 B) od blobu w innym ukladzie.
+  const size_t len = prefs.getBytesLength(K_PV_PROF);
+  const bool ok = len == sizeof(b) &&
                   prefs.getBytes(K_PV_PROF, &b, sizeof(b)) == sizeof(b) &&
                   b.ver == PV_PROF_VER && b.day >= 0;
   const bool legacy = prefs.isKey("w") || prefs.isKey("l") || prefs.isKey("day");
@@ -540,10 +692,29 @@ void pvHistoryLoad(PvHistory& h) {
     memcpy(h.watts, b.watts, sizeof(h.watts));
     memcpy(h.load, b.load, sizeof(h.load));
     h.day = b.day;
+    int slots = 0;
     for (int i = 0; i < PvHistory::SLOTS; ++i) {
       h.filled[i] = h.watts[i] > 0 || h.load[i] > 0;
+      if (h.filled[i]) ++slots;
     }
-    Serial.printf("PV: wczytano profil dnia %d z NVS\n", static_cast<int>(b.day));
+    // (v168) LOG(), NIE Serial.printf. TO JEST TA JEDNA LINIA, KTOREJ ZABRAKLO
+    // 17.08.2026: po restarcie zniknal caly dzienny wykres PV i nie dalo sie
+    // rozstrzygnac, czy profil nie wszedl do NVS, czy nie wyszedl — bo urzadzenie
+    // wisi na scianie BEZ USB, a Serial nie trafia do /api/log (Log.cpp pisze do
+    // bufora kolowego dopiero z logPrintf). Dzien i LICZBA SLOTOW rozstrzygaja
+    // spor w jednym zdaniu: `dzien` inny niz dzisiejszy znaczy "w NVS lezal profil
+    // z wczoraj, wiec ZAPIS zawiodl", a `slotow 0` przy dzisiejszej dacie znaczy
+    // "zapis szedl, ale byl pusty".
+    LOG("PV: wczytano z NVS profil doby — dzien %d, slotow z danymi %d/%d\n",
+        static_cast<int>(b.day), slots, PvHistory::SLOTS);
+  } else {
+    // GALAZ, KTORA DO v167 BYLA CALKOWICIE NIEMA — a to ONA opisuje awarie.
+    // Bez niej brak wpisu o wczytaniu znaczyl jednoczesnie "nie wczytalem" i
+    // "wczytalem, ale piszę do Serial, ktorego nikt nie widzi". Teraz milczenie
+    // w tym miejscu jest niemozliwe.
+    LOG("PV: BRAK profilu doby w NVS — wykres startuje pusty (dlugosc klucza "
+        "\"%s\": %u B, oczekiwano %u B)\n",
+        K_PV_PROF, static_cast<unsigned>(len), static_cast<unsigned>(sizeof(b)));
   }
 
   if (legacy) {
@@ -551,7 +722,7 @@ void pvHistoryLoad(PvHistory& h) {
     if (w.begin(NS_PV, false)) {
       pvRemoveLegacy(w);
       w.end();
-      Serial.println("PV: skasowano profil w starym ukladzie (klucze w/l/day)");
+      LOG("PV: skasowano profil w starym ukladzie (klucze w/l/day)\n");
     }
   }
 }
@@ -559,6 +730,7 @@ void pvHistoryLoad(PvHistory& h) {
 void pvHistorySave(const PvHistory& h) {
   Preferences prefs;
   if (!prefs.begin(NS_PV, false)) {
+    nvsMark(NVS_SLOT_PROF, false);
     return;
   }
   PvProfileBlob b{};
@@ -566,7 +738,7 @@ void pvHistorySave(const PvHistory& h) {
   b.day = h.day;
   memcpy(b.watts, h.watts, sizeof(b.watts));
   memcpy(b.load, h.load, sizeof(b.load));
-  prefs.putBytes(K_PV_PROF, &b, sizeof(b));
+  nvsPutBytes(prefs, NVS_SLOT_PROF, K_PV_PROF, &b, sizeof(b));
   prefs.end();
 }
 
@@ -631,7 +803,9 @@ void pvMeterBaseLoad(PvMeterBase& b) {
   if (blob.yday < 0 || blob.yday > 365 || blob.year < 2020 || blob.year > 2200 ||
       blob.importKwh < 0.f || blob.exportKwh < 0.f || blob.minute < 0 ||
       blob.minute > 1439) {
-    Serial.println("PV: baza licznikow w NVS niespojna - ignoruje");
+    // (v168) LOG(), nie Serial: to jest komunikat o UTRACIE danych wlasciciela
+    // (ekran wraca na dobe do calki z v164), a Serial nie trafia do /api/log.
+    LOG("PV: baza licznikow w NVS niespojna — ignoruje (dzis liczone z calki)\n");
     return;
   }
   b.year = blob.year;
@@ -641,6 +815,11 @@ void pvMeterBaseLoad(PvMeterBase& b) {
   b.minute = blob.minute;
   b.full = blob.full != 0;
   b.valid = true;
+  // (v168) TA linia ZOSTAJE na Serial i to jest swiadomy wybor, a nie przeoczenie:
+  // udana baza jest w calosci widoczna w /api/diag jako pv.meter.base (rok, dzien,
+  // godzina zlapania, oba liczniki, flaga `full`), i to bez ograniczenia czasowego
+  // bufora dziennika. Do /api/log przenosimy tylko te komunikaty startowe, ktorych
+  // /api/diag NIE potrafi odtworzyc — czyli galezie AWARII wyzej.
   Serial.printf("PV: baza licznikow z NVS: %ld dzien %ld min %d pobor %.2f oddane %.2f%s\n",
                 static_cast<long>(b.year), static_cast<long>(b.yday), b.minute,
                 b.importKwh, b.exportKwh, b.full ? "" : " (NIEPELNA)");
@@ -655,6 +834,7 @@ void pvMeterBaseSave(const PvMeterBase& b) {
   }
   Preferences prefs;
   if (!prefs.begin(NS_PV, false)) {
+    nvsMark(NVS_SLOT_METER, false);
     return;
   }
   PvMeterBlob blob{};
@@ -665,7 +845,7 @@ void pvMeterBaseSave(const PvMeterBase& b) {
   blob.exportKwh = b.exportKwh;
   blob.minute = b.minute;
   blob.full = b.full ? 1 : 0;
-  prefs.putBytes(K_PV_METER, &blob, sizeof(blob));
+  nvsPutBytes(prefs, NVS_SLOT_METER, K_PV_METER, &blob, sizeof(blob));
   prefs.end();
 }
 
@@ -704,25 +884,58 @@ void roomHistoryLoad(RoomHistory& h) {
   Preferences prefs;
   if (!prefs.begin(NS_PV, true)) {
     h.reset();
+    LOG("BLE: przestrzen NVS \"%s\" niedostepna — historia 24 h pusta\n", NS_PV);
     return;
   }
   const size_t need = sizeof(RoomHistory);
-  if (prefs.getBytesLength("rh2") == need) {
+  const size_t len = prefs.getBytesLength("rh2");
+  if (len == need) {
     prefs.getBytes("rh2", &h, need);
-    Serial.printf("BLE: wczytano historie 24 h (slot %lu)\n",
-                  static_cast<unsigned long>(h.lastSlot));
+    // (v168) LOG() z tego samego powodu, co przy profilu PV: to najwiekszy blob
+    // w partycji (1736 B) i gdy zabraknie miejsca, przestanie sie miescic PIERWSZY.
+    // Bez tej linii jego zniknieciu towarzyszylaby cisza.
+    LOG("BLE: wczytano z NVS historie 24 h (slot %lu)\n",
+        static_cast<unsigned long>(h.lastSlot));
   } else {
     h.reset();
+    LOG("BLE: BRAK historii 24 h w NVS — wykres pokoi startuje pusty "
+        "(dlugosc \"rh2\": %u B, oczekiwano %u B)\n",
+        static_cast<unsigned>(len), static_cast<unsigned>(need));
   }
+  // (v168) ODZYSK MIEJSCA: klucz "rh" z ukladu v1 (4 pokoje, temperatura +
+  // wilgotnosc) zostal porzucony w v92 na rzecz "rh2" i od tamtej pory NIKT go
+  // nie kasowal — w odroznieniu od kluczy profilu PV, ktore maja pvRemoveLegacy().
+  // Na urzadzeniu, ktore chodzi od czasow sprzed v92, ten blob wciaz zajmuje
+  // 1736 B danych = 57 wpisow NVS po 32 B = 1824 B, czyli DZIEWIEC PROCENT calej
+  // partycji 20480 B, i nie jest czytany przez zaden kod tej wersji ani zadnej
+  // wczesniejszej od v92.
+  //
+  // TO NIE JEST KASOWANIE DANYCH WLASCICIELA: obecne firmware nie ma jak tego
+  // blobu zinterpretowac (uklad pol jest inny, a klucz "rh2" celowo powstal po to,
+  // zeby "rh" NIGDY nie zostal wczytany — patrz PULAPKA wyzej). To sa bajty, ktore
+  // od v92 sa wylacznie balastem. Porzucamy je swiadomie i z wpisem w dzienniku,
+  // dokladnie tak, jak pvRemoveLegacy() robi to z kluczami "w"/"l"/"day".
+  const bool legacy = prefs.isKey("rh");
   prefs.end();
+  if (legacy) {
+    Preferences w;
+    if (w.begin(NS_PV, false)) {
+      const bool gone = w.remove("rh");
+      w.end();
+      LOG("BLE: skasowano historie w starym ukladzie (klucz \"rh\", %s) — "
+          "odzyskane 57 wpisow NVS (1824 B)\n",
+          gone ? "ok" : "NIE UDALO SIE");
+    }
+  }
 }
 
 void roomHistorySave(const RoomHistory& h) {
   Preferences prefs;
   if (!prefs.begin(NS_PV, false)) {
+    nvsMark(NVS_SLOT_ROOMS, false);
     return;
   }
-  prefs.putBytes("rh2", &h, sizeof(RoomHistory));
+  nvsPutBytes(prefs, NVS_SLOT_ROOMS, "rh2", &h, sizeof(RoomHistory));
   prefs.end();
 }
 
@@ -756,9 +969,10 @@ void airHistoryLoad(AirHistory& h) {
 void airHistorySave(const AirHistory& h) {
   Preferences prefs;
   if (!prefs.begin(NS_PV, false)) {
+    nvsMark(NVS_SLOT_AIR, false);
     return;
   }
-  prefs.putBytes("airh", &h, sizeof(AirHistory));
+  nvsPutBytes(prefs, NVS_SLOT_AIR, "airh", &h, sizeof(AirHistory));
   prefs.end();
 }
 
@@ -805,6 +1019,7 @@ void gasHistoryLoad(GasHistory& g) {
 void gasHistorySave(const GasHistory& g) {
   Preferences prefs;
   if (!prefs.begin(NS_PV, false)) {
+    nvsMark(NVS_SLOT_GAS, false);
     return;
   }
   GasBlob b{};
@@ -812,7 +1027,7 @@ void gasHistorySave(const GasHistory& g) {
   b.lastDay = g.lastDay;
   b.head = g.head;
   memcpy(b.m3x100, g.m3x100, sizeof(b.m3x100));
-  prefs.putBytes(K_GAS, &b, sizeof(b));
+  nvsPutBytes(prefs, NVS_SLOT_GAS, K_GAS, &b, sizeof(b));
   prefs.end();
 }
 
@@ -869,7 +1084,13 @@ void burnerHistoryLoad(BurnerHistory& h) {
     // innej niz 0/1 (choćby ze smiecia w NVS) to zachowanie niezdefiniowane.
     for (int i = 0; i < BurnerHistory::SLOTS; ++i) h.filled[i] = b.filled[i] != 0;
     h.day = b.day;
-    Serial.printf("Piec: wczytano profil palnika dnia %d z NVS\n", static_cast<int>(b.day));
+    // (v168) LOG(): profil palnika to RODZENSTWO profilu PV — ten sam blad zapisu
+    // uderzy w oba, a "wykres pieca pusty po restarcie" jest dokladnie tym objawem,
+    // ktory v166 mial zamknac. Bez wpisu w /api/log nie da sie stwierdzic, czy
+    // wrocil, bo urzadzenie nie ma USB.
+    LOG("Piec: wczytano z NVS profil palnika — dzien %d\n", static_cast<int>(b.day));
+  } else {
+    LOG("Piec: BRAK profilu palnika w NVS — wykres pieca startuje pusty\n");
   }
   prefs.end();
   // Profil ze WCZORAJ zostaje tu CELOWO nietkniety i CELOWO nie sprawdzamy daty:
@@ -883,6 +1104,7 @@ void burnerHistoryLoad(BurnerHistory& h) {
 void burnerHistorySave(const BurnerHistory& h) {
   Preferences prefs;
   if (!prefs.begin(NS_PV, false)) {
+    nvsMark(NVS_SLOT_BURN, false);
     return;
   }
   BurnerBlob b{};
@@ -890,7 +1112,7 @@ void burnerHistorySave(const BurnerHistory& h) {
   b.day = h.day;
   memcpy(b.mod, h.mod, sizeof(b.mod));
   for (int i = 0; i < BurnerHistory::SLOTS; ++i) b.filled[i] = h.filled[i] ? 1 : 0;
-  prefs.putBytes(K_BURN, &b, sizeof(b));
+  nvsPutBytes(prefs, NVS_SLOT_BURN, K_BURN, &b, sizeof(b));
   prefs.end();
 }
 
@@ -999,6 +1221,7 @@ bool sensStatsSave(const PirRtc& pir, const LdrRtc& ldr) {
   Preferences prefs;
   if (!prefs.begin(NS_PV, false)) {
     gSensStats.saveFailed = true;
+    nvsMark(NVS_SLOT_SENS, false);   // (v168) ten sam licznik, co reszta blobow
     return false;
   }
   SensStatsBlob b{};
@@ -1013,10 +1236,14 @@ bool sensStatsSave(const PirRtc& pir, const LdrRtc& ldr) {
   b.coldStarts = gSensStats.coldStarts;
   memcpy(&b.pir, &pir, sizeof(b.pir));
   memcpy(&b.ldr, &ldr, sizeof(b.ldr));
-  const size_t n = prefs.putBytes(K_SENS, &b, sizeof(b));
+  // (v168) Ten zapis JUZ w v166 sprawdzal wynik — teraz robi to przez wspolny
+  // nvsPutBytes(), zeby "sen1" stalo w tej samej tabeli /api/diag co pozostale
+  // szesc blobow. gSensStats.saveFailed/saveOkAt ZOSTAJA: karmia istniejaca sekcje
+  // panelu "Obecnosc · Swiatlo · Ruch", ktorej nie przepisujemy przy okazji.
+  const bool ok = nvsPutBytes(prefs, NVS_SLOT_SENS, K_SENS, &b, sizeof(b));
   prefs.end();
 
-  gSensStats.saveFailed = n != sizeof(b);
-  if (!gSensStats.saveFailed) gSensStats.saveOkAt = millis();
-  return !gSensStats.saveFailed;
+  gSensStats.saveFailed = !ok;
+  if (ok) gSensStats.saveOkAt = millis();
+  return ok;
 }

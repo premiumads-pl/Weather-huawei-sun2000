@@ -26,6 +26,7 @@
 // z heap_caps_*, Ota.cpp/OtaGuard.cpp z esp_ota_ops.h) — to nie sa nowe zaleznosci.
 #include "esp_heap_caps.h"
 #include <esp_ota_ops.h>
+#include <nvs.h>          // (v168) nvs_get_stats + nvs_get_used_entry_count -> /api/diag.nvs
 
 #include "AirClient.h"
 #include "AirHistory.h"   // gAirHistory.toJson() -> /api/diag.air_hist (sekcja "Powietrze 7 dni")
@@ -2650,6 +2651,104 @@ void apiDiag() {
   mfStack["net_spare"] = d.stackNet;    // to samo, co mem.stack_net_spare wyzej
   mfStack["web_spare"] = d.stackWeb;    // to samo, co mem.stack_web_spare wyzej
   mfStack["configured_size"] = 16384;   // xTaskCreatePinnedToCore(...,16384,...) w .ino, oba zadania
+
+  // --- (v168) NVS: ZMIERZONA zajetosc partycji + nadzor nad zapisami ----------
+  //
+  // PO CO: 17.08.2026 po restarcie zniknal caly dzisiejszy profil doby PV. Padlo
+  // podejrzenie, ze partycja NVS (20480 B) jest pelna, nvs_set_blob odmawia,
+  // a poniewaz ZADNA funkcja zapisu nie patrzyla na wynik `putBytes`, w NVS zostaje
+  // profil z poprzedniej doby i pierwszy push() z dzisiejszym tm_yday go kasuje.
+  // Sporu nie dalo sie rozstrzygnac, bo urzadzenie nie podawalo ANI JEDNEJ liczby
+  // o stanie NVS — rachunek "na kartce" mowil jedno, objaw sugerowal drugie.
+  //
+  // nvs_get_stats() jest tu JEDYNA liczba, ktora rozstrzyga. Znaczenie pol (nvs.h):
+  //   total_entries     — wszystkie wpisy po 32 B we wszystkich stronach partycji;
+  //   used_entries      — zajete danymi;
+  //   free_entries      — wolne, ale LICZONE RAZEM z rezerwa na kompaktowanie;
+  //   available_entries — wolne, ktorych NAPRAWDE mozna uzyc na dane. TO JEST TA
+  //                       liczba, ktora decyduje, czy zapis przejdzie. NVS trzyma
+  //                       jedna strone w rezerwie, zeby mial dokad przepisac zywe
+  //                       dane przy sprzataniu — dlatego available < free i tylko
+  //                       porownanie z available ma sens.
+  //
+  // used_entries per przestrzen (nvs_get_used_entry_count) rozbija to na "pvday"
+  // (wykresy i historie) kontra "pogoda" (WiFi, MQTT, klucze BLE, token pieca)
+  // kontra "otaguard". Bez tego rozbicia nie da sie powiedziec, CO zjada partycje:
+  // sam token Viessmanna potrafi miec 600 B, czyli tyle, co caly profil doby.
+  JsonObject nv = j["nvs"].to<JsonObject>();
+  const esp_partition_t* nvsPart =
+      esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, nullptr);
+  nv["part_bytes"] = nvsPart ? nvsPart->size : 0;
+  nv["entry_bytes"] = 32;   // stala NVS: jeden wpis = 32 B
+
+  nvs_stats_t st{};
+  const bool statsOk = nvs_get_stats(nullptr, &st) == ESP_OK;
+  nv["stats_ok"] = statsOk;
+  if (statsOk) {
+    nv["total_entries"] = st.total_entries;
+    nv["used_entries"] = st.used_entries;
+    nv["free_entries"] = st.free_entries;
+    nv["available_entries"] = st.available_entries;
+    nv["namespace_count"] = st.namespace_count;
+    // Te same liczby w bajtach — zeby nie trzeba bylo mnozyc w glowie przy
+    // porownywaniu z rozmiarem partycji, ktory jest podany w bajtach.
+    nv["used_bytes"] = st.used_entries * 32;
+    nv["available_bytes"] = st.available_entries * 32;
+    nv["used_pct"] = st.total_entries > 0
+                         ? (100.0 * st.used_entries) / st.total_entries
+                         : 0;
+  }
+
+  // Zajetosc per przestrzen nazw. nvs_open w trybie READONLY, wiec ten odczyt
+  // NICZEGO nie tworzy — na urzadzeniu bez skonfigurowanego pieca przestrzen
+  // moze nie istniec i wtedy pole zostaje null zamiast klamliwego zera.
+  // +1 do wyniku: sam wpis przestrzeni tez zajmuje wpis (opis w nvs.h).
+  JsonObject nsObj = nv["ns"].to<JsonObject>();
+  auto addNs = [&](const char* name) {
+    nvs_handle_t h = 0;
+    if (nvs_open(name, NVS_READONLY, &h) != ESP_OK) {
+      nsObj[name] = nullptr;
+      return;
+    }
+    size_t used = 0;
+    if (nvs_get_used_entry_count(h, &used) == ESP_OK) {
+      nsObj[name] = used + 1;
+    } else {
+      nsObj[name] = nullptr;
+    }
+    nvs_close(h);
+  };
+  addNs("pvday");
+  addNs("pogoda");
+  addNs("otaguard");
+
+  // Tabela zapisow: czy KAZDY z utrwalanych zbiorow rzeczywiscie wchodzi do flasha.
+  // `fails` > 0 przy `oks` == 0 znaczy "ten klucz nie zapisal sie ANI RAZU w tej
+  // sesji" — czyli dane, ktore ekran pokazuje, zgina przy najblizszym restarcie.
+  // `entries` to koszt blobu w wpisach NVS, policzony w Settings.cpp z rozmiaru
+  // struktury; suma tej kolumny to zajetosc przestrzeni "pvday" BEZ narzutu stron.
+  JsonArray wr = nv["writes"].to<JsonArray>();
+  uint32_t entriesSum = 0;
+  for (uint8_t i = 0; i < NVS_SLOT_COUNT; ++i) {
+    const NvsWriteStat& s = nvsStat(i);
+    JsonObject w = wr.add<JsonObject>();
+    w["key"] = nvsSlotKey(i);
+    w["bytes"] = nvsSlotBytes(i);        // 0 = slot zbiorczy (cala przestrzen nazw)
+    w["entries"] = nvsSlotEntries(i);    // 0 = jw.
+    w["oks"] = s.oks;
+    w["fails"] = s.fails;
+    w["failed"] = s.failed;              // stan BIEZACY, nie historia
+    w["ok_ago_s"] = ago(s.okAt);         // -1 = w tej sesji ani jednego udanego zapisu
+    entriesSum += nvsSlotEntries(i);
+  }
+  nv["blob_entries_sum"] = entriesSum;
+  nv["note"] =
+      "available_entries to jedyna liczba, ktora rozstrzyga, czy zapis przejdzie: "
+      "free_entries zawiera rezerwe na kompaktowanie, ktorej uzyc nie mozna. "
+      "writes[] pokazuje, czy zapisy naprawde wchodza — fails > 0 przy oks == 0 "
+      "znaczy, ze ten zbior NIE przezyje restartu. bytes/entries to koszt blobu "
+      "(2 wpisy narzutu + 1 na kazde rozpoczete 32 B danych, wg opisu nvs_set_blob "
+      "w nvs.h). Sloty z bytes == 0 to cale przestrzenie nazw, nie pojedyncze klucze.";
 
   JsonObject o = j["ota"].to<JsonObject>();
   o["remote"] = d.otaRemote;
