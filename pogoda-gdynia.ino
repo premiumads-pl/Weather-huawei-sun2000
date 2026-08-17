@@ -1689,11 +1689,24 @@ static void netTask(void*) {
     }
 
     // ---- ile stosu naprawde zuzywaja zadania (do przyciecia 2 x 16 kB) ----
+    // (v171) SKASOWANE MNOZENIE PRZEZ sizeof(StackType_t). Ta funkcja w ESP-IDF oddaje
+    // wynik W BAJTACH, a nie w slowach jak w zwyklym FreeRTOS-ie — mnozenie przez 4
+    // zawyzalo raportowany zapas CZTEROKROTNIE. Sprawdzone dwoma niezaleznymi drogami,
+    // bo to jest dokladnie ta klasa pomylki, ktorej nie wolno przyjac na wiare:
+    //  1) naglowek TEGO rdzenia (tools/esp32s3-libs/3.3.10/include/freertos/
+    //     FreeRTOS-Kernel/include/freertos/task.h, opis uxTaskGetStackHighWaterMark):
+    //     "the minimum free stack space there has been in bytes (as opposed to words
+    //     in the standard FreeRTOS documentation)";
+    //  2) deasemblacja libfreertos.a z tego samego rdzenia: funkcja liczy bajty
+    //     wypelniacza 0xA5 (l8ui + porownanie + addi 1) i zwraca licznik BEZ dzielenia
+    //     przez 4. Tak samo wypelniane jest pole usStackHighWaterMark w TaskStatus_t.
+    // Skutek dla liczb, ktore panel pokazywal do v170: "zapas sieci 8,4 kB" znaczylo
+    // w rzeczywistosci 2,1 kB z 16 kB stosu. Margines jest wiec ~13%, a nie ~52%.
     if (gNetTask != nullptr) {
-      diag().stackNet = uxTaskGetStackHighWaterMark(gNetTask) * sizeof(StackType_t);
+      diag().stackNet = uxTaskGetStackHighWaterMark(gNetTask);
     }
     if (gWebTask != nullptr) {
-      diag().stackWeb = uxTaskGetStackHighWaterMark(gWebTask) * sizeof(StackType_t);
+      diag().stackWeb = uxTaskGetStackHighWaterMark(gWebTask);
     }
 
     // ---- zapis profili doby do NVS: produkcja PV + palnik ----

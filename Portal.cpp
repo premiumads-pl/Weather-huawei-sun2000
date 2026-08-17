@@ -8,6 +8,16 @@
 #include <WiFi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+// (v171) uxTaskGetSystemState + xTaskGetIdleTaskHandleForCore -> /api/diag.cpu.
+// SPRAWDZONE w sdkconfig tego rdzenia (tools/esp32s3-libs/3.3.10/sdkconfig), bo
+// zgadywanie tutaj nie ma sensu — bez tych opcji liczniki byłyby zerami:
+//   CONFIG_FREERTOS_USE_TRACE_FACILITY=y        (uxTaskGetSystemState w ogóle istnieje)
+//   CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y   (ulRunTimeCounter jest wypełniany)
+//   CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y  (licznik liczy MIKROSEKUNDY)
+//   CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U32=y (32 bity -> przekręca się co ~71,6 min)
+//   CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y  (TaskStatus_t ma pole xCoreID)
+#include <freertos/task.h>
+#include <freertos/idf_additions.h>
 #include <cstdlib>
 #include <cstring>
 
@@ -228,7 +238,15 @@ li:hover{border-color:var(--accent)}
 .brow{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:13px}
 .brow .k{width:74px;color:var(--second);font-family:var(--cond)}
 .brow .track{flex:1;height:13px;background:var(--track);border-radius:7px;overflow:hidden}
-.brow .fill{height:100%;border-radius:7px}
+/* (v171) DOPISANE display:block — BEZ TEGO PASKI NIE RYSOWALY SIE W OGOLE. `.fill`
+   jest elementem <span>, czyli domyslnie inline, a element inline IGNORUJE width
+   i height: wypelnienie mialo wiec 0 x 0 px i widac bylo sama szara sciezke. Sasiedni
+   `.track` uchodzil na sucho przypadkiem — jest dzieckiem kontenera flex (`.brow`),
+   a te sa "blokowane" przez uklad flex, wiec dostal blok za darmo; `.fill` juz nie,
+   bo jego rodzic (`.track`) zwyklym flexem nie jest. Dotyczy TAKZE sekcji
+   "Obecnosc · Swiatlo · Ruch", gdzie kolory pasków dodane w v166 nigdy nie byly
+   widoczne — ta poprawka naprawia je przy okazji. */
+.brow .fill{display:block;height:100%;border-radius:7px}
 .brow .v{width:66px;text-align:right;color:var(--mute)}
 .gbox{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.5;margin-top:10px}
 .gbox.warn{background:var(--warnbg);border-color:var(--warn);color:var(--panel)}
@@ -239,6 +257,19 @@ li:hover{border-color:var(--accent)}
 .frow{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:13px}
 .frow:last-child{border-bottom:0}
 .frow .fk{color:var(--second);font-family:var(--cond)}
+/* (v171) Sekcja "Pamiec · Procesor". Mapa flasha ma OGRANICZONA szerokosc, i to nie
+   z estetyki: rysunek jest jednym SVG o stalym viewBox, wiec razem z szerokoscia rosna
+   TAKZE napisy w srodku. Na telefonie (~324 px tresci) skala wychodzi ~0,9 i podpisy
+   maja realne ~9 px; bez tego ogranicznika na komputerze urosłyby do ~20 px i mapa
+   wygladalaby jak plakat. Wspolna tabelka .ptab zamiast stylow w kazdym wierszu —
+   ten sam uklad sluzy zapisom NVS i liscie zadan, a literal panelu idzie do flasha. */
+.pmap svg{max-width:560px;margin:0 auto}
+.ptab{width:100%;border-collapse:collapse;font-size:12px;color:var(--second);margin-top:6px}
+.ptab td,.ptab th{padding:5px 4px;border-bottom:1px solid var(--line);text-align:right;font-weight:400}
+.ptab th{color:var(--mute);font-family:var(--cond);font-weight:600;text-transform:uppercase;
+  font-size:10px;letter-spacing:.05em;white-space:nowrap}
+.ptab td:first-child,.ptab th:first-child{text-align:left;font-family:var(--cond);color:var(--panel)}
+.ptab tr:last-child td{border-bottom:0}
 </style>
 <script>/* wczesny odczyt motywu — zanim narysuje sie strona, zeby nie mrugalo jasnym */
 try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.classList.add('dark')}catch(e){}</script>
@@ -268,6 +299,7 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
  <div class=navitem data-sec=obec>Obecność</div>
  <div class=navitem data-sec=integr>Integracje <span class="nb b-token"></span></div>
  <div class=navitem data-sec=aktual>Aktualizacje</div>
+ <div class=navitem data-sec=pamiec>Pamięć · Procesor</div>
  <div class=navitem data-sec=diag>Diagnostyka</div>
  <div class=navitem data-sec=zdrowie>Zdrowie</div>
 </nav>
@@ -580,6 +612,80 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
 </div>
 </section>
 
+<section id=sec-pamiec>
+<button class=sechead data-sec=pamiec><span>Pamięć · Procesor</span><span class=hgrp><span class=chev>▸</span></span></button>
+<div class=secbody>
+ <div class=blk>
+  <h2>Mapa flasha — 4 MB <span class=live id=pmDot></span></h2>
+  <div class=hint>Cztery megabajty pamięci trwałej w <b>prawdziwych proporcjach</b>: każdy
+   prostokąt jest dokładnie tak szeroki, jak duży jest naprawdę. Rysowane z żywej tablicy
+   partycji urządzenia, a nie z liczb wpisanych w panel.</div>
+  <div class="svgwrap pmap" id=pmMap></div>
+  <div id=pmMapLeg></div>
+ </div>
+ <div class=blk>
+  <h2>Trzy rodzaje pamięci</h2>
+  <div class=hint>Dwie znikają po zaniku prądu, jedna zostaje. To rozróżnienie decyduje
+   o tym, co przeżyje wyciągnięcie wtyczki, a co nie.</div>
+  <div id=pmKinds></div>
+ </div>
+ <div class=blk>
+  <h2>Pamięć trwała (NVS) — szczegóły</h2>
+  <div id=pmNvs></div>
+ </div>
+ <div class=blk>
+  <h2>Skąd bierze się rozmiar NVS i czy da się go zmienić</h2>
+  <div class=gbox>Rozmiar tej partycji nie wynika z niczego w sprzęcie — bierze się
+   z pliku <b>partitions.csv</b> w repozytorium projektu, czyli z tekstu, który ktoś
+   napisał i skompilował razem z programem. 17 sierpnia 2026 powiększyliśmy ją
+   <b>z 20 kB na 148 kB</b>, płacąc za to partycją programu: obie połówki zeszły
+   z 1984 kB na 1920 kB. Zmiany nie dało się wgrać po sieci i nie da się tak nigdy:
+   tablica partycji leży pod adresem <b>0x8000</b>, czyli <b>poza wszystkimi partycjami</b>,
+   a aktualizacja po sieci pisze wyłącznie do nieaktywnej partycji programu. Potrzebny
+   był kabel USB — i tak ma zostać, bo nieudany zapis pod 0x8000 zamieniłby urządzenie
+   w cegłę: bootloader nie wiedziałby już, gdzie szukać programu, a przez sieć nikt by
+   tego nie odratował.</div>
+ </div>
+ <div class=blk>
+  <h2>Obciążenie rdzeni — zmierzone, nie szacowane</h2>
+  <div class=hint>Liczby niżej to <b>prawdziwy czas procesora</b>: jądro systemu (FreeRTOS)
+   dolicza go każdemu zadaniu przy każdym przełączeniu. Zajętość rdzenia liczymy z zadania
+   bezczynności — ile z minionego okna rdzeń <b>nie</b> spędził, nic nie robiąc.
+   Rdzeń 0 obsługuje sieć (panel, pobieranie danych, Wi-Fi i stos TCP/IP),
+   rdzeń 1 rysuje obraz na wyświetlaczu.</div>
+  <div id=pmCpu></div>
+  <div class=svgwrap id=pmCpuChart></div>
+  <div id=pmTasks></div>
+ </div>
+ <div class=blk>
+  <h2>Wyświetlacz — klatki na sekundę</h2>
+  <div id=pmGfx></div>
+ </div>
+ <div class=blk>
+  <h2>Temperatura układu</h2>
+  <div id=pmTemp></div>
+  <div class=svgwrap id=pmTempChart></div>
+ </div>
+ <div class=blk>
+  <h2>Napięcia zasilania</h2>
+  <div class=gbox><b>Nie pokazujemy ich, bo nie ma czym ich zmierzyć.</b> Przetwornik ADC
+   w ESP32-S3 mierzy napięcie na <b>nóżce układu</b>, a nie na szynie zasilania — żeby
+   odczytać cokolwiek z 5 V czy 3,3 V, trzeba na płytce dzielnika rezystorowego, który
+   sprowadzi to napięcie w zakres przetwornika. Tej płytki nie ma, a jedyne wejście
+   analogowe użyte w tym urządzeniu (GPIO1) zajmuje fotorezystor. Jedyne, co układ wie
+   o swoim zasilaniu, to detektor zaniku napięcia: potrafi zrestartować urządzenie poniżej
+   progu, ale <b>nie podaje żadnej wartości</b>. To ograniczenie <b>sprzętowe, nie
+   programowe</b> — żadna zmiana firmware'u tego nie obejdzie, trzeba dolutować dzielnik.
+   Wolimy to napisać wprost, niż pokazywać wymyśloną liczbę.</div>
+ </div>
+ <div class=blk>
+  <h2>Stosy zadań</h2>
+  <div id=pmStacks></div>
+ </div>
+ <div class=gnote id=pmFoot></div>
+</div>
+</section>
+
 <section id=sec-diag>
 <button class=sechead data-sec=diag><span>Diagnostyka</span><span class=hgrp><span class=chev>▸</span></span></button>
 <div class=secbody>
@@ -612,9 +718,10 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
  </div>
  <div class=blk>
   <h2>Pamięć urządzenia</h2>
-  <div class=hint>Wszystkie rodzaje pamięci: pojemność, zajętość, wolne, bufory i podział na partycje OTA.</div>
-  <button class=s onclick=mem()>Odczytaj stan pamięci</button>
-  <div id=memout style=margin-top:10px></div>
+  <div class=hint>Przeniesione do osobnej sekcji <b>„Pamięć · Procesor”</b> — razem z mapą
+   partycji, szczegółami pamięci trwałej, obciążeniem rdzeni i wykresami. Tamta sekcja
+   rysuje się z odpytywania, które panel i tak prowadzi w tle, więc nie trzeba jej
+   „odczytywać” przyciskiem.</div>
  </div>
  <div class=blk>
   <h2>Radar opadów — symulacja</h2>
@@ -743,6 +850,11 @@ function onShown(s){
  if(s==='zdrowie'&&!healthLoaded){healthLoaded=true;health();}
  if(s==='klimat'&&!klimatLoaded){klimatLoaded=true;klimat();}
  if(s==='air7'&&!air7Loaded){air7Loaded=true;air7();}
+ // (v171) "Pamiec · Procesor" NIE laduje sie leniwie i nie ma czego ladowac: dane
+ // zbieraja sie w tle przy kazdym diagPills(), a rysujemy tylko wtedy, gdy sekcja
+ // jest widoczna. Tutaj wiec wystarczy jedno przerysowanie z ostatniej migawki —
+ // bez zadnego zapytania do urzadzenia.
+ if(s==='pamiec')pmRender();
 }
 // --- CIEMNY MOTYW: klasa .dark na <html>, wybor w localStorage (wczesny skrypt u gory
 // juz go zastosowal — tu tylko napis przycisku i przelaczanie na klik). ---
@@ -821,6 +933,7 @@ async function liveTick(){
   const note=old?` <span style="color:var(--mute)">(próg ${lt})</span>`:'';
   return `<div class=frow><span class=fk>${f[0]}</span><span style="color:${c}">${agoTxt(v)}${note}</span></div>`;}).join('');
  gwStat(d);   // (v166) stan bramek BLE — ta sama migawka, zero dodatkowych zapytan
+ pmTick(d);   // (v171) to samo dla sekcji "Pamięć · Procesor" — gesciej, bo co 5 s
  if($('liveDot'))$('liveDot').textContent='● odświeżono '+new Date().toLocaleTimeString('pl-PL');
 }
 // --- OBECNOSC · SWIATLO · RUCH (integracja prototypu): logika i wyglad z prototypu, dane
@@ -1099,90 +1212,378 @@ async function diagPills(){
    $('sInv').textContent=t;$('sInv').className='sig '+c;
   }
   gwStat(d);   // (v166) stan bramek BLE — bez dodatkowego zapytania, patrz gwStat()
+  pmTick(d);   // (v171) sekcja "Pamięć · Procesor" — ta sama migawka, zero zapytań
  }catch(e){}
 }
-function kb(b){if(b==null)return '—';if(b>=1048576)return (b/1048576).toFixed(2)+' MB';if(b>=1024)return (b/1024).toFixed(1)+' kB';return b+' B';}
-function memBar(used,total){var p=total>0?Math.round(used/total*100):0;
- return '<div style="height:8px;background:var(--track);border-radius:4px;overflow:hidden;margin:3px 0">'
- +'<div style="height:8px;width:'+p+'%;background:'+(p>85?'var(--err)':p>65?'var(--warn)':'var(--ok)')+'"></div></div>';}
-function memRow(name,cap,used,free,buf,desc){
- var body='';
- if(cap!=null)body+='<b>'+kb(cap)+'</b> pojemność';
- if(used!=null)body+=' · zajęte '+kb(used);
- if(free!=null)body+=' · <b style=color:var(--ok)>wolne '+kb(free)+'</b>';
- if(buf!=null)body+=' · '+buf;
- var bar=(cap!=null&&used!=null)?memBar(used,cap):'';
- return '<div style="padding:8px 0;border-bottom:1px solid var(--line)">'
-  +'<div style="display:flex;justify-content:space-between"><b style=color:var(--panel)>'+name+'</b></div>'
-  +bar+'<div style="font:12px system-ui;color:var(--second)">'+body+'</div>'
-  +'<div style="font:11px system-ui;color:var(--mute);margin-top:2px">'+desc+'</div></div>';}
-async function mem(){
- var o=$('memout');o.innerHTML='<div class=hint>Odczytuję…</div>';
- try{
-  var d=await(await fetch('/api/diag?'+Date.now())).json();
-  var m=d.memfull||{},h='';
-  var s=m.sram||{};
-  h+=memRow('SRAM (pamięć robocza)',327680,327680-(s.free||0),s.free,
-    'największy blok '+kb(s.largest_block)+' · dołek od startu '+kb(s.min_ever),
-    'Wewnętrzna pamięć układu. Tu żyje sterta: bufory sieciowe, TLS przy aktualizacji, stosy zadań. Największy blok pokazuje fragmentację — TLS potrzebuje ~40 kB ciągłego.');
-  var ps=m.psram||{};
-  h+=memRow('PSRAM (pamięć zewnętrzna)',ps.total,ps.total-(ps.free||0),ps.free,
-    'największy blok '+kb(ps.largest_block),
-    'Zewnętrzne 2 MB. Trzyma bufor ekranu (~132 kB) i 13 klatek radaru (~715 kB). Duże bufory graficzne idą tutaj, nie do SRAM.');
-  // --- FLASH (uczciwie): 4 MB ukladu to NIE budzet firmware'u. Poprzedni pasek pokazywal
-  // "Flash 4 MB - wolne 2,29" (chip - sketch) ORAZ "app1 1,94 - wolne 233 kB" i te dwie liczby
-  // sobie przeczyly. PRAWDA: firmware mieszci sie w JEDNEJ partycji app (1,94 MB), a te
-  // "2,29 MB wolne" to glownie DRUGA partycja app (rezerwa OTA), w ktora NIE da sie dopisac
-  // firmware'u. Rozbijamy wiec 4 MB na: aktywna aplikacja / kopia OTA / system.
-  var fl=m.flash||{}, ap=m.app||{}, prt=m.partitions||[];
-  var appUsed=(ap.used!=null?ap.used:fl.sketch_size), appSize=ap.size||0;
-  var appFree=(appSize&&appUsed!=null)?appSize-appUsed:null;
-  var running=ap.running||'?';
-  // Kopia OTA = druga partycja app (ta, ktora NIE jest uruchomiona).
-  var otaName=(running=='app0')?'app1':'app0';
-  var otaP=prt.find(function(p){return p.name==otaName;})||{};
-  // System: nvs+otadata+coredump(+spiffs jesli obecny) z tablicy partycji + bootloader
-  // i tablica partycji (~36 kB, lezace przed nvs pod 0x0..0x9000 — nie ma ich w liscie).
-  var sysSum=36864;
-  prt.forEach(function(p){if(p.present&&(p.name=='nvs'||p.name=='otadata'||p.name=='coredump'||p.name=='spiffs'))sysSum+=(p.size||0);});
-  h+='<div style="padding:8px 0 2px"><b style=color:var(--panel)>Flash (pamięć programu) — układ '+kb(fl.chip_size)+'</b>'
-   +'<div style="font:11px system-ui;color:var(--mute);margin-top:2px">Cały układ flash. Firmware NIE dostaje go w całości — poniżej uczciwy podział.</div></div>';
-  h+=memRow('Aktywna aplikacja („'+running+'”) — realny budżet firmware',appSize,appUsed,appFree,null,
-    'Tu działa bieżący firmware. Nowa wersja musi zmieścić się w TEJ jednej partycji, więc wolne '+kb(appFree)+' to cały zapas na rozrost (nowe fonty, ekrany). To jest liczba, na którą trzeba patrzeć.');
-  h+=memRow('Kopia OTA („'+otaName+'”) — rezerwa aktualizacji',otaP.size,null,null,null,
-    'Rezerwa na aktualizację po sieci: nowy obraz wgrywa się tutaj, a stary zostaje jako powrót awaryjny. NIE da się w to dopisać bieżącej aplikacji — to nie jest wolne miejsce dla firmware.');
-  h+=memRow('System (NVS, otadata, zrzut, bootloader)',sysSum,null,null,null,
-    'Ustawienia trwałe, wskaźnik OTA, zrzut awaryjny oraz bootloader z tablicą partycji. Stały narzut, poza budżetem aplikacji.');
-  h+='<div style="font:11px system-ui;color:var(--mute);margin:4px 0 8px;line-height:1.5">Układ ma '+kb(fl.chip_size)+', ale dwie równe partycje app („app0”/„app1”, po '+kb(appSize)+') to WARUNEK bezpiecznej aktualizacji po sieci — jedna trzyma wersję działającą, druga przyjmuje nową i pozwala wrócić, gdy coś pójdzie nie tak. Dlatego realny zapas to '+kb(appFree)+' w aktywnej partycji, a nie „wolne '+kb((fl.chip_size&&fl.sketch_size)?fl.chip_size-fl.sketch_size:0)+'” z całego układu.</div>';
-  // partycje
-  if(m.partitions){
-   var descP={nvs:'Ustawienia trwałe: Wi-Fi, MQTT, klucze BLE, token pieca, wybrany wygląd.',
-    otadata:'Wskaźnik, z której partycji OTA startować i czy poprzednia aktualizacja się udała.',
-    app0:'Partycja aplikacji OTA #0.',app1:'Partycja aplikacji OTA #1.',
-    spiffs:'Zarezerwowana — projekt NIE używa systemu plików (odzyskane miejsce oddano partycjom app).',
-    coredump:'Zrzut awaryjny po panice: zadanie, adres upadku, backtrace.'};
-   var ph='<div style="padding:8px 0"><b style=color:var(--panel)>Podział na partycje (OTA i dane)</b>'
-    +'<table style="width:100%;border-collapse:collapse;font:12px system-ui;color:var(--second);margin-top:4px">'
-    +'<tr style=color:var(--mute)><td>nazwa</td><td>adres</td><td style=text-align:right>rozmiar</td></tr>';
-   m.partitions.forEach(function(p){if(!p.present)return;
-    ph+='<tr><td>'+p.name+'</td><td>0x'+(p.address||0).toString(16)+'</td><td style=text-align:right>'+kb(p.size)+'</td></tr>';});
-   ph+='</table><div style="font:11px system-ui;color:var(--mute);margin-top:4px">Dwie równe partycje app0/app1 (po '
-    +kb((m.partitions.find(function(p){return p.name=="app0"})||{}).size)+') to serce OTA: nowa wersja wgrywa się na wolną, a stara zostaje jako powrót awaryjny.</div></div>';
-   h+=ph;
+// (v171) przecinek dziesietny zamiast kropki — reszta panelu (pl(), pl2()) pisze po
+// polsku od dawna, a ta funkcja jako jedyna zostawiala "1.94 MB".
+function kb(b){if(b==null)return '—';if(b>=1048576)return (b/1048576).toFixed(2).replace('.',',')+' MB';if(b>=1024)return (b/1024).toFixed(1).replace('.',',')+' kB';return b+' B';}
+// =========================== (v171) PAMIEC · PROCESOR ==============================
+//
+// ZERO WLASNYCH ZAPYTAN. Cala sekcja rysuje sie z tej samej migawki /api/diag, ktora
+// panel i tak juz pobiera: diagPills() co 60 s (zawsze, niezaleznie od tego, ktora
+// sekcja jest na wierzchu) oraz liveTick() co 5 s (gdy otwarta jest "Na zywo").
+// Wlasny fetch bylby DRUGIM zapytaniem po te same 13 kB diagnostyki.
+//
+// HISTORIA (klatki, temperatura, obciazenie rdzeni) ZYJE TUTAJ, w przegladarce, w
+// buforze kolowym — a NIE w RAM urzadzenia. Powod jest twardy: statycznego RAM-u
+// zostalo 1952 B do bariery 76000 B, a 60 probek trzech wielkosci to setki bajtow,
+// ktorych nie ma z czego wziac. Cena: historia znika przy odswiezeniu strony i to
+// jest wlasciwy kompromis — wykres trendu jest przyjemnoscia, a zapas RAM na
+// urzadzeniu jest warunkiem, zeby cokolwiek dzialalo.
+const PM_N=60;            // dlugosc bufora kolowego: ~1 h przy odpytywaniu co minute
+const PM_PUSH_MS=25000;   // nie gesciej niz co 25 s — liveTick chodzi co 5 s
+let pmHist=[],pmPrev=null,pmPushAt=0,pmLast=null,pmBusy=null,pmTsh=null;
+
+// Roznica dwoch odczytow licznika 32-bitowego. Licznik czasu procesora w jadrze liczy
+// MIKROSEKUNDY w 32 bitach, wiec przekreca sie co 2^32 us = ~71,6 minuty. Bez modulo
+// pierwsza probka po przekreceniu dalaby roznice UJEMNA i wykres runalby do zera.
+function d32(a,b){var v=(a-b)%4294967296;if(v<0)v+=4294967296;return v;}
+function pmVis(){var e=$('sec-pamiec');return !!e&&(e.classList.contains('active')||e.classList.contains('open'));}
+// Liczba po polsku (przecinek dziesietny). null/NaN -> kreska, nigdy "NaN".
+function pn(v,n){return (v==null||typeof v!=='number'||!isFinite(v))?'—':v.toFixed(n==null?1:n).replace('.',',');}
+function pmCard(l,v,u,cls){return '<div class="gcard '+(cls||'')+'"><div class=lbl>'+l+'</div><div class=val>'+v+'<small>'+(u||'')+'</small></div></div>';}
+function hx(a){return '0x'+(a||0).toString(16).toUpperCase();}
+
+function pmTick(d){
+ if(!d)return;
+ pmLast=d;
+ var c=d.cpu||{},up=d.uptime_s||0;
+ if(c.ok&&pmPrev){
+  // dtUs = dlugosc okna W MIKROSEKUNDACH (tak samo liczy licznik zadan, wiec tylko
+  // przez to wolno dzielic ich roznice); dtS = to samo w sekundach, WYLACZNIE do
+  // porownania z uptime_s. Pomylenie tych dwoch daje udzialy 60 razy za duze, czyli
+  // wszystko przyklejone do 100% — i tak wlasnie wygladalo przed ta poprawka.
+  var dtUs=d32(c.rt_us,pmPrev.rt),dtS=dtUs/1e6,du=up-pmPrev.up;
+  // KONTROLA OKNA. Roznica modulo jest poprawna tylko dopoki licznik przekrecil sie
+  // NAJWYZEJ RAZ, czyli dopoki okno jest krotsze niz 71,6 min. uptime_s idzie w
+  // sekundach i nie przekreca sie przez 49 dni, wiec sluzy tu za wzorzec: gdy dwie
+  // miary tego samego okna sie nie zgadzaja (karta zepchnieta w tlo, uspiony telefon),
+  // probke ODRZUCAMY zamiast rysowac liczbe, ktorej nie umiemy obronic.
+  if(du>=3&&dtUs>0&&Math.abs(dtS-du)<=Math.max(2,du*0.1)){
+   var id=c.idle_us||[],cl=function(v){return Math.max(0,Math.min(100,v));};
+   pmBusy=[cl((1-d32(id[0]||0,pmPrev.i0)/dtUs)*100),cl((1-d32(id[1]||0,pmPrev.i1)/dtUs)*100)];
+   pmTsh={};(c.tasks||[]).forEach(function(t){
+    if(pmPrev.t[t.n]!=null)pmTsh[t.n]=cl(d32(t.us,pmPrev.t[t.n])/dtUs*100);});
   }
-  var rt=m.rtc||{};
-  h+=memRow('RTC SLOW (przeżywa restart)',rt.slow_usable,rt.slow_used,(rt.slow_usable&&rt.slow_used)?rt.slow_usable-rt.slow_used:null,
-    'fizycznie '+kb(rt.slow_physical),
-    'Maleńka pamięć, którą NIE kasuje restart ani aktualizacja (ale kasuje zanik zasilania). Trzyma statystyki ruchu (PIR) i światła (LDR) zbierane tygodniami.');
-  var st=m.stack||{};
-  h+=memRow('Stosy zadań (sieć / web)',st.configured_size,null,null,
-    'zapas: sieć '+kb(st.net_spare)+', web '+kb(st.web_spare),
-    'Każde zadanie ma swój stos '+kb(st.configured_size)+'. „Zapas” to ile nigdy nie zostało użyte — margines bezpieczeństwa przed przepełnieniem.');
-  h+=memRow('ROM (bootrom układu)',m.rom_size,m.rom_size,0,null,
-    'Stała pamięć producenta 384 kB, tylko do odczytu — pierwszy kod po włączeniu zasilania. Nie da się jej zająć ani zwolnić.');
-  h+='<div style="font:11px system-ui;color:var(--mute);margin-top:8px">Zrzut awaryjny obecny: '+(m.coredump_present?'tak':'nie')+'.</div>';
-  o.innerHTML=h;
- }catch(e){o.innerHTML='<div class="hint err">Nie udało się odczytać pamięci.</div>';}
+ }
+ if(c.ok){
+  var pt={};(c.tasks||[]).forEach(function(t){pt[t.n]=t.us;});
+  pmPrev={rt:c.rt_us,i0:(c.idle_us||[])[0]||0,i1:(c.idle_us||[])[1]||0,up:up,t:pt};
+ }
+ var now=Date.now();
+ if(now-pmPushAt>=PM_PUSH_MS){
+  pmPushAt=now;
+  pmHist.push({f:(d.gfx||{}).fps_real,t:d.cpu_temp,b:pmBusy});
+  if(pmHist.length>PM_N)pmHist.shift();
+ }
+ // Rysujemy tylko, gdy sekcja jest widoczna — stan i historia zbieraja sie zawsze,
+ // wiec po otwarciu sekcja jest od razu pelna (onShown wola pmRender).
+ if(pmVis())pmRender();
+}
+
+function pmRender(){
+ var d=pmLast;
+ if(!$('pmMap'))return;
+ // Sekcja otwarta ZANIM doszla pierwsza migawka (diagPills leci na starcie panelu,
+ // ale to i tak trwa ulamek sekundy). Lepiej powiedziec wprost, ze czekamy, niz
+ // zostawic komplet pustych ramek wygladajacych na awarie.
+ if(!d){$('pmMap').innerHTML='<div class=hint>Czekam na pierwszy odczyt z urządzenia…</div>';return;}
+ pmDrawMap(d);pmDrawKinds(d);pmDrawNvs(d);pmDrawCpu(d);pmDrawGfx(d);pmDrawTemp(d);pmDrawStacks(d);
+ if($('pmDot'))$('pmDot').textContent='● '+new Date().toLocaleTimeString('pl-PL');
+ $('pmFoot').innerHTML='Wszystkie liczby pochodzą z jednej odpowiedzi <b>/api/diag</b> — tej samej, którą panel pobiera w tle co 60 s. <b>Ta sekcja nie wysyła własnych zapytań.</b> Historia na wykresach (do '+PM_N+' próbek, ok. godziny) jest trzymana w przeglądarce i znika przy odświeżeniu strony: w urządzeniu nie ma na nią wolnego RAM-u.';
+}
+
+// --- MAPA CALEGO FLASHA W PRAWDZIWYCH PROPORCJACH --------------------------------
+//
+// Rysowana z ZYWEJ tablicy partycji urzadzenia (memfull.partitions), a nie z liczb
+// wpisanych w panel — inaczej mapa klamalaby po kazdej zmianie partitions.csv, czyli
+// dokladnie wtedy, gdy jest najbardziej potrzebna.
+//
+// UKLAD WSPOLRZEDNYCH: viewBox ma stala szerokosc 360 jednostek, a CSS ogranicza
+// rysunek do 560 px. Dzieki temu na telefonie (~324 px tresci) skala wynosi ~0,9,
+// wiec podpis o rozmiarze 10 jednostek ma realne ~9 px i da sie go przeczytac, a na
+// komputerze nie urosnie ponad ~15 px.
+//
+// PROBLEM, DLA KTOREGO TA MAPA MA ODNOSNIKI: przy 4 MB skali nvs to 3,6% szerokosci,
+// a tablica partycji 0,1% — czyli ulamek piksela. Prostokaty rysujemy mimo to W
+// PRAWDZIWEJ SZEROKOSCI (nie zaokraglamy ich w gore, bo to jest cala tresc obrazka:
+// te obszary NAPRAWDE sa niewidoczne), a czytelnosc ratujemy wyprowadzonymi
+// podpisami: kropka dokladnie na obszarze, kolanko w bok i napis w osobnym wierszu.
+function pmDrawMap(d){
+ var m=d.memfull||{},fl=m.flash||{},ap=m.app||{},run=ap.running||'',W=360;
+ var tot=fl.chip_size||4194304;
+ // WPIS-WIDMO: w tablicy z urzadzenia siedzi "spiffs" z present=false, adresem 0x0
+ // i rozmiarem 0 (slot po schemacie, ktorego ten projekt nie uzywa). Bez odfiltrowania
+ // wskoczylby na poczatek posortowanej listy i rozjechal cala skale.
+ var segs=(m.partitions||[]).filter(function(p){return p.present&&p.size>0;})
+   .map(function(p){return {n:p.name,a:p.address,s:p.size};});
+ if(!segs.length){$('pmMap').innerHTML='<div class=gnote>Ta odpowiedź nie zawiera tablicy partycji.</div>';$('pmMapLeg').innerHTML='';return;}
+ // BOOTLOADERA I TABLICY PARTYCJI W TEJ TABLICY NIE MA i nie bedzie: z definicji leza
+ // PRZED pierwsza partycja, pod stalymi adresami. Doliczamy je z adresow, bo bez nich
+ // mapa zaczynalaby sie od dziury i nie sumowala do 4 MB.
+ segs.push({n:'bootloader',a:0,s:0x8000});
+ segs.push({n:'tablica partycji',a:0x8000,s:0x1000});
+ segs.sort(function(x,y){return x.a-y.a;});
+ // Dziury miedzy partycjami. W tym ukladzie nie ma ani jednej (flash konczy sie
+ // dokladnie na 0x400000), ale mapa ma mowic prawde takze po zmianie partitions.csv.
+ var full=[],cur=0,gapSum=0;
+ segs.forEach(function(g){
+  if(g.a>cur){full.push({n:'niewykorzystane',a:cur,s:g.a-cur,gap:1});gapSum+=g.a-cur;}
+  full.push(g);cur=Math.max(cur,g.a+g.s);});
+ if(cur<tot){full.push({n:'niewykorzystane',a:cur,s:tot-cur,gap:1});gapSum+=tot-cur;}
+ // KOLORY WYLACZNIE ZE ZMIENNYCH PALETY (dzialaja w obu motywach). Rola koloru:
+ // niebieski = program, zielony = dane trwale, zolty = tablica partycji (to ONA
+ // wymusila kabel USB), szary = obsluga (bootloader, wskaznik OTA, zrzut awaryjny).
+ var fill=function(g){
+  if(g.gap)return 'var(--track)';
+  if(g.n=='nvs')return 'var(--ok)';
+  if(g.n=='tablica partycji')return 'var(--warn)';
+  if(g.n=='app0'||g.n=='app1')return 'var(--accent)';
+  return 'var(--second)';};
+ var op=function(g){
+  if(g.gap)return 1;
+  if(g.n=='app0'||g.n=='app1')return g.n==run?0.42:0.18;
+  if(g.n=='nvs'||g.n=='tablica partycji')return 0.85;
+  return 0.45;};
+ var X=function(a){return a/tot*W;},Wd=function(s){return s/tot*W;};
+ var lbl=function(g){return g.n+' · '+pmKB(g.s)+' · '+hx(g.a);};
+ // Podzial na "miesci podpis w srodku" i "trzeba wyprowadzic". Prog 56 jednostek to
+ // szerokosc, w ktorej miesci sie napis w rodzaju "app1 · 1,88 MB" przy foncie 10.
+ var wide=[],nar=[];
+ full.forEach(function(g){(Wd(g.s)>=56?wide:nar).push(g);});
+ var LG=[],RG=[];
+ nar.forEach(function(g){((X(g.a)+Wd(g.s)/2)<W*0.5?LG:RG).push(g);});
+ var ROW=13,TOP=12,rows=Math.max(LG.length,RG.length,1);
+ var bY=TOP+(rows-1)*ROW+14,bH=34,bB=bY+bH,H=bB+34;
+ // Podpisy lewej grupy zaczynaja sie ZA najdalszym z opisywanych obszarow, zeby
+ // kolanko zawsze szlo w lewo i nie przecinalo wlasnego napisu.
+ var lAnc=30;
+ LG.forEach(function(g){lAnc=Math.max(lAnc,X(g.a)+Wd(g.s)/2+13);});
+ var s='<svg viewBox="0 0 '+W+' '+H+'" role=img aria-label="Mapa partycji pamięci flash w prawdziwych proporcjach">';
+ full.forEach(function(g){
+  var x=X(g.a),w=Wd(g.s);
+  s+='<rect x="'+x.toFixed(2)+'" y="'+bY+'" width="'+w.toFixed(2)+'" height="'+bH+'" style="fill:'+fill(g)+';opacity:'+op(g)+'"><title>'+esc(g.n)+' — '+pmKB(g.s)+', adres '+hx(g.a)+'</title></rect>';
+  // W DZIALAJACEJ partycji programu zaznaczamy jeszcze, ile z niej zajmuje firmware:
+  // to jedyne miejsce w panelu, gdzie zapas flasha widac jako powierzchnie, a nie
+  // jako liczbe. Ramka wokol calej partycji mowi "ta polowka pracuje teraz".
+  if(g.n==run&&ap.used>0){
+   s+='<rect x="'+x.toFixed(2)+'" y="'+bY+'" width="'+Wd(Math.min(ap.used,g.s)).toFixed(2)+'" height="'+bH+'" style="fill:var(--accent);opacity:.72"><title>firmware zajmuje '+kb(ap.used)+' z '+pmKB(g.s)+'</title></rect>';
+   s+='<rect x="'+x.toFixed(2)+'" y="'+bY+'" width="'+w.toFixed(2)+'" height="'+bH+'" style="fill:none;stroke:var(--accent);stroke-width:1.2"/>';
+  }});
+ wide.forEach(function(g){
+  var cx=X(g.a)+Wd(g.s)/2,live=(g.n==run);
+  var role=live?'DZIAŁA TERAZ':((g.n=='app0'||g.n=='app1')?'kopia zapasowa OTA':'');
+  // KONTRAST: podpis dzialajacej partycji lezy na PELNYM akcencie (to jest ta czesc,
+  // ktora zajmuje firmware), wiec musi byc bialy — ciemny tekst palety byl tam
+  // nieczytelny. Biel na akcencie to juz ustalona konwencja tego panelu: tak samo
+  // maluja sie ".tabs button.on" i ".navitem.on". Pozostale obszary maja wypelnienie
+  // przezroczyste i tam poprawny jest zwykly kolor tekstu z palety.
+  var c1=live?'#fff':'var(--panel)',c2=live?'#fff':'var(--second)';
+  s+='<text x="'+cx.toFixed(1)+'" y="'+(bY+15)+'" text-anchor=middle font-size=10 style="fill:'+c1+'">'+esc(g.n)+' · '+pmKB(g.s)+'</text>';
+  s+='<text x="'+cx.toFixed(1)+'" y="'+(bY+27)+'" text-anchor=middle font-size=8.5 style="fill:'+c2+';opacity:'+(live?'.92':'1')+'">'+hx(g.a)+(role?' · '+role:'')+'</text>';});
+ LG.forEach(function(g,i){
+  var ry=TOP+i*ROW,cx=X(g.a)+Wd(g.s)/2;
+  s+='<polyline points="'+(lAnc-5).toFixed(1)+','+(ry-3)+' '+cx.toFixed(2)+','+(ry-3)+' '+cx.toFixed(2)+','+bY+'" style="fill:none;stroke:var(--mute);opacity:.85" stroke-width=".7"/>';
+  s+='<circle cx="'+cx.toFixed(2)+'" cy="'+bY+'" r="1.4" style="fill:var(--mute)"/>';
+  s+='<text x="'+lAnc.toFixed(1)+'" y="'+ry+'" font-size=10 style="fill:var(--second)">'+esc(lbl(g))+'</text>';});
+ RG.forEach(function(g,i){
+  var ry=TOP+i*ROW,cx=X(g.a)+Wd(g.s)/2,t=lbl(g),x0=W-1-t.length*4.9;
+  // Gdy podpis stoi JUZ NAD swoim obszarem (tak jest z coredump na samym koncu
+  // flasha), kolanko byloby bez sensu — wystarczy pionowa kreska w dol.
+  var pts=(cx>=x0?cx.toFixed(2)+','+(ry+2):(x0-4).toFixed(1)+','+(ry-3)+' '+cx.toFixed(2)+','+(ry-3));
+  s+='<polyline points="'+pts+' '+cx.toFixed(2)+','+bY+'" style="fill:none;stroke:var(--mute);opacity:.85" stroke-width=".7"/>';
+  s+='<circle cx="'+cx.toFixed(2)+'" cy="'+bY+'" r="1.4" style="fill:var(--mute)"/>';
+  s+='<text x="'+(W-1)+'" y="'+ry+'" text-anchor=end font-size=10 style="fill:var(--second)">'+esc(t)+'</text>';});
+ var rp=full.filter(function(g){return g.n==run;})[0];
+ if(rp){
+  var rx=X(rp.a),rw=Wd(rp.s);
+  s+='<rect x="'+rx.toFixed(1)+'" y="'+(bB+3)+'" width="'+rw.toFixed(1)+'" height="3" style="fill:var(--accent)"/>';
+  s+='<text x="'+(rx+rw/2).toFixed(1)+'" y="'+(bB+16)+'" text-anchor=middle font-size=9 style="fill:var(--accent)">▲ tutaj działa program w tej chwili</text>';
+ }
+ s+='<line x1="0" y1="'+(bB+22)+'" x2="'+W+'" y2="'+(bB+22)+'" style="stroke:var(--line)"/>';
+ for(var mb=0;mb*1048576<=tot;mb++){
+  var ax=mb*1048576/tot*W;
+  s+='<line x1="'+ax.toFixed(1)+'" y1="'+(bB+22)+'" x2="'+ax.toFixed(1)+'" y2="'+(bB+25)+'" style="stroke:var(--line)"/>';
+  // Skrajne podpisy osi wciagamy do srodka: "4 MB" wysrodkowane dokladnie na 360
+  // wystawaloby poza viewBox i SVG obcieloby mu polowe napisu.
+  s+='<text x="'+Math.min(Math.max(ax,8),W-12).toFixed(1)+'" y="'+(bB+33)+'" text-anchor=middle font-size=8.5 style="fill:var(--mute)">'+(mb?mb+' MB':'0')+'</text>';
+ }
+ $('pmMap').innerHTML=s+'</svg>';
+ var nvsP=(full.filter(function(g){return g.n=='nvs';})[0]||{s:0}).s;
+ $('pmMapLeg').innerHTML='<div class=gnote><b style="color:var(--accent)">Niebieski</b> — dwie partycje programu; mocniejszy odcień to ta, która działa w tej chwili, a najmocniejszy — część zajęta przez firmware. <b style="color:var(--ok)">Zielony</b> — pamięć trwała NVS. <b style="color:var(--warn)">Żółty</b> — tablica partycji. Szary — bootloader, wskaźnik OTA i zrzut awaryjny.'
+  +'<br>Wyprowadzone podpisy nie są ozdobą: <b>nvs zajmuje '+pn(nvsP/tot*100,1)+'% szerokości, a tablica partycji '+pn(4096/tot*100,2)+'%</b> — w takim pasku to ułamek piksela, więc napis nie ma prawa się w nich zmieścić. Prostokąty są rysowane w prawdziwej szerokości; kropka na pasku pokazuje, gdzie dokładnie leży opisywany obszar.'
+  +'<br>Bootloadera i tablicy partycji <b>nie ma w tablicy partycji</b> urządzenia (leżą przed pierwszą partycją) — panel dolicza je ze stałych adresów '+hx(0)+' i '+hx(0x8000)+'. '
+  +(gapSum>0?('Niewykorzystane pozostaje <b>'+kb(gapSum)+'</b>.'):'Suma kończy się dokładnie na '+kb(tot)+': ten flash jest wykorzystany <b>co do bajtu</b>.')+'</div>';
+}
+
+// Rozmiary partycji podajemy w kilobajtach, a nie przez kb(): kazdy z nich jest
+// okragla wielokrotnoscia 1 kB (1920, 148, 64, 32, 8, 4), wiec "1920 kB" niesie
+// wiecej niz "1,88 MB" — to sa dokladnie te liczby, ktore stoja w partitions.csv.
+function pmKB(b){return b==null?'—':(b>=1024?Math.round(b/1024)+' kB':b+' B');}
+
+// --- MALY WYKRES LINIOWY Z BUFORA KOLOWEGO ---------------------------------------
+// INLINE SVG, zero bibliotek z zewnatrz — urzadzenie bywa offline i nic sie nie
+// doladuje. series: [{v:[...],c:'var(--...)'}]. Wartosc null to PRZERWA w danych
+// (probka odrzucona przez kontrole okna), rysowana jako dziura — a nie jako zero,
+// bo "nie wiem" i "zero procent" to dwa rozne komunikaty.
+function pmChart(series,lo,hi,unit){
+ var n=pmHist.length;
+ if(n<2)return '<div class=gnote>Zbieram próbki — wykres pojawi się po kilku odczytach (próbka mniej więcej raz na minutę).</div>';
+ var W=360,H=92,pL=26,pR=3,pT=7,pB=14,iw=W-pL-pR,ih=H-pT-pB;
+ if(hi<=lo)hi=lo+1;
+ var X=function(i){return pL+i/(n-1)*iw;},Y=function(v){return pT+ih-(v-lo)/(hi-lo)*ih;};
+ var s='<svg viewBox="0 0 '+W+' '+H+'" role=img aria-label="wykres z ostatnich odczytów">';
+ [0,0.5,1].forEach(function(f){
+  var v=lo+(hi-lo)*f,y=Y(v);
+  s+='<line x1="'+pL+'" y1="'+y.toFixed(1)+'" x2="'+(W-pR)+'" y2="'+y.toFixed(1)+'" style="stroke:var(--line)"/>'
+   +'<text x="'+(pL-4)+'" y="'+(y+3).toFixed(1)+'" text-anchor=end font-size=8.5 style="fill:var(--mute)">'+pn(v,(hi-lo)>=20?0:1)+'</text>';});
+ series.forEach(function(se){
+  var seg=[];
+  var flush=function(){if(seg.length>1)s+='<polyline points="'+seg.join(' ')+'" style="fill:none;stroke:'+se.c+'" stroke-width="1.6"/>';seg=[];};
+  se.v.forEach(function(v,i){
+   if(v==null||typeof v!=='number'||!isFinite(v)){flush();return;}
+   seg.push(X(i).toFixed(1)+','+Y(v).toFixed(1));});
+  flush();});
+ s+='<text x="'+pL+'" y="'+(H-2)+'" font-size=8.5 style="fill:var(--mute)">starsze</text>'
+  +'<text x="'+(W-pR)+'" y="'+(H-2)+'" text-anchor=end font-size=8.5 style="fill:var(--mute)">teraz · '+unit+'</text></svg>';
+ // Ta sama klasa co mapa, i z tego samego powodu: bez ogranicznika szerokosci wykres
+ // o proporcjach 360x92 rozciagnalby sie na komputerze do ~220 px wysokosci i stalby
+ // sie pustym plakatem z jedna kreska.
+ return '<div class="svgwrap pmap">'+s+'</div>';
+}
+
+// --- TRZY (a wlasciwie cztery) RODZAJE PAMIECI -----------------------------------
+function pmKind(name,life,cap,used,extra,desc){
+ var p=cap>0?Math.round(used/cap*100):0;
+ return '<div style="padding:9px 0;border-bottom:1px solid var(--line)">'
+  +'<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">'
+   +'<b style="font-family:var(--cond)">'+name+'</b>'
+   +'<span style="font-size:11px;color:var(--mute)">'+life+'</span></div>'
+  +'<div style="height:10px;background:var(--track);border-radius:5px;overflow:hidden;margin:5px 0">'
+   +'<div style="height:10px;width:'+p+'%;background:'+(p>85?'var(--err)':(p>65?'var(--warn)':'var(--ok)'))+'"></div></div>'
+  +'<div style="font-size:12px;color:var(--second)">'+kb(cap)+' razem · zajęte '+kb(used)+' ('+p+'%) · <b style="color:var(--ok)">wolne '+kb(cap-used)+'</b>'+(extra?' · '+extra:'')+'</div>'
+  +'<div class=gnote style="margin-top:3px">'+desc+'</div></div>';
+}
+function pmDrawKinds(d){
+ var m=d.memfull||{},s=m.sram||{},ps=m.psram||{},fl=m.flash||{},ap=m.app||{},rt=m.rtc||{};
+ var st=s.total||0,sf=s.free||0,blk=s.largest_block||0,low=blk>0&&blk<40960;
+ var h='';
+ h+=pmKind('SRAM — pamięć robocza','znika po zaniku prądu',st,st-sf,
+  'największy ciągły blok <b style="color:'+(low?'var(--err)':'var(--panel)')+'">'+kb(blk)+'</b> · najniżej od startu '+kb(s.min_ever),
+  'Wewnętrzna pamięć układu. Tu żyje sterta: bufory sieciowe, szyfrowanie TLS przy aktualizacji, stosy zadań. Pojemność jest <b>zmierzona</b> (tyle ma pula, z której naprawdę idzie przydział), a nie wpisana w panel na sztywno.');
+ h+=pmKind('PSRAM — pamięć zewnętrzna','znika po zaniku prądu',ps.total,(ps.total||0)-(ps.free||0),
+  'największy ciągły blok '+kb(ps.largest_block),
+  'Dodatkowe dwa megabajty w obudowie układu, wolniejsze od SRAM. Trzymają bufor ekranu i klatki mapy opadów — wszystko, co duże i graficzne, idzie tutaj, żeby nie zjadało SRAM.');
+ h+=pmKind('Flash — pamięć trwała (partycja programu „'+esc(ap.running||'?')+'”)','<b>zostaje</b> po zaniku prądu',ap.size,ap.used,
+  'cały układ ma '+kb(fl.chip_size),
+  'Firmware nie dostaje całych czterech megabajtów, tylko jedną partycję — druga, identyczna, musi stać wolna, żeby było gdzie wgrać nową wersję i dokąd wrócić, gdy się nie uda. Cały podział widać na mapie na górze tej sekcji.');
+ h+=pmKind('RTC SLOW — pamięć podtrzymywana','przeżywa restart, <b>znika po zaniku prądu</b>',rt.slow_usable,rt.slow_used,
+  'fizycznie '+kb(rt.slow_physical),
+  'Maleńka pamięć, której nie kasuje ani restart, ani aktualizacja. Trzyma zbiory ruchu (PIR) i światła (LDR) zbierane tygodniami — a że zanik prądu ją czyści, od v166 mają one kopię w pamięci trwałej.');
+ h+=low
+  ? '<div class="gbox warn"><b>⚠ Największy ciągły blok SRAM to '+kb(blk)+', a szyfrowanie TLS przy aktualizacji po sieci potrzebuje około 40 kB CIĄGŁYCH.</b> Poniżej tego progu urządzenie nie zestawi połączenia z serwerem aktualizacji i nowej wersji nie pobierze — mimo że „wolnego” jest '+kb(sf)+'. <b>Wolne to suma kawałków, a bufor musi zmieścić się w jednym.</b> Po dobie–dwóch pracy blok schodzi realnie do ~31 kB. Lekarstwo jest proste: zrestartuj urządzenie bezpośrednio przed aktualizacją.</div>'
+  : '<div class="gbox okb">Największy ciągły blok SRAM: <b>'+kb(blk)+'</b> — powyżej ~40 kB, których potrzebuje szyfrowanie TLS przy aktualizacji po sieci. <b>To ta liczba, a nie „wolne”, decyduje, czy urządzenie da się zaktualizować</b>: wolne to suma kawałków, a bufor TLS musi zmieścić się w jednym z nich. Po dobie–dwóch pracy blok potrafi zejść do ~31 kB, więc warto tu zajrzeć przed aktualizacją.</div>';
+ $('pmKinds').innerHTML=h;
+}
+
+// --- PAMIEC TRWALA (NVS) W SZCZEGOLACH -------------------------------------------
+function pmDrawNvs(d){
+ var n=d.nvs||{};
+ if(!n.stats_ok){$('pmNvs').innerHTML='<div class="hint err">Urządzenie nie podało statystyk pamięci trwałej.</div>';return;}
+ var tot=n.total_entries||0,us=n.used_entries||0,fr=n.free_entries||0,av=n.available_entries||0;
+ var h='<div class=gcards>'
+  +pmCard('Wpisów użytych',us)
+  +pmCard('Wolnych',fr)
+  +pmCard('DOSTĘPNYCH',av)
+  +pmCard('Zajętość',pn(n.used_pct,1),' %',n.used_pct>80?'bad':(n.used_pct>50?'hot':''))
+  +'</div>';
+ h+='<div class=gnote>Partycja ma '+kb(n.part_bytes)+', a NVS liczy nie bajty, tylko <b>wpisy po '+(n.entry_bytes||32)+' B</b> — razem '+tot+'. Jeden zbiór danych kosztuje 2 wpisy narzutu plus 1 na każde rozpoczęte '+(n.entry_bytes||32)+' B.</div>';
+ h+='<div class=gbox><b>„Wolne” i „dostępne” to nie to samo</b> — różnica wynosi tutaj <b>'+(fr-av)+' wpisów</b>. NVS trzyma jedną stronę stale pustą jako miejsce, do którego przepisze żywe dane przy sprzątaniu (kompaktowaniu), i tej rezerwy nie da się użyć na dane. <b>O tym, czy zapis przejdzie, decydują wyłącznie „dostępne”.</b> Dokładnie na tym urządzenie poległo 17 sierpnia: wolnych było pozornie sporo, dostępnych 111, a jeden pełny cykl zapisu potrzebował 123 — i zapisy po cichu wracały z błędem.</div>';
+ var ns=n.ns||{},known=0,rows=[];
+ var opis={pvday:'wykresy i historie',pogoda:'ustawienia, hasła, klucze',otaguard:'nadzór aktualizacji'};
+ Object.keys(ns).forEach(function(k){if(ns[k]!=null){known+=ns[k];rows.push([k+(opis[k]?' — '+opis[k]:''),ns[k]]);}});
+ rows.push(['przestrzenie rdzenia (Wi-Fi, BLE)',Math.max(0,us-known)]);
+ var mx=Math.max.apply(null,rows.map(function(r){return r[1];}).concat([1]));
+ h+='<div style="margin-top:10px">'+rows.map(function(r){
+  return '<div class=brow><span class=k style="width:auto;flex:0 0 46%">'+esc(r[0])+'</span><span class=track><span class=fill style="width:'+(r[1]/mx*100).toFixed(0)+'%;background:var(--accent)"></span></span><span class=v>'+r[1]+'</span></div>';}).join('')+'</div>';
+ h+='<div class=gnote>Zajętość mierzona <b>osobno dla każdej przestrzeni nazw</b> — bez tego rozbicia nie da się powiedzieć, co zjada partycję: wykresy czy konfiguracja.</div>';
+ var w=n.writes||[];
+ h+='<table class=ptab><tr><th>klucz</th><th>rozmiar</th><th>wpisy</th><th>udane</th><th>nieudane</th><th>ostatni udany</th></tr>'
+  +w.map(function(x){
+   var bad=!!x.failed||(x.fails||0)>0,c=bad?' style="color:var(--err);font-weight:600"':'';
+   return '<tr><td'+c+'>'+esc(x.key)+'</td><td>'+(x.bytes?x.bytes+' B':'—')+'</td><td>'+(x.entries||'—')+'</td><td>'+(x.oks||0)+'</td><td'+c+'>'+(x.fails||0)+'</td><td>'+agoTxt(x.ok_ago_s)+'</td></tr>';}).join('')
+  +'</table>';
+ var cyc=n.blob_entries_sum||0;
+ h+='<div class=gnote>Wiersze z rozmiarem „—” to całe przestrzenie nazw, a nie pojedyncze klucze. Jeden pełny cykl zapisu wszystkich zbiorów kosztuje <b>'+cyc+' wpisów</b> przy <b>'+av+' dostępnych</b>'+(av>0?' — czyli '+pn(100*cyc/av,1)+'% puli':'')+'. Do v169 było to 123 wpisy przy 111 dostępnych i właśnie dlatego dane ginęły. <b>Kolumna „nieudane” większa od zera</b> znaczy, że ten zbiór nie przeżyje najbliższego restartu — dlatego świeci na czerwono.</div>';
+ $('pmNvs').innerHTML=h;
+}
+
+// --- OBCIAZENIE RDZENI -----------------------------------------------------------
+function pmDrawCpu(d){
+ var c=d.cpu||{};
+ if(!c.ok){
+  $('pmCpu').innerHTML='<div class=gnote>To firmware nie podaje liczników czasu procesora.</div>';
+  $('pmCpuChart').innerHTML='';$('pmTasks').innerHTML='';return;}
+ var h;
+ if(!pmBusy){
+  h='<div class=gnote>Liczę pierwszą różnicę liczników — wynik pojawi się przy następnym odczycie (do minuty). Zajętość jest zmianą w czasie, więc z jednej migawki nie da się jej policzyć i nie udajemy, że się da.</div>';
+ }else{
+  var cls=function(v){return v>85?'bad':(v>65?'hot':'');};
+  h='<div class=gcards>'
+   +pmCard('Rdzeń 0 · sieć',pn(pmBusy[0],0),' %',cls(pmBusy[0]))
+   +pmCard('Rdzeń 1 · obraz',pn(pmBusy[1],0),' %',cls(pmBusy[1]))
+   +pmCard('Zadań w systemie',c.tasks_total||'—')
+   +'</div>';
+ }
+ $('pmCpu').innerHTML=h;
+ $('pmCpuChart').innerHTML=pmChart([
+   {v:pmHist.map(function(x){return x.b?x.b[0]:null;}),c:'var(--accent)'},
+   {v:pmHist.map(function(x){return x.b?x.b[1]:null;}),c:'var(--warn)'}],0,100,'%')
+  +'<div class=gnote><b style="color:var(--accent)">Rdzeń 0 — sieć</b> · <b style="color:var(--warn)">rdzeń 1 — obraz</b>. Skala 0–100% osobno dla każdego rdzenia. Przerwa w linii znaczy, że próbkę odrzuciliśmy: panel liczy różnicę liczników i nie rysuje okna, którego nie umie zmierzyć (na przykład gdy karta przeglądarki była zepchnięta w tło).</div>';
+ var ts=c.tasks||[];
+ $('pmTasks').innerHTML='<table class=ptab><tr><th>zadanie</th><th>rdzeń</th><th>udział rdzenia</th><th>zapas stosu</th></tr>'
+  +ts.map(function(t){
+   var sh=(pmTsh&&pmTsh[t.n]!=null)?pn(pmTsh[t.n],1)+' %':'—';
+   return '<tr><td>'+esc(t.n)+'</td><td>'+(t.c<0?'dowolny':t.c)+'</td><td>'+sh+'</td><td>'+kb(t.stk)+'</td></tr>';}).join('')
+  +'</table><div class=gnote>Osiem zadań o największym zużytym czasie procesora; reszta ma czas bliski zeru. <b>IDLE0</b> i <b>IDLE1</b> to zadania bezczynności — czas, w którym rdzeń nic nie robi, więc ich wysoki udział to <b>dobra</b> wiadomość i to właśnie z nich liczymy zajętość rdzeni wyżej. Udział 100% znaczy „zadanie zajęło cały jeden rdzeń”. „Zapas stosu” to najmniejsza wolna przestrzeń, jaka kiedykolwiek została temu zadaniu.</div>';
+}
+
+// --- WYSWIETLACZ: KLATKI --------------------------------------------------------
+function pmDrawGfx(d){
+ var g=d.gfx||{},fr=g.frame_ms||0,pe=g.period_ms||0,shr=pe>0?fr/pe*100:0;
+ var h='<div class=gcards>'
+  +pmCard('Klatek na sekundę',pn(g.fps_real,1),' kl./s')
+  +pmCard('Sufit',pn(g.max_fps,1),' kl./s')
+  +pmCard('Jedna klatka',pn(fr,0),' ms')
+  +'</div>';
+ h+='<div class=gbox><b>Dwie liczby, bo mówią o czym innym.</b> „Klatek na sekundę” to <b>zmierzony odstęp</b> między kolejnymi klatkami, ze wszystkimi pauzami — tyle obraz naprawdę się odświeża. „Sufit” to ile klatek dałoby się wyprodukować, gdyby rysować bez chwili przerwy: tysiąc podzielone przez czas jednej klatki. Odstęp między nimi ('+pn(g.fps_real,1)+' wobec '+pn(g.max_fps,1)+') to cały zapas — gdyby rysowanie klatki urosło o '+pn(Math.max(0,pe-fr),0)+' ms, sufit spadłby poniżej tempa, w które celuje pętla rysująca, i obraz zacząłby zwalniać.</div>';
+ h+='<div class=gbox>Z okna klatki (<b>'+pn(pe,0)+' ms</b>) rysowanie obrazu i wysyłka po SPI zajmują <b>'+pn(fr,0)+' ms, czyli '+pn(shr,0)+'%</b>. <b>To NIE jest zajętość procesora</b> i celowo nie jest tak nazwane. Ta liczba mówi wyłącznie, jaką część okresu klatki trwa przygotowanie obrazu. Nie mówi, ile z tych milisekund to czekanie na transmisję SPI — w tym czasie rdzeń może robić co innego — ani ile procesora zjada rysowanie na tle wszystkiego pozostałego. Prawdziwa zajętość rdzeni stoi w sekcji wyżej i bierze się z liczników jądra, a nie stąd.</div>';
+ h+=pmChart([{v:pmHist.map(function(x){return x.f;}),c:'var(--accent)'}],0,Math.max(25,Math.ceil((g.max_fps||20)+3)),'kl./s');
+ $('pmGfx').innerHTML=h;
+}
+
+// --- TEMPERATURA ----------------------------------------------------------------
+function pmDrawTemp(d){
+ var t=d.cpu_temp;
+ var vals=pmHist.map(function(x){return x.t;}).filter(function(v){return typeof v==='number'&&isFinite(v);});
+ var lo=vals.length?Math.floor(Math.min.apply(null,vals)-2):20;
+ var hi=vals.length?Math.ceil(Math.max.apply(null,vals)+2):60;
+ $('pmTemp').innerHTML='<div class=gcards>'+pmCard('Układ',pn(t,1),' °C',t>75?'bad':(t>65?'hot':''))+'</div>'
+  +'<div class=gnote>Czujnik siedzi <b>wewnątrz układu</b> i mierzy jego własną temperaturę, a nie temperaturę łazienki — jest zawsze wyraźnie wyższa od otoczenia, bo układ sam się grzeje. Do pomiaru pomieszczeń służą czujniki Bluetooth (sekcja „Klimat pokoi”). Ta wartość przydaje się jako <b>trend</b>: nagły wzrost bez zmiany pogody znaczy, że coś zaczęło pracować więcej.</div>';
+ $('pmTempChart').innerHTML=pmChart([{v:pmHist.map(function(x){return x.t;}),c:'var(--err)'}],lo,hi,'°C');
+}
+
+// --- STOSY ZADAN ----------------------------------------------------------------
+function pmDrawStacks(d){
+ var st=(d.memfull||{}).stack||{},cap=st.configured_size||16384;
+ var rows=[['zadanie sieciowe (net)',st.net_spare],['zadanie panelu WWW (web)',st.web_spare]];
+ var h=rows.map(function(r){
+  var sp=r[1]||0,used=Math.max(0,cap-sp),p=cap>0?Math.round(used/cap*100):0;
+  return '<div class=brow><span class=k style="width:auto;flex:0 0 46%">'+r[0]+'</span><span class=track><span class=fill style="width:'+p+'%;background:'+(p>90?'var(--err)':(p>80?'var(--warn)':'var(--ok)'))+'"></span></span><span class=v>'+kb(sp)+'</span></div>';}).join('');
+ h+='<div class=gnote>Pasek pokazuje, ile stosu zostało kiedykolwiek zużyte; liczba z prawej to zapas, którego <b>nigdy</b> nie tknięto. Oba zadania dostają po '+kb(cap)+'. Przepełnienie stosu to natychmiastowa awaria całego urządzenia, więc ten zapas jest marginesem bezpieczeństwa, a nie zmarnowaną pamięcią.</div>';
+ h+='<div class=gbox>Do v170 panel podawał tutaj liczby <b>czterokrotnie za duże</b>: kod mnożył wynik przez rozmiar słowa, a ESP-IDF podaje tę wielkość <b>w bajtach</b>, inaczej niż zwykły FreeRTOS. Jest to napisane wprost w nagłówku tego rdzenia i potwierdzone deasemblacją jego biblioteki. Od v171 liczby są prawdziwe — to <b>nie jest nowe zużycie, tylko poprawiony pomiar</b>.</div>';
+ $('pmStacks').innerHTML=h;
 }
 // kolejna klatka dopiero, gdy poprzednia dojdzie — nie zalewamy urządzenia. Checkbox
 // "Auto" (sekcja Ekran) wlacza/wylacza odswiezanie; pauza gdy karta niewidoczna LUB gdy
@@ -2612,6 +3013,78 @@ void apiDiag() {
   gfx["radar_min"] = d.radarFrameMin;
   gfx["spi_hz"] = 80000000;   // z User_Setup.h
 
+  // --- (v171) OBCIAZENIE RDZENI: liczniki czasu procesora prosto z jadra ---------
+  //
+  // To NIE jest szacunek z frame_ms/period_ms (tamto mowi tylko, ile z okresu klatki
+  // idzie na rysowanie — patrz sekcja "gfx" wyzej i opis w panelu). To sa liczniki,
+  // ktore FreeRTOS sam dolicza przy kazdym przelaczeniu zadania.
+  //
+  // WYSYLAMY LICZNIKI SUROWE, A ROZNICE LICZY PANEL. Powody dwa i oba wazne:
+  //  1) licznik jest 32-bitowy i liczy mikrosekundy, wiec PRZEKRECA SIE co ~71,6 min
+  //     (2^32 us); roznica modulo 2^32 miedzy dwoma kolejnymi odpytaniami /api/diag
+  //     jest poprawna i panel ma czym ja skontrolowac (uptime_s),
+  //  2) liczenie roznicy tutaj wymagaloby trzymania poprzedniej probki w statycznym
+  //     RAM-ie, ktorego zostalo 1952 B, i psuloby sie przy dwoch klientach panelu
+  //     naraz (kazdy zjadalby okno drugiemu).
+  //
+  // ZAJETOSC RDZENIA LICZYMY Z ZADANIA BEZCZYNNOSCI: zajete = 1 - dt(IDLEx)/dt(zegar).
+  // Suma czasow WSZYSTKICH zadan na ukladzie dwurdzeniowym daje ~2x czas zegara (dwa
+  // rdzenie licza sie osobno, a zegar jest jeden), wiec dzielenie sumy przez zegar
+  // dawaloby 200% przy pelnym obciazeniu. Uchwyty zadan bezczynnosci bierzemy z
+  // xTaskGetIdleTaskHandleForCore() i porownujemy PO UCHWYCIE, nie po nazwie —
+  // "IDLE0"/"IDLE1" to szczegol implementacji rdzenia, ktory moze sie zmienic.
+  JsonObject cpu = j["cpu"].to<JsonObject>();
+  {
+    const UBaseType_t n = uxTaskGetNumberOfTasks();
+    // Tablica na STERCIE, nie na stosie: przy ~30 zadaniach to ~1,7 kB, a webTask ma
+    // 16 kB stosu z zapasem rzedu 9 kB — nie warto zjadac z niego jednej piatej.
+    TaskStatus_t* ts = static_cast<TaskStatus_t*>(malloc(n * sizeof(TaskStatus_t)));
+    uint32_t total = 0;
+    const UBaseType_t got = ts ? uxTaskGetSystemState(ts, n, &total) : 0;
+    cpu["ok"] = got > 0;
+    cpu["tasks_total"] = static_cast<uint32_t>(n);
+    cpu["rt_us"] = total;   // esp_timer w us, uint32 — patrz uwaga o przekrecaniu wyzej
+    JsonArray idle = cpu["idle_us"].to<JsonArray>();
+    JsonArray tarr = cpu["tasks"].to<JsonArray>();
+    if (got > 0) {
+      for (BaseType_t core = 0; core < 2; ++core) {
+        const TaskHandle_t ih = xTaskGetIdleTaskHandleForCore(core);
+        uint32_t v = 0;
+        for (UBaseType_t i = 0; i < got; ++i) {
+          if (ts[i].xHandle == ih) v = static_cast<uint32_t>(ts[i].ulRunTimeCounter);
+        }
+        idle.add(v);
+      }
+      // Tylko NAJWIEKSI konsumenci. Pelna lista (~30 zadan) podwoilaby te sekcje
+      // w odpowiedzi, a ogon to zadania systemowe z czasem bliskim zeru — panel
+      // i tak pokazuje calosc przez zajetosc rdzeni, wiec ogon niczego nie wnosi.
+      // Wybor przez proste sortowanie wyborem: kTop przebiegow po liscie, bez
+      // kopiowania i bez drugiej tablicy na stercie.
+      constexpr UBaseType_t kTop = 8;
+      const UBaseType_t lim = got < 64 ? got : 64;   // `taken` ma 64 pozycje
+      bool taken[64] = {false};
+      for (UBaseType_t k = 0; k < kTop && k < lim; ++k) {
+        UBaseType_t best = lim;
+        for (UBaseType_t i = 0; i < lim; ++i) {
+          if (!taken[i] && (best == lim || ts[i].ulRunTimeCounter > ts[best].ulRunTimeCounter)) {
+            best = i;
+          }
+        }
+        if (best == lim) break;
+        taken[best] = true;
+        JsonObject t = tarr.add<JsonObject>();
+        t["n"] = ts[best].pcTaskName;
+        // xCoreID bywa tskNO_AFFINITY (0x7FFFFFFF) dla zadan bez przypisania —
+        // normalizujemy do -1, zeby panel nie musial znac stalej z FreeRTOS-a.
+        const BaseType_t c = ts[best].xCoreID;
+        t["c"] = (c == 0 || c == 1) ? static_cast<int>(c) : -1;
+        t["us"] = static_cast<uint32_t>(ts[best].ulRunTimeCounter);
+        t["stk"] = static_cast<uint32_t>(ts[best].usStackHighWaterMark);
+      }
+    }
+    free(ts);
+  }
+
   // --- v111: "memfull" — WSZYSTKIE rodzaje pamieci, dla ekranu PAMIEC. Zeby dalo
   // sie zweryfikowac ten ekran zdalnie (bez patrzenia na urzadzenie), tu leza TE
   // SAME wywolania ESP-IDF, ktore rysuje ekran PAMIEC (v3Diag2) — patrz komentarze
@@ -2621,6 +3094,12 @@ void apiDiag() {
   JsonObject mf = j["memfull"].to<JsonObject>();
 
   JsonObject mfSram = mf["sram"].to<JsonObject>();
+  // (v171) POJEMNOSC STERTY, a nie "320 kB" wpisane w panel na sztywno. Stara sekcja
+  // pamieci liczyla zajetosc jako 327680 - free, czyli z liczby, ktorej nikt nie
+  // zmierzyl — a fizyczne 512 kB SRAM tego ukladu to znowu co innego niz to, co
+  // zostaje na stercie po zmiennych statycznych i buforach rdzenia. To jest liczba
+  // zmierzona: ile bajtow ma pula, z ktorej naprawde idzie malloc().
+  mfSram["total"] = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
   mfSram["free"] = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
   mfSram["largest_block"] = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);  // fragmentacja
   mfSram["min_ever"] = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);        // dolek od startu
