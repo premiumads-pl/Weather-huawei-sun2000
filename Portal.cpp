@@ -2337,7 +2337,7 @@ void apiDiag() {
       mt["today_import_kwh"] = nullptr;
     }
 
-    // Stan bazy z północy (NVS, klucz "mtr1"). `full` to jedyne pole, które
+    // Stan bazy z północy (NVS, klucz "mtr2"). `full` to jedyne pole, które
     // decyduje o `source`: baza złapana w środku dnia opisuje kawałek doby,
     // nie dobę.
     JsonObject bs = mt["base"].to<JsonObject>();
@@ -2361,14 +2361,43 @@ void apiDiag() {
       snprintf(hm, sizeof(hm), "%02d:%02d", bh < 0 ? 0 : (bh > 23 ? 23 : bh),
                bm < 0 ? 0 : (bm > 59 ? 59 : bm));
       bs["at"] = hm;
+      // (v169) ODLEGŁOŚĆ OD PÓŁNOCY ZE ZNAKIEM — to ona, a nie `at`, rozstrzyga
+      // o `full`. Ujemna znaczy „bazę wzięto z odczytu SPRZED północy", czyli
+      // z poprzedniej doby: wtedy `at` pokazuje 23:5x i bez tej liczby wyglądałoby
+      // to jak baza złapana wieczorem TEGO dnia, czyli jak awaria.
+      bs["off_min"] = mb.offsetMin;
+      // Zdarzenie, które tę bazę ustawiło (PvBaseEvent). Nazwy, nie numery — panel
+      // i zgłoszenia błędów czyta człowiek, a numer trzeba by tłumaczyć z kodu.
+      const char* evName = "?";
+      switch (static_cast<PvBaseEvent>(mb.event)) {
+        case PvBaseEvent::NONE: evName = "brak"; break;
+        case PvBaseEvent::SET_FIRST: evName = "pierwsza"; break;
+        case PvBaseEvent::ROLLED: evName = "polnoc"; break;
+        case PvBaseEvent::WENT_BACK: evName = "licznik cofniety"; break;
+      }
+      bs["event"] = evName;
       bs["import_kwh"] = mb.importKwh;
       bs["export_kwh"] = mb.exportKwh;
+      // Ostatni udany odczyt liczników — kandydat na bazę przy najbliższej północy.
+      // Wiek w sekundach, a nie epoch: epoch trzeba przeliczać, a wiek widać od razu.
+      if (mb.lastEpoch >= 1700000000UL) {
+        const time_t nowT = time(nullptr);
+        bs["last_read_age_s"] =
+            (nowT > static_cast<time_t>(mb.lastEpoch))
+                ? static_cast<long>(nowT - static_cast<time_t>(mb.lastEpoch))
+                : 0L;
+      } else {
+        bs["last_read_age_s"] = nullptr;
+      }
     } else {
       bs["year"] = nullptr;
       bs["yday"] = nullptr;
       bs["at"] = nullptr;
+      bs["off_min"] = nullptr;
+      bs["event"] = nullptr;
       bs["import_kwh"] = nullptr;
       bs["export_kwh"] = nullptr;
+      bs["last_read_age_s"] = nullptr;
     }
     bs["full_threshold_min"] = PV_BASE_FULL_MIN;
 

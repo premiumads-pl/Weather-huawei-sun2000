@@ -142,6 +142,33 @@ constexpr uint32_t PV_REFRESH_MS = 30UL * 1000UL;
 // Wracamy do 30 s natychmiast, gdy tylko falownik znów odpowie.
 constexpr uint32_t PV_REFRESH_NIGHT_MS = 5UL * 60UL * 1000UL;
 constexpr uint32_t PV_STORE_MS = 5UL * 60UL * 1000UL;  // zapis profilu do NVS
+// (v169) Utrwalenie bazy licznikow miernika ("mtr2", 32 B, 3 wpisy NVS). Zapis leci
+// TAKZE po zdarzeniu zmiany bazy; ten zegar dokłada regularne odswiezanie pola
+// `lastEpoch` (ostatni udany odczyt), bez ktorego restart w okolicy polnocy kasuje
+// jedyny odczyt SPRZED polnocy — a to on decyduje, czy ekran PRAD pokaze "dzis"
+// z licznikow, czy zejdzie do calki. 15 minut to najgorszy przypadek 15 minut
+// przeterminowania przy progu PV_BASE_FULL_MIN = 30 min, czyli polowa zapasu.
+constexpr uint32_t PV_METER_STORE_MS = 15UL * 60UL * 1000UL;
+
+// ---------- (v169) ROZSUNIECIE ZAPISOW DO NVS W CZASIE ----------------------
+// KAZDY zapis blobu potrzebuje wolnych WPISOW NVS (2 narzutu + 1 na kazde rozpoczete
+// 32 B) i NVS zapisuje NOWA kopie, ZANIM zwolni stara. Dopoki wszystkie zapisy
+// wypadaly w tym samym takcie, zapotrzebowanie sumowalo sie w jednej chwili: co
+// 30 minut zbiegaly sie profil PV, palnik, pokoje, powietrze i statystyki, czyli
+// 110 z 111 dostepnych wpisow (pomiar z urzadzenia, v168). Wystarczylo, ze
+// kompaktowanie strony nie zdazylo — i najwiekszy blob nie wchodzil.
+//
+// Te przesuniecia startowe rozkladaja zapisy tak, zeby ZADNE dwa nie trafialy w ten
+// sam moment. Wszystkie okresy sa wielokrotnoscia 5 minut, wiec raz nadana faza jest
+// zachowana na zawsze — nie ma dryfu, ktory po dobie znowu je zsumuje.
+//   profil PV + palnik : 0 s   (co  5 min)  -> 12 + 7 = 19 wpisow
+//   pokoje + powietrze : 90 s  (co 10 min)  -> 30 + 4 = 34 wpisy
+//   statystyki PIR/LDR : 210 s (co 15 min)  -> 16 wpisow
+//   baza licznikow     : 330 s (co 15 min)  -> 3 wpisy
+// Najwiekszy szczyt w jednej chwili to 34 wpisy zamiast 110.
+constexpr uint32_t NVS_PHASE_ROOMS_MS = 90UL * 1000UL;
+constexpr uint32_t NVS_PHASE_SENS_MS = 210UL * 1000UL;
+constexpr uint32_t NVS_PHASE_METER_MS = 330UL * 1000UL;
 // (v166) Kadencja zapisu trwalej kopii statystyk PIR/LDR (klucz NVS "sen1", 424 B).
 // LICZBY, a nie przeczucie:
 //  * CO TRACIMY. To histogramy okna TYGODNIOWEGO. Przy 15 minutach zanik zasilania
@@ -149,9 +176,11 @@ constexpr uint32_t PV_STORE_MS = 5UL * 60UL * 1000UL;  // zapis profilu do NVS
 //    Zmierzone dotad okno to 14481 s — nawet w nim 900 s to 6%, a przy docelowym
 //    tygodniu robi sie z tego szum. Kolejnego prysznica i tak nie zgubimy.
 //  * CO KOSZTUJE. 424 B co 15 min = 96 zapisow na dobe = ~41 kB/dobe. Obok tego, co
-//    ten sam netTask juz pisze: prof1 (584 B) i burn1 (296 B) co 5 min = 288 zapisow
-//    i ~253 kB/dobe oraz rh2 (1736 B) co 10 min = ~250 kB/dobe. Dokladamy wiec ~8%
-//    do istniejacego ruchu do flasha, czyli nie zmieniamy rzedu wielkosci zuzycia.
+//    ten sam netTask juz pisze: (v169) prof2 (292 B) i burn2 (148 B) co 5 min = 288
+//    zapisow i ~127 kB/dobe oraz rh3 (872 B) co 10 min = ~126 kB/dobe. Dokladamy
+//    wiec ~16% do istniejacego ruchu do flasha (dieta blobow z v169 zmniejszyla ten
+//    ruch o polowe, wiec ten sam zapis wazy teraz procentowo wiecej), czyli nadal
+//    nie zmieniamy rzedu wielkosci zuzycia.
 //  * DLACZEGO NIE CZESCIEJ. Przy 5 minutach (kadencja profilu PV) byloby 288 zapisow
 //    na dobe i ~122 kB, czyli trzykrotnie wiecej zapisow za uratowanie 10 minut
 //    histogramu — a partycja NVS ma tu tylko 0x5000 B (20 kB) i jest wear-levelowana

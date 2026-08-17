@@ -69,7 +69,7 @@ PvModel gPv{};
 PvHistory gHist{};
 // (v165) Baza licznikow miernika z ostatniej polnocy. Trzymana pod gLock razem
 // z gPv/gHist, bo pisze ja netTask, a czyta webTask (/api/diag). Trwalosc: NVS
-// (klucz "mtr1"), NIE RTC — patrz komentarz przy pvMeterBaseLoad w Settings.cpp.
+// (klucz "mtr2"), NIE RTC — patrz komentarz przy pvMeterBaseLoad w Settings.cpp.
 PvMeterBase gPvMeterBase{};
 RoomHistory gRooms{};
 AirHistory gAirHistory{};   // 7-dniowa historia jakosci powietrza (srednie dobowe) — patrz AirHistory.h
@@ -935,11 +935,17 @@ static void netTask(void*) {
   // a nie od razu przy starcie: gdyby szedl natychmiast, kazdy restart w petli
   // (np. nadzorca netTask) przepisywalby do flasha ten sam stan co kilkadziesiat
   // sekund, czyli robilby dokladnie to, przed czym broni kadencja 15 minut.
-  uint32_t nextSensStoreAt = cfg::SENS_STORE_MS;
+  //
+  // (v169) FAZA, a nie samo "po pelnym okresie": zapisy do NVS sa rozsuniete w czasie,
+  // zeby ich zapotrzebowanie na wpisy NIE SUMOWALO SIE w jednej chwili. Uzasadnienie
+  // liczbowe stoi przy cfg::NVS_PHASE_* w Config.h.
+  uint32_t nextSensStoreAt = cfg::SENS_STORE_MS + cfg::NVS_PHASE_SENS_MS;
+  // (v169) Utrwalenie bazy licznikow miernika — patrz cfg::PV_METER_STORE_MS.
+  uint32_t nextMeterStoreAt = cfg::PV_METER_STORE_MS + cfg::NVS_PHASE_METER_MS;
   uint32_t nextRadarAt = 0;
   uint32_t nextBleAt = 20000;  // po WiFi i pierwszej pogodzie
   uint32_t nextGwAt = 12000;
-  uint32_t nextRoomSaveAt = 0;
+  uint32_t nextRoomSaveAt = cfg::NVS_PHASE_ROOMS_MS;
   uint32_t nextRoamAt = 120000;   // pierwszy przeglad po 2 min od startu
   uint32_t nextRadarMapAt = 25000;
   uint32_t nextViAt = 35000;
@@ -1317,12 +1323,21 @@ static void netTask(void*) {
       if (baseEv != PvBaseEvent::NONE) {
         gNetStage.stageNow = NET_STAGE_NVS;
         pvMeterBaseSave(baseCopy);
+        // (v169) Zapis bazy odswieza takze `lastEpoch`, wiec zegar utrwalania
+        // ostatniego odczytu startuje od nowa — bez tego dwa zapisy tej samej
+        // struktury potrafilyby wypasc w odstepie sekund.
+        nextMeterStoreAt = millis() + cfg::PV_METER_STORE_MS;
         switch (baseEv) {
           case PvBaseEvent::ROLLED:
-            LOG("PV: polnoc - baza licznikow na dzien %ld/%ld o %02d:%02d, pobor %.2f "
-                "oddane %.2f (%s)",
+            // (v169) ODLEGLOSC OD POLNOCY ZE ZNAKIEM jest tu wazniejsza niz godzina:
+            // ujemna znaczy "baze wziesto z odczytu SPRZED polnocy" i to jest ta
+            // naprawa. Bez tej liczby "o 23:56" i "o 00:04" wygladaja w dzienniku
+            // tak samo dobrze, chociaz jedna z nich moze byc sprzed 24 godzin.
+            LOG("PV: polnoc - baza licznikow na dzien %ld/%ld o %02d:%02d "
+                "(od polnocy %+d min), pobor %.2f oddane %.2f (%s)",
                 static_cast<long>(baseCopy.yday), static_cast<long>(baseCopy.year),
-                baseCopy.minute / 60, baseCopy.minute % 60, baseCopy.importKwh,
+                baseCopy.minute / 60, baseCopy.minute % 60,
+                static_cast<int>(baseCopy.offsetMin), baseCopy.importKwh,
                 baseCopy.exportKwh, baseCopy.full ? "pelna" : "NIEPELNA - dzis calka");
             break;
           case PvBaseEvent::SET_FIRST:
@@ -1755,6 +1770,32 @@ static void netTask(void*) {
             "przepadna (partycja NVS pelna?)\n");
       }
       nextSensStoreAt = millis() + cfg::SENS_STORE_MS;
+    }
+
+    // ---- (v169) utrwalenie bazy licznikow miernika (klucz "mtr2", 32 B) ----
+    // Osobny zegar i osobna faza, zeby te 3 wpisy NVS nie doliczaly sie do zadnego
+    // z pozostalych zapisow (patrz cfg::NVS_PHASE_*).
+    //
+    // CO TU NAPRAWDE JEDZIE DO FLASHA: nie sama baza (ta zmienia sie raz na dobe),
+    // tylko pole `lastEpoch` z OSTATNIM UDANYM ODCZYTEM licznikow. To ono pozwala
+    // przy najblizszej polnocy siegnac po odczyt SPRZED polnocy zamiast czekac na
+    // pierwszy udany odczyt po niej — a bez utrwalenia ginie przy kazdym restarcie.
+    // Restart tuz przed polnoca zdarza sie na tym urzadzeniu realnie (osiem startow
+    // w dobie 17.08.2026) i kosztowal cala dobe pracy ekranu PRAD.
+    //
+    // Kopia pod gLock, zapis poza nim — ta sama zasada, co przy profilach.
+    if (static_cast<int32_t>(now - nextMeterStoreAt) >= 0) {
+      xSemaphoreTake(gLock, portMAX_DELAY);
+      const PvMeterBase baseSnap = gPvMeterBase;
+      xSemaphoreGive(gLock);
+      // `valid == false` znaczy "nie bylo jeszcze ANI JEDNEGO odczytu licznikow" —
+      // pvMeterBaseSave() i tak by to odrzucilo, ale wtedy bez potrzeby otwieralby
+      // przestrzen NVS co 15 minut na urzadzeniu bez miernika.
+      if (baseSnap.valid) {
+        gNetStage.stageNow = NET_STAGE_NVS;
+        pvMeterBaseSave(baseSnap);
+      }
+      nextMeterStoreAt = millis() + cfg::PV_METER_STORE_MS;
     }
 
     // ---- samoloty ----

@@ -249,10 +249,10 @@ Settings& settings();
 // zwraca 0 wlasnie wtedy, gdy nvs_set_blob odmowil.
 //
 // DLACZEGO LICZNIK PER KLUCZ, A NIE ZBIORCZY: bloby w przestrzeni "pvday" roznia
-// sie rozmiarem o dwa rzedy wielkosci (mtr1 = 24 B, rh2 = 1736 B) i kadencja
-// (mtr1 raz na dobe, prof1 co 5 min). Brak miejsca w NVS uderza NAJPIERW w
+// sie rozmiarem o rzad wielkosci (mtr2 = 32 B, rh3 = 872 B) i kadencja
+// (mtr2 co 15 min, prof2 co 5 min). Brak miejsca w NVS uderza NAJPIERW w
 // najwiekszy blob przy najgestszym zapisie — licznik zbiorczy powiedzialby
-// "cos nie wchodzi", a per klucz mowi "nie wchodzi rh2, a mtr1 wchodzi", czyli
+// "cos nie wchodzi", a per klucz mowi "nie wchodzi rh3, a mtr2 wchodzi", czyli
 // od razu rozstrzyga, czy to ciasnota, czy awaria calej partycji. Koszt: dziewiec
 // slotow po 12 B = 108 B RAM przy barierze 76000 B.
 //
@@ -262,12 +262,12 @@ Settings& settings();
 // RAM-u niz wnosi wiedzy: dla wlasciciela liczy sie "ustawienia sie zapisaly
 // czy nie", a nie ktore z trzydziestu pol.
 enum NvsSlot : uint8_t {
-  NVS_SLOT_PROF = 0,   // "prof1"  — profil doby PV
-  NVS_SLOT_ROOMS,      // "rh2"    — historia czujnikow BLE (24 h)
-  NVS_SLOT_BURN,       // "burn1"  — profil doby palnika
-  NVS_SLOT_GAS,        // "gas1"   — dzienny log gazu (120 dni)
+  NVS_SLOT_PROF = 0,   // "prof2"  — profil doby PV
+  NVS_SLOT_ROOMS,      // "rh3"    — historia czujnikow BLE (24 h)
+  NVS_SLOT_BURN,       // "burn2"  — profil doby palnika
+  NVS_SLOT_GAS,        // "gas2"   — dzienny log gazu (120 dni)
   NVS_SLOT_AIR,        // "airh"   — historia jakosci powietrza (7 dni)
-  NVS_SLOT_METER,      // "mtr1"   — baza licznikow miernika z polnocy
+  NVS_SLOT_METER,      // "mtr2"   — baza licznikow miernika z polnocy
   NVS_SLOT_SENS,       // "sen1"   — kopia statystyk PIR + LDR
   NVS_SLOT_CFG,        // przestrzen "pogoda"   — zbiorczo (WiFi, MQTT, Viessmann...)
   NVS_SLOT_OTA,        // przestrzen "otaguard" — zbiorczo (trialver/badver/rst/panics)

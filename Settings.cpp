@@ -23,12 +23,12 @@ const NvsWriteStat kNvsEmpty{};
 // dlugosci — przestawienia dwoch pozycji nie zlapie nic procz czytania, wiec przy
 // dopisywaniu slotu dopisz go NA KONCU obu tablic, jak w enumie.
 constexpr const char* kNvsKey[NVS_SLOT_COUNT] = {
-    "prof1", "rh2", "burn1", "gas1", "airh", "mtr1", "sen1",
+    "prof2", "rh3", "burn2", "gas2", "airh", "mtr2", "sen1",
     "pogoda/*", "otaguard/*"};
 // Rozmiary blobow. Te same liczby pilnuja static_asserty przy kazdej strukturze
 // nizej w tym pliku — gdy ktorys blob zmieni rozmiar, kompilacja padnie TAM,
 // a nie tutaj, wiec ta tablica nie moze sie po cichu rozjechac z rzeczywistoscia.
-constexpr uint16_t kNvsBytes[NVS_SLOT_COUNT] = {584, 1736, 296, 252, 52, 24, 424, 0, 0};
+constexpr uint16_t kNvsBytes[NVS_SLOT_COUNT] = {292, 872, 148, 128, 52, 32, 424, 0, 0};
 
 static_assert(sizeof(kNvsKey) / sizeof(kNvsKey[0]) == NVS_SLOT_COUNT,
               "tablica nazw kluczy NVS rozjechala sie z enumem NvsSlot");
@@ -633,29 +633,90 @@ void Settings::clearWifi() {
 // produkcje z poborem i NIC by tego nie zlapalo: wykres pokazalby zolte slupki
 // jako czerwone i odwrotnie. Cicha korupcja, nie crash.
 //
-// Teraz caly profil to JEDNA struktura pod JEDNYM kluczem "prof1". Jej rozmiar
-// (584 B) nie jest podobny do zadnej ze skladowych, wiec pomylka o klucz jest
+// Teraz caly profil to JEDNA struktura pod JEDNYM kluczem "prof2". Jej rozmiar
+// (292 B) nie jest podobny do zadnej ze skladowych, wiec pomylka o klucz jest
 // niemozliwa, a pole `ver` lapie zmiane semantyki przy tym samym rozmiarze
 // (np. przejscie z watow na dziesiatki watow).
 //
-// KAZDA zmiana ukladu tej struktury MUSI isc z NOWYM kluczem ("prof2"). Pilnuje
+// KAZDA zmiana ukladu tej struktury MUSI isc z NOWYM kluczem ("prof3"). Pilnuje
 // tego static_assert nizej: gdy rozmiar sie zmieni, kompilacja padnie z ta
 // instrukcja zamiast po cichu wczytac stary blob jako nowy.
 namespace {
 
+// ======== (v169) SKALA NIELINIOWA WATOW: uint16 -> jeden bajt ================
+//
+// POWOD: profil doby kosztowal 584 B = 21 wpisow NVS przy KAZDYM zapisie (co 5 min),
+// a wolnych wpisow bylo 111 na siedem blobow o lacznym koszcie 123. Dwie serie po
+// 144 probek to 576 z tych 584 bajtow — czyli caly problem siedzi w rozdzielczosci
+// probki, nie w naglowku.
+//
+// DLACZEGO NIE SKALA LINIOWA: byla juz raz odrzucona i slusznie. Jeden bajt liniowo
+// to krok 257 W przy zakresie do 65535 W, a przy dzielniku dobranym pod 6 kW (krok
+// 24 W) kazdy szczyt poboru powyzej 6 kW (czajnik + piekarnik) zostalby SCIETY do
+// 6 kW — wykres pokazalby plaski sufit tam, gdzie byl pik.
+//
+// SKALA NIELINIOWA usuwa jedno i drugie, bo blad odwzorowania ma byc mierzony
+// W PIKSELACH, a nie w watach: wykres ma 62 px wysokosci (v3Pv: ch = 64, slupek
+// (ch-2)) i skaluje sie do szczytu doby, wiec 1 px to peak/62 watow.
+//
+//   kody   0..150 -> krok  10 W (0..1500 W)      blad <=   5 W
+//   kody 150..240 -> krok  50 W (1500..6000 W)   blad <=  25 W
+//   kody 240..255 -> krok 1000 W (6000..21000 W) blad <= 500 W
+//
+// BLAD W PIKSELACH przy realnych szczytach doby:
+//   * pochmurny zimowy dzien, peak 400 W  -> 62 * 5/400   = 0,78 px
+//   * przecietny dzien,       peak 2000 W -> 62 * 25/2000 = 0,78 px
+//   * peak 6000 W (moc instalacji)        -> 62 * 25/6000 = 0,26 px
+//   * dzien ze szczytem poboru 9000 W     -> 62 * 500/9000 = 3,4 px, ale WYLACZNIE
+//     na slupkach powyzej 6 kW; wszystko ponizej dalej ma blad ponizej 1/3 piksela.
+// Czyli w kazdym normalnym dniu roznicy NIE DA SIE zobaczyc, a scinania nie ma az do
+// 21 kW — przy instalacji 6 kW i przylaczu jednofazowym taka probka nie wystapila.
+//
+// GDZIE TO DZIALA: WYLACZNIE na drodze do NVS i z powrotem. W RAM PvHistory dalej
+// trzyma pelne uint16, wiec wykres ogladany na zywo jest co do wata dokladny;
+// kwantyzacja dotyczy tego, co przezylo restart.
+//
+// ZAOKRAGLANIE JEST STABILNE: pvWattCode(pvWattValue(c)) == c dla kazdego kodu, wiec
+// profil wczytany z NVS i zapisany z powrotem nie dryfuje z kazdym cyklem.
+uint16_t pvWattValue(uint8_t c) {
+  if (c <= 150) return static_cast<uint16_t>(c) * 10;
+  if (c <= 240) return static_cast<uint16_t>(1500 + (c - 150) * 50);
+  return static_cast<uint16_t>(6000 + (c - 240) * 1000);
+}
+
+uint8_t pvWattCode(uint16_t w) {
+  if (w >= 21000) return 255;
+  if (w <= 1500) return static_cast<uint8_t>((w + 5) / 10);
+  if (w <= 6000) return static_cast<uint8_t>(150 + (w - 1500 + 25) / 50);
+  return static_cast<uint8_t>(240 + (w - 6000 + 500) / 1000);
+}
+
 struct PvProfileBlob {
+  uint16_t ver;
+  int16_t day;                        // tm_yday (0..365) — int32 bylo marnotrawstwem
+  uint8_t watts[PvHistory::SLOTS];    // kody skali nieliniowej, patrz pvWattValue()
+  uint8_t load[PvHistory::SLOTS];
+};
+
+constexpr uint16_t PV_PROF_VER = 2;
+constexpr const char* K_PV_PROF = "prof2";
+
+static_assert(sizeof(PvProfileBlob) == 292,
+              "zmienil sie uklad profilu PV - podbij klucz NVS na \"prof3\", "
+              "inaczej stary blob wczyta sie jako nowy (cicha korupcja)");
+
+// --- uklad v1 ("prof1", 584 B, surowe uint16) — TYLKO DO MIGRACJI ------------
+// Czytany RAZ, przy pierwszym starcie po aktualizacji, zeby wlasciciel nie stracil
+// wykresu z biezacej doby. Potem klucz leci z partycji: 21 wpisow, ktorych nikt juz
+// nie przeczyta, a wlasnie o kazdy wpis toczy sie ta gra.
+struct PvProfileBlobV1 {
   uint16_t ver;
   int32_t day;
   uint16_t watts[PvHistory::SLOTS];
   uint16_t load[PvHistory::SLOTS];
 };
-
-constexpr uint16_t PV_PROF_VER = 1;
-constexpr const char* K_PV_PROF = "prof1";
-
-static_assert(sizeof(PvProfileBlob) == 584,
-              "zmienil sie uklad profilu PV - podbij klucz NVS na \"prof2\", "
-              "inaczej stary blob wczyta sie jako nowy (cicha korupcja)");
+static_assert(sizeof(PvProfileBlobV1) == 584, "uklad v1 profilu PV mial 584 B");
+constexpr const char* K_PV_PROF_V1 = "prof1";
 
 // Klucze ukladu v1. Nigdy juz nie beda czytane, a zajmuja ~580 B w malej
 // partycji NVS (min_spiffs). Kasujemy je raz, przy pierwszym starcie po zmianie.
@@ -663,6 +724,9 @@ void pvRemoveLegacy(Preferences& p) {
   p.remove("w");
   p.remove("l");
   p.remove("day");
+  // (v169) "prof1" dolacza do tej listy: jest juz przepisany na "prof2" (albo byl
+  // nieczytelny), a zajmuje 21 wpisow NVS, ktorych zaden kod juz nie przeczyta.
+  p.remove(K_PV_PROF_V1);
 }
 
 }  // namespace
@@ -682,15 +746,37 @@ void pvHistoryLoad(PvHistory& h) {
   // Dlugosc W OSOBNEJ ZMIENNEJ, zeby dalo sie ja wypisac w galezi bledu. Bez tego
   // "nie wczytalem" nie odroznia braku klucza (0 B) od blobu w innym ukladzie.
   const size_t len = prefs.getBytesLength(K_PV_PROF);
-  const bool ok = len == sizeof(b) &&
-                  prefs.getBytes(K_PV_PROF, &b, sizeof(b)) == sizeof(b) &&
-                  b.ver == PV_PROF_VER && b.day >= 0;
-  const bool legacy = prefs.isKey("w") || prefs.isKey("l") || prefs.isKey("day");
+  bool ok = len == sizeof(b) &&
+            prefs.getBytes(K_PV_PROF, &b, sizeof(b)) == sizeof(b) &&
+            b.ver == PV_PROF_VER && b.day >= 0;
+  // (v169) MIGRACJA Z "prof1": nie kasujemy wykresu wlasciciela po cichu. Stary blob
+  // (584 B, surowe uint16) czytamy RAZ i przepisujemy na skale nieliniowa. Pierwszy
+  // zapis (za najwyzej 5 minut) utrwali go juz pod "prof2"; stary klucz kasujemy
+  // nizej, zeby jego 21 wpisow wrocilo do puli.
+  bool migrated = false;
+  if (!ok && prefs.getBytesLength(K_PV_PROF_V1) == sizeof(PvProfileBlobV1)) {
+    PvProfileBlobV1 v1{};
+    if (prefs.getBytes(K_PV_PROF_V1, &v1, sizeof(v1)) == sizeof(v1) && v1.ver == 1 &&
+        v1.day >= 0) {
+      b.ver = PV_PROF_VER;
+      b.day = static_cast<int16_t>(v1.day);
+      for (int i = 0; i < PvHistory::SLOTS; ++i) {
+        b.watts[i] = pvWattCode(v1.watts[i]);
+        b.load[i] = pvWattCode(v1.load[i]);
+      }
+      ok = true;
+      migrated = true;
+    }
+  }
+  const bool legacy = prefs.isKey("w") || prefs.isKey("l") || prefs.isKey("day") ||
+                      prefs.isKey(K_PV_PROF_V1);
   prefs.end();
 
   if (ok) {
-    memcpy(h.watts, b.watts, sizeof(h.watts));
-    memcpy(h.load, b.load, sizeof(h.load));
+    for (int i = 0; i < PvHistory::SLOTS; ++i) {
+      h.watts[i] = pvWattValue(b.watts[i]);
+      h.load[i] = pvWattValue(b.load[i]);
+    }
     h.day = b.day;
     int slots = 0;
     for (int i = 0; i < PvHistory::SLOTS; ++i) {
@@ -705,8 +791,9 @@ void pvHistoryLoad(PvHistory& h) {
     // spor w jednym zdaniu: `dzien` inny niz dzisiejszy znaczy "w NVS lezal profil
     // z wczoraj, wiec ZAPIS zawiodl", a `slotow 0` przy dzisiejszej dacie znaczy
     // "zapis szedl, ale byl pusty".
-    LOG("PV: wczytano z NVS profil doby — dzien %d, slotow z danymi %d/%d\n",
-        static_cast<int>(b.day), slots, PvHistory::SLOTS);
+    LOG("PV: wczytano z NVS profil doby — dzien %d, slotow z danymi %d/%d%s\n",
+        static_cast<int>(b.day), slots, PvHistory::SLOTS,
+        migrated ? " (przepisany ze starego klucza \"prof1\")" : "");
   } else {
     // GALAZ, KTORA DO v167 BYLA CALKOWICIE NIEMA — a to ONA opisuje awarie.
     // Bez niej brak wpisu o wczytaniu znaczyl jednoczesnie "nie wczytalem" i
@@ -717,12 +804,20 @@ void pvHistoryLoad(PvHistory& h) {
         K_PV_PROF, static_cast<unsigned>(len), static_cast<unsigned>(sizeof(b)));
   }
 
+  // (v169) NOWY BLOB ZAPISUJEMY OD RAZU, JESZCZE PRZED SKASOWANIEM STAREGO.
+  // Kolejnosc jest tu cala trescia: gdyby zapis czekal na zwykla kadencje (5 minut),
+  // a stary klucz zniknal teraz, restart w tym oknie zostawilby wlasciciela BEZ
+  // profilu — z danymi skasowanymi przez migracje, ktora mial ich nie stracic.
+  if (migrated) {
+    pvHistorySave(h);
+  }
   if (legacy) {
     Preferences w;
     if (w.begin(NS_PV, false)) {
       pvRemoveLegacy(w);
       w.end();
-      LOG("PV: skasowano profil w starym ukladzie (klucze w/l/day)\n");
+      LOG("PV: skasowano profil w starym ukladzie (klucze w/l/day/prof1) — "
+          "odzyskane do 21 wpisow NVS\n");
     }
   }
 }
@@ -735,9 +830,11 @@ void pvHistorySave(const PvHistory& h) {
   }
   PvProfileBlob b{};
   b.ver = PV_PROF_VER;
-  b.day = h.day;
-  memcpy(b.watts, h.watts, sizeof(b.watts));
-  memcpy(b.load, h.load, sizeof(b.load));
+  b.day = static_cast<int16_t>(h.day);
+  for (int i = 0; i < PvHistory::SLOTS; ++i) {
+    b.watts[i] = pvWattCode(h.watts[i]);
+    b.load[i] = pvWattCode(h.load[i]);
+  }
   nvsPutBytes(prefs, NVS_SLOT_PROF, K_PV_PROF, &b, sizeof(b));
   prefs.end();
 }
@@ -751,18 +848,51 @@ void pvHistorySave(const PvHistory& h) {
 // ale NIE przezywa zaniku napiecia — a baza, ktora znika razem z pradem, jest
 // bezuzyteczna dokladnie w dniu, w ktorym prad byl wylaczony.
 //
-// WLASNY KLUCZ, NIE DOKLEJANIE DO "prof1": profil doby (584 B) jest zapisywany
+// WLASNY KLUCZ, NIE DOKLEJANIE DO "prof2": profil doby (292 B) jest zapisywany
 // co 5 minut, a baza zmienia sie RAZ NA DOBE. Wspolny blob oznaczalby albo
 // przepisywanie bazy 288 razy dziennie bez potrzeby, albo — gorzej — zmiane
 // rozmiaru PvProfileBlob, ktora wywalilaby static_assert i wymusila migracje
-// klucza profilu (utrata wykresu doby). Osobny klucz kosztuje 24 B.
+// klucza profilu (utrata wykresu doby). Osobny klucz kosztuje 32 B.
 //
-// Rozmiary blobow w przestrzeni "pvday" sa parami rozne (prof1 = 584, rh2 = 1736,
-// gas1 = 252, burn1 = 296, mtr1 = 24), wiec pomylka o klucz nie przejdzie przez
-// kontrole getBytesLength() — ten sam wzorzec, co przy pozostalych.
+// (v169) Rozmiary blobow w przestrzeni "pvday" sa parami rozne (prof2 = 292,
+// rh3 = 872, gas2 = 128, burn2 = 148, mtr2 = 32, airh = 52, sen1 = 424), wiec
+// pomylka o klucz nie przejdzie przez kontrole getBytesLength() — ten sam wzorzec,
+// co przy pozostalych. Ta rozlacznosc jest WARUNKIEM, a nie przypadkiem: przy
+// dodawaniu blobu sprawdz te liste.
 namespace {
 
+// (v169) UKLAD v2: doszedl OSTATNI UDANY ODCZYT licznikow (stempel + oba stany).
+// To on pozwala po restarcie zbudowac baze z odczytu SPRZED polnocy zamiast czekac
+// na pierwszy udany odczyt po polnocy — patrz dlugi komentarz przy PvMeterBase.
+//
+// KOLEJNOSC POL DOBRANA POD ROZMIAR, nie pod czytelnosc: najpierw czworki, potem
+// dwojki, na koncu bajty. Struktura ma przez to 32 B zamiast 36 — a 32 B to granica
+// miedzy TRZEMA a CZTEREMA wpisami NVS (2 narzutu + 1 na kazde rozpoczete 32 B).
+// `year` schodzi na uint16 (kontrola 2020..2200 i tak byla), `yday` na int16.
 struct PvMeterBlob {
+  uint32_t lastEpoch;      // epoch ostatniego udanego odczytu; 0 = brak
+  float importKwh;         // stan rej. 37121 przyjety za baze doby
+  float exportKwh;         // stan rej. 37119 przyjety za baze doby
+  float lastImportKwh;     // rej. 37121 z chwili lastEpoch
+  float lastExportKwh;     // rej. 37119 z chwili lastEpoch
+  uint16_t year;           // 2020..2200 — patrz kontrola w pvMeterBaseLoad
+  int16_t yday;            // tm_yday dnia, KTOREGO dotyczy baza
+  int16_t minute;          // minuta doby lokalnej odczytu-bazy (0..1439)
+  int16_t offsetMin;       // odleglosc od polnocy ZE ZNAKIEM (ujemna = sprzed polnocy)
+  uint8_t ver;
+  uint8_t flags;           // bit0 = full, bity 1-3 = PvBaseEvent, ktory ustawil baze
+};
+
+constexpr uint8_t PV_METER_VER = 2;
+constexpr const char* K_PV_METER = "mtr2";
+constexpr uint8_t PV_METER_FLAG_FULL = 0x01;
+
+static_assert(sizeof(PvMeterBlob) == 32,
+              "zmienil sie uklad bazy licznikow - podbij klucz NVS na \"mtr3\". "
+              "UWAGA: 32 B to granica trzech wpisow NVS, 33 B kosztuje juz cztery");
+
+// --- uklad v1 ("mtr1", 24 B) — TYLKO DO MIGRACJI ----------------------------
+struct PvMeterBlobV1 {
   uint16_t ver;
   int32_t year;
   int32_t yday;
@@ -770,15 +900,10 @@ struct PvMeterBlob {
   float exportKwh;
   int16_t minute;
   uint8_t full;
-  uint8_t pad;   // jawne wyrownanie, zeby rozmiar nie zalezal od kompilatora
+  uint8_t pad;
 };
-
-constexpr uint16_t PV_METER_VER = 1;
-constexpr const char* K_PV_METER = "mtr1";
-
-static_assert(sizeof(PvMeterBlob) == 24,
-              "zmienil sie uklad bazy licznikow - podbij klucz NVS na \"mtr2\", "
-              "inaczej stary blob wczyta sie jako nowy (cicha korupcja)");
+static_assert(sizeof(PvMeterBlobV1) == 24, "uklad v1 bazy licznikow mial 24 B");
+constexpr const char* K_PV_METER_V1 = "mtr1";
 
 }  // namespace
 
@@ -790,11 +915,46 @@ void pvMeterBaseLoad(PvMeterBase& b) {
     return;
   }
   PvMeterBlob blob{};
-  const bool ok = prefs.getBytesLength(K_PV_METER) == sizeof(blob) &&
-                  prefs.getBytes(K_PV_METER, &blob, sizeof(blob)) == sizeof(blob) &&
-                  blob.ver == PV_METER_VER;
+  bool migrated = false;
+  bool ok = prefs.getBytesLength(K_PV_METER) == sizeof(blob) &&
+            prefs.getBytes(K_PV_METER, &blob, sizeof(blob)) == sizeof(blob) &&
+            blob.ver == PV_METER_VER;
+  // (v169) MIGRACJA Z "mtr1": baza z ostatniej polnocy to jedyna rzecz, ktora
+  // pozwala ekranowi PRAD pokazac "dzis" z licznikow — porzucenie jej kosztowaloby
+  // wlasciciela cala dobe na calce. Pola, ktorych uklad v1 nie mial (ostatni odczyt),
+  // zostaja puste; pierwszy udany odczyt je uzupelni.
+  if (!ok && prefs.getBytesLength(K_PV_METER_V1) == sizeof(PvMeterBlobV1)) {
+    PvMeterBlobV1 v1{};
+    if (prefs.getBytes(K_PV_METER_V1, &v1, sizeof(v1)) == sizeof(v1) && v1.ver == 1) {
+      blob = PvMeterBlob{};
+      blob.ver = PV_METER_VER;
+      blob.year = static_cast<uint16_t>(v1.year < 0 ? 0 : (v1.year > 65535 ? 65535 : v1.year));
+      blob.yday = static_cast<int16_t>(v1.yday);
+      blob.minute = v1.minute;
+      // Uklad v1 nie znal offsetu — baza mogla powstac WYLACZNIE z odczytu po
+      // polnocy, wiec offset jest rowny minucie i to nie jest domysl, tylko
+      // wlasnosc tamtego kodu.
+      blob.offsetMin = v1.minute;
+      blob.importKwh = v1.importKwh;
+      blob.exportKwh = v1.exportKwh;
+      blob.flags = v1.full ? PV_METER_FLAG_FULL : 0;
+      ok = true;
+      migrated = true;
+    }
+  }
+  const bool legacy = prefs.isKey(K_PV_METER_V1);
   prefs.end();
   if (!ok) {
+    // Stary klucz kasujemy TAKZE tutaj: skoro nic z niego nie wyszlo, to sa trzy
+    // wpisy NVS trzymane bez powodu. Ale dopiero PO tym, jak proba odczytu padla —
+    // nigdy przed.
+    if (legacy) {
+      Preferences w;
+      if (w.begin(NS_PV, false)) {
+        w.remove(K_PV_METER_V1);
+        w.end();
+      }
+    }
     return;
   }
   // Kontrola sensownosci PRZED przyjeciem bazy. Baza ze smieciem (ujemny licznik,
@@ -813,21 +973,59 @@ void pvMeterBaseLoad(PvMeterBase& b) {
   b.importKwh = blob.importKwh;
   b.exportKwh = blob.exportKwh;
   b.minute = blob.minute;
-  b.full = blob.full != 0;
+  b.offsetMin = blob.offsetMin;
+  b.full = (blob.flags & PV_METER_FLAG_FULL) != 0;
+  b.event = static_cast<uint8_t>((blob.flags >> 1) & 0x07);
   b.valid = true;
+  // (v169) Ostatni udany odczyt. Kontrola jest tu OSOBNA i celowo lagodniejsza niz
+  // przy samej bazie: gdy ostatni odczyt jest smieciem, tracimy tylko mozliwosc
+  // siegniecia po odczyt sprzed polnocy (baza dalej dziala), wiec zerujemy go
+  // zamiast odrzucac cala baze.
+  if (blob.lastEpoch >= 1700000000UL && blob.lastImportKwh >= 0.f &&
+      blob.lastExportKwh >= 0.f) {
+    b.lastEpoch = blob.lastEpoch;
+    b.lastImportKwh = blob.lastImportKwh;
+    b.lastExportKwh = blob.lastExportKwh;
+  }
   // (v168) TA linia ZOSTAJE na Serial i to jest swiadomy wybor, a nie przeoczenie:
   // udana baza jest w calosci widoczna w /api/diag jako pv.meter.base (rok, dzien,
   // godzina zlapania, oba liczniki, flaga `full`), i to bez ograniczenia czasowego
   // bufora dziennika. Do /api/log przenosimy tylko te komunikaty startowe, ktorych
   // /api/diag NIE potrafi odtworzyc — czyli galezie AWARII wyzej.
-  Serial.printf("PV: baza licznikow z NVS: %ld dzien %ld min %d pobor %.2f oddane %.2f%s\n",
-                static_cast<long>(b.year), static_cast<long>(b.yday), b.minute,
-                b.importKwh, b.exportKwh, b.full ? "" : " (NIEPELNA)");
+  Serial.printf(
+      "PV: baza licznikow z NVS: %ld dzien %ld min %d (od polnocy %+d min) pobor %.2f "
+      "oddane %.2f%s\n",
+      static_cast<long>(b.year), static_cast<long>(b.yday), b.minute,
+      static_cast<int>(b.offsetMin), b.importKwh, b.exportKwh,
+      b.full ? "" : " (NIEPELNA)");
+
+  // (v169) Nowy blob NAJPIERW, kasowanie starego POTEM — patrz pvHistoryLoad.
+  // Tu okno bylo najdluzsze ze wszystkich: baza zapisuje sie przy zdarzeniu zmiany,
+  // czyli raz na dobe, wiec bez tego zapisu restart miedzy migracja a polnoca kasowal
+  // baze i ekran PRAD wracal do calki na cala dobe.
+  if (migrated) {
+    pvMeterBaseSave(b);
+    Preferences w;
+    if (w.begin(NS_PV, false)) {
+      w.remove(K_PV_METER_V1);
+      w.end();
+    }
+  }
 }
 
-// Wolane WYLACZNIE po zdarzeniu zmiany bazy (SET_FIRST/ROLLED/WENT_BACK), czyli
-// w praktyce raz na dobe — tak jak dobowy log gazu. NIE przy kazdym odczycie:
-// przy kadencji 30 s byloby to 2880 zapisow do flash dziennie zamiast jednego.
+// Wolane po zdarzeniu zmiany bazy (SET_FIRST/ROLLED/WENT_BACK) ORAZ — od v169 —
+// co cfg::PV_METER_STORE_MS, zeby utrwalic OSTATNI UDANY ODCZYT.
+//
+// DLACZEGO TEN DRUGI ZAPIS ISTNIEJE: bez niego pole `lastEpoch` zyje wylacznie
+// w RAM i ginie przy kazdym restarcie. Urzadzenie restartuje sie czesto (17.08.2026
+// licznik pokazywal osiem startow w dobie), a restart trafiajacy w okolice polnocy
+// kasowal jedyny odczyt sprzed polnocy — czyli dokladnie te dana, dla ktorej cala
+// ta naprawa powstala. Z utrwaleniem co 15 minut najgorszy przypadek to odczyt
+// starszy o 15 minut, a nie jego brak.
+//
+// KOSZT: 32 B co 15 min = 96 zapisow na dobe = ~3 kB/dobe wobec ~250 kB/dobe, ktore
+// ten sam netTask juz pisze profilami — czyli ponizej 1,5% ruchu do flasha. W wpisach
+// NVS to 3 wpisy na zapis, najtanszy blob w calej partycji.
 void pvMeterBaseSave(const PvMeterBase& b) {
   if (!b.valid) {
     return;
@@ -839,12 +1037,17 @@ void pvMeterBaseSave(const PvMeterBase& b) {
   }
   PvMeterBlob blob{};
   blob.ver = PV_METER_VER;
-  blob.year = b.year;
-  blob.yday = b.yday;
+  blob.year = static_cast<uint16_t>(b.year < 0 ? 0 : (b.year > 65535 ? 65535 : b.year));
+  blob.yday = static_cast<int16_t>(b.yday);
   blob.importKwh = b.importKwh;
   blob.exportKwh = b.exportKwh;
   blob.minute = b.minute;
-  blob.full = b.full ? 1 : 0;
+  blob.offsetMin = b.offsetMin;
+  blob.flags = static_cast<uint8_t>((b.full ? PV_METER_FLAG_FULL : 0) |
+                                    ((b.event & 0x07) << 1));
+  blob.lastEpoch = b.lastEpoch;
+  blob.lastImportKwh = b.lastImportKwh;
+  blob.lastExportKwh = b.lastExportKwh;
   nvsPutBytes(prefs, NVS_SLOT_METER, K_PV_METER, &blob, sizeof(blob));
   prefs.end();
 }
@@ -876,9 +1079,74 @@ void pvHistoryClear() {
 // zauwazyc zmiany ukladu. Asercja nizej lapie to w kompilacji: jesli RoomHistory
 // sie zmieni, budowanie padnie z instrukcja, zamiast po cichu wczytac stary blob.
 static_assert(sizeof(RoomHistory) == 1736,
-              "zmienil sie uklad RoomHistory - podbij klucz NVS na \"rh3\". "
+              "zmienil sie uklad RoomHistory - podbij klucz NVS na \"rh4\". "
               "Sam rozmiar NIE wystarczy: v1 (4 pokoje T+RH) i v2 (6 pokoi T) "
               "mialy identyczne 1736 B i kontrola rozmiarem ich nie rozroznila");
+
+namespace {
+
+// ======== (v169) TEMPERATURA POKOJU W JEDNYM BAJCIE ==========================
+//
+// POWOD: "rh2" to byl NAJDROZSZY blob w partycji — 1736 B = 57 wpisow NVS przy
+// kazdym zapisie (co 10 min), przy 111 wolnych wpisach na wszystko. Sam ten jeden
+// zapis zjadal polowe dostepnej puli; zbieg z profilem PV, palnikiem i statystykami
+// wyczerpywal ja calkowicie i to jest zmierzona przyczyna cichych porazek zapisu.
+//
+// CO SIE ZMIENIA: probka schodzi z int16 (0,1 stopnia) na uint8 (0,5 stopnia)
+//   kod 0..160 -> -20,0 .. +60,0 stopnia C, krok 0,5
+//   kod 255    -> BRAK POMIARU (odpowiednik RoomHistory::NO_T)
+// 6 pokoi x 144 probek to 864 B zamiast 1728 B — polowa blobu i 30 wpisow zamiast 57.
+//
+// DLACZEGO 0,5 STOPNIA WYSTARCZA: wykres pokoi ma 26 px wysokosci i skaluje sie do
+// rozpietosci WSZYSTKICH pokoi z doby. Realna rozpietosc w mieszkaniu to 4-8 stopni,
+// czyli 1 px odpowiada 0,15-0,3 stopnia — a blad kwantyzacji to najwyzej 0,2 stopnia
+// (probka w RAM jest calkowita w dziesiatych czesciach stopnia, wiec najgorsze
+// zaokraglenie do wielokrotnosci 0,5 to dwie dziesiate, nie dwie i pol), czyli
+// najwyzej jeden piksel. Przy czujniku na balkonie rozpietosc doby siega
+// 15-20 stopni, wiec 1 px to 0,6-0,8 stopnia i blad jest juz o rzad wielkosci
+// ponizej piksela. Zakres -20..+60 obejmuje z zapasem i mroz, i nasloneczniona
+// scianę; SAMYCH LICZB z historii nigdzie nie wypisujemy (kafelki biora wartosc
+// biezaca prosto z czujnika, nie z tej tablicy), wiec 0,5 stopnia nie ma gdzie
+// wyjsc jako "21,5 zamiast 21,3".
+//
+// GDZIE TO DZIALA: wylacznie na drodze do NVS i z powrotem. RoomHistory w RAM dalej
+// trzyma int16 w dziesiatych czesciach stopnia i wykres na zywo jest dokladny;
+// kwantyzacja dotyczy tego, co przezylo restart.
+//
+// STABILNOSC: roomTempValue(roomTempCode(v)) == v dla kazdego kodu, wiec historia
+// wczytana z NVS i zapisana z powrotem nie dryfuje z kazdym cyklem.
+constexpr uint8_t ROOM_T_NONE = 255;
+
+uint8_t roomTempCode(int16_t t10) {
+  if (t10 == RoomHistory::NO_T) return ROOM_T_NONE;
+  int32_t v = static_cast<int32_t>(t10) + 200;   // -20,0 C -> 0
+  if (v < 0) v = 0;
+  v = (v + 2) / 5;                               // zaokraglenie do 0,5 stopnia
+  if (v > 160) v = 160;
+  return static_cast<uint8_t>(v);
+}
+
+int16_t roomTempValue(uint8_t c) {
+  if (c > 160) return RoomHistory::NO_T;
+  return static_cast<int16_t>(static_cast<int32_t>(c) * 5 - 200);
+}
+
+struct RoomBlob {
+  uint32_t lastSlot;
+  uint16_t ver;
+  int16_t head;
+  uint8_t t[RoomHistory::ROOMS][RoomHistory::SLOTS];
+};
+
+constexpr uint16_t ROOM_VER = 3;
+constexpr const char* K_ROOM = "rh3";
+constexpr const char* K_ROOM_V2 = "rh2";
+
+static_assert(sizeof(RoomBlob) == 872,
+              "zmienil sie uklad historii pokoi - podbij klucz NVS na \"rh4\", "
+              "inaczej stary blob wczyta sie jako nowy (cicha korupcja)");
+
+}  // namespace
 
 void roomHistoryLoad(RoomHistory& h) {
   Preferences prefs;
@@ -887,20 +1155,43 @@ void roomHistoryLoad(RoomHistory& h) {
     LOG("BLE: przestrzen NVS \"%s\" niedostepna — historia 24 h pusta\n", NS_PV);
     return;
   }
-  const size_t need = sizeof(RoomHistory);
-  const size_t len = prefs.getBytesLength("rh2");
+  const size_t need = sizeof(RoomBlob);
+  const size_t len = prefs.getBytesLength(K_ROOM);
+  bool ok = false;
+  bool migrated = false;
   if (len == need) {
-    prefs.getBytes("rh2", &h, need);
+    RoomBlob b{};
+    if (prefs.getBytes(K_ROOM, &b, need) == need && b.ver == ROOM_VER) {
+      for (int r = 0; r < RoomHistory::ROOMS; ++r) {
+        for (int i = 0; i < RoomHistory::SLOTS; ++i) {
+          h.t10[r][i] = roomTempValue(b.t[r][i]);
+        }
+      }
+      h.lastSlot = b.lastSlot;
+      h.head = b.head;
+      ok = true;
+    }
+  } else if (prefs.getBytesLength(K_ROOM_V2) == sizeof(RoomHistory)) {
+    // (v169) MIGRACJA Z "rh2": stary blob ma DOKLADNIE uklad RoomHistory, wiec
+    // czytamy go PROSTO DO `h` — bez bufora posredniego, ktory kosztowalby 1736 B
+    // stosu w setup(). Kwantyzacja nastapi przy pierwszym zapisie (za <= 10 min).
+    // Nie porzucamy 24 h pomiarow tylko dlatego, ze zmienil sie format.
+    prefs.getBytes(K_ROOM_V2, &h, sizeof(RoomHistory));
+    ok = true;
+    migrated = true;
+  }
+  if (ok) {
     // (v168) LOG() z tego samego powodu, co przy profilu PV: to najwiekszy blob
-    // w partycji (1736 B) i gdy zabraknie miejsca, przestanie sie miescic PIERWSZY.
+    // w partycji i gdy zabraknie miejsca, przestanie sie miescic PIERWSZY.
     // Bez tej linii jego zniknieciu towarzyszylaby cisza.
-    LOG("BLE: wczytano z NVS historie 24 h (slot %lu)\n",
-        static_cast<unsigned long>(h.lastSlot));
+    LOG("BLE: wczytano z NVS historie 24 h (slot %lu)%s\n",
+        static_cast<unsigned long>(h.lastSlot),
+        migrated ? " — przepisana ze starego klucza \"rh2\"" : "");
   } else {
     h.reset();
     LOG("BLE: BRAK historii 24 h w NVS — wykres pokoi startuje pusty "
-        "(dlugosc \"rh2\": %u B, oczekiwano %u B)\n",
-        static_cast<unsigned>(len), static_cast<unsigned>(need));
+        "(dlugosc \"%s\": %u B, oczekiwano %u B)\n",
+        K_ROOM, static_cast<unsigned>(len), static_cast<unsigned>(need));
   }
   // (v168) ODZYSK MIEJSCA: klucz "rh" z ukladu v1 (4 pokoje, temperatura +
   // wilgotnosc) zostal porzucony w v92 na rzecz "rh2" i od tamtej pory NIKT go
@@ -915,16 +1206,24 @@ void roomHistoryLoad(RoomHistory& h) {
   // zeby "rh" NIGDY nie zostal wczytany — patrz PULAPKA wyzej). To sa bajty, ktore
   // od v92 sa wylacznie balastem. Porzucamy je swiadomie i z wpisem w dzienniku,
   // dokladnie tak, jak pvRemoveLegacy() robi to z kluczami "w"/"l"/"day".
-  const bool legacy = prefs.isKey("rh");
+  // (v169) Do listy dolacza "rh2": jest juz przepisany na "rh3" (albo byl
+  // nieczytelny) i kosztuje 57 wpisow, czyli najwiecej ze wszystkiego, co w tej
+  // partycji lezy. To ta sama decyzja, co przy "rh" — porzucamy swiadomie i z
+  // wpisem w dzienniku, a nie po cichu.
+  const bool legacy = prefs.isKey("rh") || prefs.isKey(K_ROOM_V2);
   prefs.end();
+  // (v169) Nowy blob NAJPIERW, kasowanie starego POTEM — patrz pvHistoryLoad.
+  if (migrated) {
+    roomHistorySave(h);
+  }
   if (legacy) {
     Preferences w;
     if (w.begin(NS_PV, false)) {
-      const bool gone = w.remove("rh");
+      w.remove("rh");
+      w.remove(K_ROOM_V2);
       w.end();
-      LOG("BLE: skasowano historie w starym ukladzie (klucz \"rh\", %s) — "
-          "odzyskane 57 wpisow NVS (1824 B)\n",
-          gone ? "ok" : "NIE UDALO SIE");
+      LOG("BLE: skasowano historie w starych ukladach (klucze \"rh\", \"rh2\") — "
+          "odzyskane do 114 wpisow NVS\n");
     }
   }
 }
@@ -935,7 +1234,19 @@ void roomHistorySave(const RoomHistory& h) {
     nvsMark(NVS_SLOT_ROOMS, false);
     return;
   }
-  nvsPutBytes(prefs, NVS_SLOT_ROOMS, "rh2", &h, sizeof(RoomHistory));
+  // Blob (872 B) budowany na stosie netTask, ktory ma tu ~8,5 kB zapasu
+  // (diag mem.stack_net_spare) — a wolajacy trzyma juz kopie RoomHistory (1736 B),
+  // wiec razem to nadal ponizej jednej trzeciej zapasu.
+  RoomBlob b{};
+  b.ver = ROOM_VER;
+  b.lastSlot = h.lastSlot;
+  b.head = h.head;
+  for (int r = 0; r < RoomHistory::ROOMS; ++r) {
+    for (int i = 0; i < RoomHistory::SLOTS; ++i) {
+      b.t[r][i] = roomTempCode(h.t10[r][i]);
+    }
+  }
+  nvsPutBytes(prefs, NVS_SLOT_ROOMS, K_ROOM, &b, sizeof(b));
   prefs.end();
 }
 
@@ -983,20 +1294,69 @@ void airHistorySave(const AirHistory& h) {
 // wygladal na dzialajacy, koszt RAM byl placony, pozytku zero.
 //
 // Ten sam wzorzec co przy profilu PV: wersja w blobie, wlasny klucz, asercja
-// rozmiaru. GasHistory ma 248 B, wiec zapis jest tani — leci raz na dobe, przy
+// rozmiaru. Blob ma (v169) 128 B, wiec zapis jest tani — leci raz na dobe, przy
 // przewinieciu dnia, a nie co 3 minuty.
 namespace {
+
+// ======== (v169) DOBOWE ZUZYCIE GAZU W JEDNYM BAJCIE =========================
+//
+// POWOD: 120 dni po uint16 to 240 B = 10 wpisow NVS. Rozdzielczosc 0,01 m3 na DOBE
+// jest tu fikcja: sam piec oddaje currentDay z dokladnoscia 0,1 m3 (patrz GasMeter.h),
+// wiec dwa miejsca po przecinku pochodza z zaokraglenia, a nie z pomiaru.
+//
+// SKALA NIELINIOWA, dokladnie jak przy watach, bo rozstrzepanie dobowego zuzycia
+// jest ogromne: 0,4 m3 w lipcu i 30 m3 w styczniu.
+//   kody   0..100 -> krok 0,05 m3 (0..5 m3)     blad <= 0,02 m3
+//   kody 100..160 -> krok 0,25 m3 (5..20 m3)    blad <= 0,12 m3
+//   kody 160..200 -> krok 1,00 m3 (20..60 m3)   blad <= 0,50 m3
+//   kod  200      -> 60 m3 i wiecej (sufit)
+// (Bledy sprawdzone przebiegiem po CALYM zakresie 0..6000 setnych m3, a nie
+// policzone z krokow — dlatego 0,02 i 0,12, a nie 0,025 i 0,125: wejscie jest
+// calkowite w setnych m3, wiec polowa kroku nigdy nie wypada dokladnie.)
+//
+// CO TO ZNACZY DLA WERYFIKACJI RACHUNKU, bo tylko po to ten log istnieje:
+// zaokraglamy do NAJBLIZSZEGO punktu siatki, wiec bledy pojedynczych dob znosza sie
+// wzajemnie, a nie kumuluja. Skrajny, nierealny przypadek "kazda doba okresu
+// rozliczeniowego wypada 0,5 m3 obok, zawsze w te sama strone" to przy 60 dobach po
+// >20 m3 blad 30 m3 na rachunku ~1200 m3, czyli 2,5%; realny (dobowe zuzycie ponizej
+// 5 m3, blad 0,02 m3, znaki losowe) to okolo 0,2 m3 na cale dwa miesiace.
+// Rozdzielczosc odczytu licznika u dostawcy i tak wynosi 1 m3.
+uint16_t gasValueX100(uint8_t c) {
+  if (c <= 100) return static_cast<uint16_t>(c) * 5;
+  if (c <= 160) return static_cast<uint16_t>(500 + (c - 100) * 25);
+  if (c <= 200) return static_cast<uint16_t>(2000 + (c - 160) * 100);
+  return 6000;
+}
+
+uint8_t gasCode(uint16_t x100) {
+  if (x100 >= 6000) return 200;
+  if (x100 <= 500) return static_cast<uint8_t>((x100 + 2) / 5);
+  if (x100 <= 2000) return static_cast<uint8_t>(100 + (x100 - 500 + 12) / 25);
+  return static_cast<uint8_t>(160 + (x100 - 2000 + 50) / 100);
+}
+
 struct GasBlob {
+  uint32_t lastDay;
+  uint16_t ver;
+  int16_t head;
+  uint8_t m3[GasHistory::DAYS];   // kody skali nieliniowej, patrz gasValueX100()
+};
+constexpr uint16_t GAS_VER = 2;
+constexpr const char* K_GAS = "gas2";
+
+static_assert(sizeof(GasBlob) == 128,
+              "zmienil sie uklad logu gazu - podbij klucz NVS na \"gas3\"");
+
+// --- uklad v1 ("gas1", 252 B, surowe uint16) — TYLKO DO MIGRACJI ------------
+struct GasBlobV1 {
   uint16_t ver;
   uint32_t lastDay;
   int16_t head;
   uint16_t m3x100[GasHistory::DAYS];
 };
-constexpr uint16_t GAS_VER = 1;
-constexpr const char* K_GAS = "gas1";
+static_assert(sizeof(GasBlobV1) == 252, "uklad v1 logu gazu mial 252 B");
+constexpr const char* K_GAS_V1 = "gas1";
 
-static_assert(sizeof(GasBlob) == 252,
-              "zmienil sie uklad logu gazu - podbij klucz NVS na \"gas2\"");
 }  // namespace
 
 void gasHistoryLoad(GasHistory& g) {
@@ -1006,14 +1366,48 @@ void gasHistoryLoad(GasHistory& g) {
     return;
   }
   GasBlob b{};
+  bool migrated = false;
   if (prefs.getBytesLength(K_GAS) == sizeof(b) &&
       prefs.getBytes(K_GAS, &b, sizeof(b)) == sizeof(b) && b.ver == GAS_VER) {
     g.lastDay = b.lastDay;
     g.head = b.head;
-    memcpy(g.m3x100, b.m3x100, sizeof(b.m3x100));
+    for (int i = 0; i < GasHistory::DAYS; ++i) g.m3x100[i] = gasValueX100(b.m3[i]);
     Serial.printf("Gaz: wczytano log (dzien %lu)\n", static_cast<unsigned long>(g.lastDay));
+  } else if (prefs.getBytesLength(K_GAS_V1) == sizeof(GasBlobV1)) {
+    // (v169) MIGRACJA Z "gas1": to sa MIESIACE zbieranych danych, jedyna podstawa
+    // porownania pieca z rachunkiem — porzucenie ich kosztowaloby wlasciciela cztery
+    // miesiace czekania na nowy komplet.
+    GasBlobV1 v1{};
+    if (prefs.getBytes(K_GAS_V1, &v1, sizeof(v1)) == sizeof(v1) && v1.ver == 1) {
+      migrated = true;
+      g.lastDay = v1.lastDay;
+      g.head = v1.head;
+      // Przez kody, a nie 1:1: inaczej pierwsze zapisane doby mialyby dokladnosc
+      // 0,01 m3, a kazda nastepna 0,05 m3 i suma okresu mieszalaby dwie skale.
+      for (int i = 0; i < GasHistory::DAYS; ++i) {
+        g.m3x100[i] = gasValueX100(gasCode(v1.m3x100[i]));
+      }
+      LOG("Gaz: log przepisany ze starego klucza \"gas1\" (dzien %lu) — "
+          "odzyskane 10 wpisow NVS\n",
+          static_cast<unsigned long>(g.lastDay));
+    }
   }
+  const bool legacy = prefs.isKey(K_GAS_V1);
   prefs.end();
+  // (v169) TU TA KOLEJNOSC JEST NAJWAZNIEJSZA W CALYM PLIKU. Log gazu zapisuje sie
+  // normalnie RAZ NA DOBE (przy przewinieciu dnia), wiec bez tego zapisu od razu
+  // stary klucz zniknalby teraz, a nowy powstal dopiero o polnocy — kazdy restart
+  // w tym oknie kasowalby CZTERY MIESIACE danych, ktore sluza do sprawdzania rachunku.
+  if (migrated) {
+    gasHistorySave(g);
+  }
+  if (legacy) {
+    Preferences w;
+    if (w.begin(NS_PV, false)) {
+      w.remove(K_GAS_V1);
+      w.end();
+    }
+  }
 }
 
 void gasHistorySave(const GasHistory& g) {
@@ -1026,7 +1420,7 @@ void gasHistorySave(const GasHistory& g) {
   b.ver = GAS_VER;
   b.lastDay = g.lastDay;
   b.head = g.head;
-  memcpy(b.m3x100, g.m3x100, sizeof(b.m3x100));
+  for (int i = 0; i < GasHistory::DAYS; ++i) b.m3[i] = gasCode(g.m3x100[i]);
   nvsPutBytes(prefs, NVS_SLOT_GAS, K_GAS, &b, sizeof(b));
   prefs.end();
 }
@@ -1047,26 +1441,53 @@ void gasHistorySave(const GasHistory& g) {
 // Pole zostaje na potrzeby PLANOWANEGO wykresu: mod == 0 znaczy "palnik zmierzony,
 // stal", i to jest pelnoprawny pomiar, ktory przeprojektowany wykres bedzie chcial
 // odroznic od "nie bylo odczytu" (bez tego cala noc bez odpytow wyglada identycznie
-// jak noc, w ktora piec stal). 144 B w blobie jest tansze teraz niz migracja klucza
-// NVS pozniej.
+// jak noc, w ktora piec stal). (v169) Od tego wydania to pole nie kosztuje w NVS
+// ANI JEDNEGO BAJTU: mieszka jako wartownik 255 w bajcie modulacji (patrz nizej).
 //
-// Ten sam wzorzec, co przy "gas1" i "prof1": wlasny klucz, pole `ver` w blobie,
-// asercja rozmiaru. Rozmiary blobow w przestrzeni "pvday" sa rozne (prof1 = 584,
-// rh2 = 1736, gas1 = 252, burn1 = 296), wiec pomylka o klucz nie ma jak przejsc
+// Ten sam wzorzec, co przy "gas2" i "prof2": wlasny klucz, pole `ver` w blobie,
+// asercja rozmiaru. Rozmiary blobow w przestrzeni "pvday" sa rozne (prof2 = 292,
+// rh3 = 872, gas2 = 128, burn2 = 148), wiec pomylka o klucz nie ma jak przejsc
 // przez kontrole getBytesLength().
 namespace {
+
+// (v169) `filled` NIE MA JUZ WLASNEJ TABLICY — MIESZKA W WARTOSCI MODULACJI.
+// Komentarz wyzej mowi, po co to pole istnieje (planowany wykres ma odroznic
+// "palnik zmierzony, stal" od "nie bylo odczytu") i ta informacja zostaje w calosci.
+// Zmienia sie sposob zapisu: modulacja ma zakres 0..100, wiec 155 wartosci bajtu
+// stalo pustych. Kod 255 znaczy "NIE BYLO ODCZYTU" i zastepuje cala 144-bajtowa
+// tablice filled[].
+//
+// DLACZEGO NIE MASKA BITOWA: sprawdzone, nie zgadniete. Maska 18 B daje blob 166 B,
+// a to nadal SZESC rozpoczetych blokow po 32 B, czyli 8 wpisow NVS. Wartownik w
+// bajcie modulacji daje 148 B = piec blokow = 7 wpisow. Jeden wpis roznicy przesadza
+// o tym, czy suma cyklu miesci sie w polowie dostepnej puli — a informacji nie tracimy
+// ani na jotę, w odroznieniu od odtwarzania filled z `mod > 0` (tak robi PvHistory,
+// i tam wlasnie ginie roznica miedzy "zmierzone zero" a "brak pomiaru").
+constexpr uint8_t BURN_MOD_NONE = 255;
+
 struct BurnerBlob {
   uint16_t ver;
-  int32_t day;                            // tm_yday
-  uint8_t mod[BurnerHistory::SLOTS];      // 0..100 %
-  uint8_t filled[BurnerHistory::SLOTS];   // 0/1 — patrz wyzej: pole na zapas
+  int16_t day;                            // tm_yday (0..365)
+  // 0..100 = zmierzona modulacja w procentach, 255 = nie bylo odczytu w tym slocie
+  uint8_t mod[BurnerHistory::SLOTS];
 };
-constexpr uint16_t BURN_VER = 1;
-constexpr const char* K_BURN = "burn1";
+constexpr uint16_t BURN_VER = 2;
+constexpr const char* K_BURN = "burn2";
 
-static_assert(sizeof(BurnerBlob) == 296,
-              "zmienil sie uklad profilu palnika - podbij klucz NVS na \"burn2\", "
+static_assert(sizeof(BurnerBlob) == 148,
+              "zmienil sie uklad profilu palnika - podbij klucz NVS na \"burn3\", "
               "inaczej stary blob wczyta sie jako nowy (cicha korupcja)");
+
+// --- uklad v1 ("burn1", 296 B) — TYLKO DO MIGRACJI --------------------------
+struct BurnerBlobV1 {
+  uint16_t ver;
+  int32_t day;
+  uint8_t mod[BurnerHistory::SLOTS];
+  uint8_t filled[BurnerHistory::SLOTS];
+};
+static_assert(sizeof(BurnerBlobV1) == 296, "uklad v1 profilu palnika mial 296 B");
+constexpr const char* K_BURN_V1 = "burn1";
+
 }  // namespace
 
 void burnerHistoryLoad(BurnerHistory& h) {
@@ -1076,13 +1497,37 @@ void burnerHistoryLoad(BurnerHistory& h) {
     return;
   }
   BurnerBlob b{};
-  if (prefs.getBytesLength(K_BURN) == sizeof(b) &&
-      prefs.getBytes(K_BURN, &b, sizeof(b)) == sizeof(b) && b.ver == BURN_VER &&
-      b.day >= 0) {
-    memcpy(h.mod, b.mod, sizeof(h.mod));
+  bool migrated = false;
+  bool ok = prefs.getBytesLength(K_BURN) == sizeof(b) &&
+            prefs.getBytes(K_BURN, &b, sizeof(b)) == sizeof(b) && b.ver == BURN_VER &&
+            b.day >= 0;
+  // (v169) MIGRACJA Z "burn1": ten profil zyje jedna dobe, wiec strata boli mniej niz
+  // przy gazie — ale to nadal wykres, ktory wlasciciel wlasnie oglada, a przepisanie
+  // kosztuje kilkanascie linii. `filled` znika jako tablica i wchodzi w wartownika.
+  if (!ok && prefs.getBytesLength(K_BURN_V1) == sizeof(BurnerBlobV1)) {
+    BurnerBlobV1 v1{};
+    if (prefs.getBytes(K_BURN_V1, &v1, sizeof(v1)) == sizeof(v1) && v1.ver == 1 &&
+        v1.day >= 0) {
+      b = BurnerBlob{};
+      b.ver = BURN_VER;
+      b.day = static_cast<int16_t>(v1.day);
+      for (int i = 0; i < BurnerHistory::SLOTS; ++i) {
+        b.mod[i] = v1.filled[i] != 0 ? (v1.mod[i] > 100 ? 100 : v1.mod[i])
+                                     : BURN_MOD_NONE;
+      }
+      ok = true;
+      migrated = true;
+    }
+  }
+  if (ok) {
     // Przez petle, nie memcpy: `filled` w BurnerHistory to bool[], a bool o wartosci
-    // innej niz 0/1 (choćby ze smiecia w NVS) to zachowanie niezdefiniowane.
-    for (int i = 0; i < BurnerHistory::SLOTS; ++i) h.filled[i] = b.filled[i] != 0;
+    // innej niz 0/1 (choćby ze smiecia w NVS) to zachowanie niezdefiniowane. Przy
+    // okazji rozpakowujemy wartownika 255 z powrotem na pare (mod, filled).
+    for (int i = 0; i < BurnerHistory::SLOTS; ++i) {
+      const uint8_t v = b.mod[i];
+      h.filled[i] = v <= 100;
+      h.mod[i] = h.filled[i] ? v : 0;
+    }
     h.day = b.day;
     // (v168) LOG(): profil palnika to RODZENSTWO profilu PV — ten sam blad zapisu
     // uderzy w oba, a "wykres pieca pusty po restarcie" jest dokladnie tym objawem,
@@ -1092,7 +1537,19 @@ void burnerHistoryLoad(BurnerHistory& h) {
   } else {
     LOG("Piec: BRAK profilu palnika w NVS — wykres pieca startuje pusty\n");
   }
+  const bool legacy = prefs.isKey(K_BURN_V1);
   prefs.end();
+  // (v169) Nowy blob NAJPIERW, kasowanie starego POTEM — patrz pvHistoryLoad.
+  if (migrated) {
+    burnerHistorySave(h);
+  }
+  if (legacy) {
+    Preferences w;
+    if (w.begin(NS_PV, false)) {
+      w.remove(K_BURN_V1);
+      w.end();
+    }
+  }
   // Profil ze WCZORAJ zostaje tu CELOWO nietkniety i CELOWO nie sprawdzamy daty:
   // przy starcie NTP jeszcze nie odpowiedzial, wiec tm_yday bylby z 1970 i skasowalby
   // dobry profil. Kasowanie doby jest osobno, w netTask, gdzie zegar jest juz pewny —
@@ -1109,9 +1566,12 @@ void burnerHistorySave(const BurnerHistory& h) {
   }
   BurnerBlob b{};
   b.ver = BURN_VER;
-  b.day = h.day;
-  memcpy(b.mod, h.mod, sizeof(b.mod));
-  for (int i = 0; i < BurnerHistory::SLOTS; ++i) b.filled[i] = h.filled[i] ? 1 : 0;
+  b.day = static_cast<int16_t>(h.day);
+  for (int i = 0; i < BurnerHistory::SLOTS; ++i) {
+    // Przyciecie do 100 nie jest ozdoba: bez niego modulacja 255 z uszkodzonego
+    // odczytu zapisalaby sie jako wartownik "brak pomiaru" i slot zniknalby z wykresu.
+    b.mod[i] = h.filled[i] ? (h.mod[i] > 100 ? 100 : h.mod[i]) : BURN_MOD_NONE;
+  }
   nvsPutBytes(prefs, NVS_SLOT_BURN, K_BURN, &b, sizeof(b));
   prefs.end();
 }
@@ -1132,9 +1592,9 @@ void burnerHistorySave(const BurnerHistory& h) {
 // NIETKNIETE, bo kazda ich zmiana kasuje zbiory przy najblizszym OTA.
 //
 // WLASNY KLUCZ, NIE DOKLEJANIE DO ISTNIEJACEGO BLOBU — ten sam wzorzec, co przy
-// "mtr1" i "prof1": osobna struktura, pole wersji, kontrola rozmiaru w czasie
-// kompilacji. Rozmiary blobow w przestrzeni "pvday" sa PARAMI ROZNE (prof1 = 584,
-// rh2 = 1736, gas1 = 252, burn1 = 296, mtr1 = 24, airh = 52, sen1 = 424), wiec
+// "mtr2" i "prof2": osobna struktura, pole wersji, kontrola rozmiaru w czasie
+// kompilacji. Rozmiary blobow w przestrzeni "pvday" sa PARAMI ROZNE (prof2 = 292,
+// rh3 = 872, gas2 = 128, burn2 = 148, mtr2 = 32, airh = 52, sen1 = 424), wiec
 // pomylka o klucz nie przejdzie przez kontrole getBytesLength().
 //
 // DLACZEGO KOPIA 1:1 CALYCH STRUKTUR, A NIE WYBRANE POLA: przepisywanie pole po

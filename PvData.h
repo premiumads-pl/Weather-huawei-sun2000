@@ -82,16 +82,58 @@ struct PvModel {
 // pierwszy odczyt po porannym starcie urzadzenia ustawilby baze o 08:00 i
 // "z sieci dzis" po cichu pomijaloby cala noc — czyli DOKLADNIE ten blad, ktory
 // to wydanie usuwa, tylko innym mechanizmem.
+// Co zrobila pvMeterUpdate() z baza — do zalogowania i do decyzji o zapisie NVS.
+// (v169) Definicja WYZEJ niz PvMeterBase, bo baza pamieta teraz zdarzenie, ktore ja
+// ustawilo (pole `event`) — inaczej po dobie nie da sie powiedziec, czy stoi tam
+// normalne przestawienie o polnocy, czy pierwsza baza po aktualizacji.
+enum class PvBaseEvent : uint8_t {
+  NONE,       // baza bez zmian (typowy cykl w srodku doby)
+  SET_FIRST,  // baza nie istniala — pierwszy start po aktualizacji
+  ROLLED,     // zmiana daty: normalne przestawienie bazy na nowa dobe
+  WENT_BACK,  // licznik zmalal (wymiana miernika, reset, przepelnienie)
+};
+
 struct PvMeterBase {
   int32_t year = 0;         // tm_year + 1900
   int32_t yday = -1;        // tm_yday dnia, KTOREGO dotyczy baza
   float importKwh = -1.f;   // stan rej. 37121 o polnocy
   float exportKwh = -1.f;   // stan rej. 37119 o polnocy
   int16_t minute = -1;      // minuta doby lokalnej zlapania bazy (0..1439)
+  // (v169) ODLEGLOSC OD POLNOCY W MINUTACH, ZE ZNAKIEM. Ujemna = baze wziesto
+  // z odczytu SPRZED polnocy (wczoraj o 23:56 => -4), dodatnia = z odczytu po
+  // polnocy (02:23 => +143). Samo `minute` tego nie rozstrzyga: 1436 to zarowno
+  // "wczoraj tuz przed polnoca" (baza bardzo dobra), jak i "dzis o 23:56" (baza
+  // bezuzyteczna) — a to jest DOKLADNIE ta roznica, ktora decyduje o `full`.
+  int16_t offsetMin = 0;
   bool valid = false;       // baza w ogole istnieje
   // Czy baze zlapano dosc blisko polnocy, zeby roznica opisywala CALA dobe.
   // false => ekran NIE pokazuje liczb z miernika i wraca do calki z v164.
   bool full = false;
+  // Zdarzenie, ktore ustawilo te baze (PvBaseEvent jako uint8, zeby blob NVS mial
+  // jawny rozmiar pola). Tylko do diagnostyki — logika nigdzie po tym nie rozgalezia.
+  uint8_t event = 0;
+
+  // --- (v169) OSTATNI UDANY ODCZYT LICZNIKOW — SERCE NAPRAWY Z TEGO WYDANIA ------
+  // Do v168 baza mogla powstac WYLACZNIE z odczytu wykonanego JUZ PO polnocy, bo
+  // pvMeterUpdate() jest wolana tylko z galezi `if (ok)` w netTask, czyli po w pelni
+  // udanym cyklu Modbus. Kazdy nieudany cykl przesuwal wiec baze w glab nocy, a raz
+  // ustawiona baza z `full == false` zostawala taka do NASTEPNEJ polnocy — jedna
+  // spozniona chwila psula CALA dobe. Zmierzone na urzadzeniu 17.08.2026: baza
+  // o 02:23, czyli 143 minuty za progiem 30 min, i `today_ok: false` przez caly dzien.
+  //
+  // Liczniki miernika sa NARASTAJACE, wiec odczyt sprzed polnocy jest rownie dobra
+  // baza, co odczyt po polnocy — a zwykle LEPSZA, bo wypada blizej polnocy.
+  // Zapamietujemy go przy KAZDYM udanym odczycie i przy przelomie doby wybieramy
+  // to z dwoch, co jest BLIZEJ polnocy.
+  //
+  // CO KOMU PRZYPISUJEMY: energia zuzyta miedzy odczytem-baza a sama polnoca ladu-
+  // je w dobie NOWEJ (bo od tego punktu liczymy "dzis"). Przy nocnym poborze domu
+  // 0,2-0,3 kW i progu 30 min to najwyzej 0,15 kWh na ~13 kWh doby, czyli ~1%.
+  // Dla ODDANIA do sieci blad wynosi DOKLADNIE ZERO: noca nie ma produkcji, wiec
+  // licznik oddania stoi i jest obojetne, w ktorej minucie nocy go odczytamy.
+  uint32_t lastEpoch = 0;       // epoch ostatniego udanego odczytu; 0 = brak
+  float lastImportKwh = -1.f;   // rej. 37121 z tamtej chwili
+  float lastExportKwh = -1.f;   // rej. 37119 z tamtej chwili
 };
 
 // Prog "baza jest pelna". Nocny pobor domu to ~0,2-0,3 kW (zmierzone: rej. 37113
@@ -101,15 +143,16 @@ struct PvMeterBase {
 // odczycie wynosi 30 s (cfg::PV_REFRESH_MS), wiec `minute` wychodzi 0 albo 1.
 // Prog istnieje dla przypadku, w ktorym falownik JEDNAK zamilkl na cala noc —
 // wtedy baza wypada rano, jest jawnie niepelna i ekran uczciwie wraca do calki.
+// (v169) PROG ZOSTAJE PRZY 30 MINUTACH i to jest decyzja, nie przeoczenie.
+// Kusilo, zeby go poluzowac (baza o 02:23 zmiescilaby sie przy progu 150 min), ale
+// to leczyloby OBJAW: przy nocnym poborze 0,3 kW prog 150 min wpisuje 0,75 kWh
+// cudzej doby w "dzis", czyli ~6% dobowego poboru, i robi to po cichu. Naprawiony
+// zostal MECHANIZM (patrz `lastEpoch` w PvMeterBase): baza siega teraz po odczyt
+// sprzed polnocy, wiec przy falowniku odpowiadajacym noca odleglosc od polnocy to
+// najwyzej jedna kadencja — 30 s w dzien, 5 min noca. Prog 30 min jest wiec z
+// ogromnym zapasem, a gdy falownik NAPRAWDE przespi cala noc, ekran ma uczciwie
+// zejsc do calki zamiast pokazac liczbe z 6-procentowym, niewidocznym bledem.
 constexpr int PV_BASE_FULL_MIN = 30;
-
-// Co zrobila pvMeterUpdate() z baza — do zalogowania i do decyzji o zapisie NVS.
-enum class PvBaseEvent : uint8_t {
-  NONE,       // baza bez zmian (typowy cykl w srodku doby)
-  SET_FIRST,  // baza nie istniala — pierwszy start po aktualizacji
-  ROLLED,     // zmiana daty: normalne przestawienie bazy na nowa dobe
-  WENT_BACK,  // licznik zmalal (wymiana miernika, reset, przepelnienie)
-};
 
 // Aktualizuje baze i wpisuje do `s` wartosci "dzis". Czysta logika: zadnego NVS,
 // zadnego logowania, zadnej sieci — zapis i log robi wolajacy (netTask), bo tylko
@@ -139,6 +182,22 @@ inline PvBaseEvent pvMeterUpdate(PvSnapshot& s, PvMeterBase& b, time_t now) {
   const int32_t yr = tmv.tm_year + 1900;
   const int32_t yd = tmv.tm_yday;
   const int16_t mi = static_cast<int16_t>(tmv.tm_hour * 60 + tmv.tm_min);
+  // Polnoc OTWIERAJACA biezaca dobe lokalna, w epochu. Liczona przez odjecie
+  // sekund od poczatku doby, a NIE przez mktime() z wyzerowana godzina: mktime()
+  // na przelomie czasu letniego/zimowego potrafi oddac godzine obok, a tutaj
+  // wynik jest odejmowany od stempli i blad o godzine przesunalby CALA dobe.
+  const uint32_t midnight = static_cast<uint32_t>(now) -
+                            static_cast<uint32_t>(tmv.tm_hour * 3600 + tmv.tm_min * 60 +
+                                                  tmv.tm_sec);
+
+  // (v169) Kandydat SPRZED polnocy: ostatni udany odczyt z poprzedniej doby.
+  // `prevOff` jest ujemne, gdy tamten odczyt padl przed ta polnoca.
+  const bool havePrev = b.lastEpoch >= 1700000000UL && b.lastImportKwh >= 0.f &&
+                        b.lastExportKwh >= 0.f;
+  const int32_t prevOff =
+      havePrev ? static_cast<int32_t>((static_cast<int64_t>(b.lastEpoch) -
+                                       static_cast<int64_t>(midnight)) / 60)
+               : 0;
 
   PvBaseEvent ev = PvBaseEvent::NONE;
   if (!b.valid) {
@@ -154,19 +213,54 @@ inline PvBaseEvent pvMeterUpdate(PvSnapshot& s, PvMeterBase& b, time_t now) {
   }
 
   if (ev != PvBaseEvent::NONE) {
+    // (v169) WYBOR ODCZYTU NA BAZE: ten z dwoch, ktory jest BLIZEJ polnocy.
+    // Domyslnie biezacy (offset = minuty PO polnocy, zawsze >= 0). Odczyt sprzed
+    // polnocy wygrywa tylko przy ROLLED (przelom doby) i tylko wtedy, gdy naprawde
+    // lezy blizej — porownanie jest na wartosciach bezwzglednych, wiec odczyt sprzed
+    // dwoch dob (urzadzenie stalo) przegrywa sam z siebie i nie trzeba go osobno
+    // odsiewac data.
+    //
+    // SET_FIRST i WENT_BACK celowo NIE siegaja po odczyt sprzed polnocy: przy
+    // SET_FIRST nie wiemy, czy tamten odczyt w ogole dotyczy tej samej instalacji
+    // (pierwszy start po aktualizacji), a przy WENT_BACK licznik wlasnie sie cofnal,
+    // wiec starsza wartosc jest TYM WIEKSZYM klamstwem.
+    int32_t off = mi;
+    float impKwhBase = s.meterImportKwh;
+    float expKwhBase = s.meterExportKwh;
+    int16_t at = mi;
+    if (ev == PvBaseEvent::ROLLED && havePrev && prevOff < 0 && -prevOff < off) {
+      off = prevOff;
+      impKwhBase = b.lastImportKwh;
+      expKwhBase = b.lastExportKwh;
+      at = static_cast<int16_t>(1440 + prevOff);   // prevOff w (-1440, 0) — patrz warunek
+    }
     b.year = yr;
     b.yday = yd;
-    b.minute = mi;
-    b.importKwh = s.meterImportKwh;
-    b.exportKwh = s.meterExportKwh;
+    b.minute = at;
+    b.offsetMin = static_cast<int16_t>(off < -1440 ? -1440 : (off > 1439 ? 1439 : off));
+    b.importKwh = impKwhBase;
+    b.exportKwh = expKwhBase;
     b.valid = true;
+    b.event = static_cast<uint8_t>(ev);
     // PELNA jest WYLACZNIE baza przestawiona na przelomie doby i dosc blisko
     // polnocy. SET_FIRST (pierwszy start po aktualizacji) pelna nie jest NIGDY,
     // nawet gdy wypadnie o 00:05: nie znamy wtedy stanu licznika z tej polnocy
     // — znamy stan sprzed chwili. Ta doba dojezdza na calce z v164, a miernik
     // przejmuje ekran od nastepnej polnocy. WENT_BACK tez nie jest pelna.
-    b.full = (ev == PvBaseEvent::ROLLED) && (mi <= PV_BASE_FULL_MIN);
+    // (v169) Wartosc BEZWZGLEDNA offsetu: baza sprzed polnocy jest tak samo dobra
+    // jak baza po polnocy, liczy sie odleglosc, nie strona.
+    const int32_t dist = off < 0 ? -off : off;
+    b.full = (ev == PvBaseEvent::ROLLED) && (dist <= PV_BASE_FULL_MIN);
   }
+
+  // (v169) Zapamietanie BIEZACEGO odczytu jako "ostatniego" — PO uzyciu poprzedniego
+  // do wyboru bazy, inaczej kandydat sprzed polnocy zostalby nadpisany, zanim ktos
+  // po niego siegnie. Leci przy KAZDYM udanym odczycie, takze gdy zdarzenia nie bylo:
+  // to jest wlasnie ten odczyt, ktory za kilkanascie godzin bedzie "ostatnim przed
+  // polnoca".
+  b.lastEpoch = static_cast<uint32_t>(now);
+  b.lastImportKwh = s.meterImportKwh;
+  b.lastExportKwh = s.meterExportKwh;
 
   if (!b.full) {
     return ev;
@@ -196,10 +290,13 @@ inline PvBaseEvent pvMeterUpdate(PvSnapshot& s, PvMeterBase& b, time_t now) {
 //
 // TRWALOSC: ta struktura jest utrwalana w NVS - patrz pvHistoryLoad/Save
 // w Settings.cpp. NIE jest zapisywana bajt w bajt: idzie przez wlasna strukture
-// PvProfileBlob pod kluczem "prof1", z polem wersji. Kazda zmiana ukladu ALBO
+// PvProfileBlob pod kluczem "prof2", z polem wersji. Kazda zmiana ukladu ALBO
 // znaczenia `watts`/`load` (np. przejscie z watow na dziesiatki watow - rozmiar
 // zostaje ten sam!) MUSI podbic PV_PROF_VER albo klucz, inaczej stary profil
 // wczyta sie jako nowy i wykres pokaze nieprawde bez zadnego ostrzezenia.
+// (v169) Do NVS probka idzie w JEDNYM BAJCIE, po skali nieliniowej — w RAM
+// zostaje pelne uint16 [W]. Kwantyzacja dotyczy wylacznie tego, co przezylo
+// restart; szczegoly i blad w pikselach przy pvWattValue() w Settings.cpp.
 struct PvHistory {
   static constexpr int SLOTS = 144;
   uint16_t watts[SLOTS] = {};  // produkcja PV [W]
