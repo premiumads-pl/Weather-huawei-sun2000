@@ -1,40 +1,63 @@
-# Wlasny uklad partycji: TO SAMO co min_spiffs, ale BEZ nieuzywanego obszaru SPIFFS.
-# Odzyskane 128 kB idzie po polowie do obu partycji aplikacji.
+# Wlasny uklad partycji: BEZ nieuzywanego SPIFFS i z DUZYM NVS.
 #
-# PO CO: min_spiffs rezerwuje 128 kB na system plikow, ktorego ten projekt NIE UZYWA
-# (zweryfikowane: zaden plik zrodlowy nie siega po SPIFFS/LittleFS/FFat; partycja
-# istnieje wylacznie jako pozycja w tablicy i jest pokazywana na ekranie PAMIEC
-# z dopiskiem "nieuz."). Przy dwoch wygladach interfejsu (V1 + V2) flash jest
-# najciasniejszym zasobem, wiec te 128 kB warto odzyskac.
+# HISTORIA TEGO PLIKU
+# -------------------
+# v1 (21.07.2026): min_spiffs minus SPIFFS. Odzyskane 128 kB poszlo po polowie do app0
+#   i app1 (1920 -> 1984 kB), bo przy trzech wygladach interfejsu flash byl najciasniejszym
+#   zasobem. NVS zostal przy 20 kB odziedziczonych z min_spiffs.
+# v2 (17.08.2026): NVS 20 kB -> 148 kB kosztem partycji aplikacji (1984 -> 1920 kB).
 #
-# CO SIE ZMIENIA: app0 i app1 rosna z 0x1E0000 (1920 kB) do 0x1F0000 (1984 kB),
-# czyli +64 kB KAZDA. OTA dziala bez zmian — nadal sa DWIE partycje aplikacji,
-# wiec aktualizacja po sieci ma dokad wgrac nowy obraz i jest z czego wrocic.
+# PO CO POWIEKSZENIE NVS (v2)
+# ---------------------------
+# 17.08.2026 urzadzenie zaczelo PO CICHU gubic dane: po restarcie znikal caly dzienny
+# profil PV. Pomiar (nvs_get_stats, wystawiony w /api/diag od v168) pokazal, ze przy
+# 20 kB partycja ma 630 wpisow po 32 B, z czego jedna strona z pieciu jest stale
+# rezerwowana na kompaktowanie — DOSTEPNYCH bylo 111. Tymczasem jeden pelny cykl zapisu
+# wszystkich zbiorow potrzebowal 123 wpisow, a NVS zapisuje NOWA kopie blobu, ZANIM
+# zwolni stara. Zapisy zwracaly blad, ktorego do v168 nikt nie sprawdzal.
+# v169 zbil cykl do 78 wpisow (kwantyzacja + rozsuniecie zapisow w czasie), ale to
+# leczenie objawu: kazdy nowy zbior danych znow zblizalby nas do sciany.
+# 148 kB daje 37 stron = ~4660 wpisow zamiast 630. Zapas na lata, nie na miesiac.
 #
-# CZEGO NIE RUSZAMY: coredump (64 kB) zostaje. To jedyne zrodlo wiedzy o tym,
-# dlaczego urzadzenie padlo — swiadoma decyzja wlasciciela, zeby nie oddawac
-# diagnostyki za 16 kB flasha.
+# DLACZEGO AKURAT 148 kB, A NIE OKRAGLE 64 CZY 128
+# ------------------------------------------------
+# Partycja APLIKACJI musi zaczynac sie na granicy 64 kB (0x10000). To wymusza skoki.
+# Przy tym ukladzie app0 zaczyna sie na 0x30000, a app1 na 0x210000 — obie po 1920 kB,
+# czyli tyle, ile daje standardowe min_spiffs. Caly flash 4 MB jest wykorzystany
+# CO DO BAJTU: 0x9000 + 0x25000 + 0x2000 + 0x1E0000 + 0x1E0000 + 0x10000 = 0x400000.
+# Kazdy mniejszy NVS zostawialby 64 kB DZIURY, bo aplikacje i tak nie moglyby urosnac
+# do nastepnego dozwolonego rozmiaru (1984 kB) — zabrakloby na nie miejsca.
+#
+# CENA: zapas w partycji aplikacji spada z 203 kB na 138 kB (firmware v169 = 1,83 MB).
+# Dla skali: przez cala sesje 16-17.08, pietnascie wydan, firmware urosl o ~25 kB.
+#
+# CZEGO NIE RUSZAMY: coredump (64 kB). To jedyne zrodlo wiedzy o tym, dlaczego
+# urzadzenie padlo — swiadoma decyzja wlasciciela, zeby nie oddawac diagnostyki.
 #
 # !!! WYMAGA WGRANIA PRZEZ USB !!!
-# Aktualizacja po sieci (OTA) wgrywa TYLKO obraz aplikacji do drugiej polowki —
-# NIE potrafi zmienic tablicy partycji, ktora lezy pod adresem 0x8000. Zmiana
-# ukladu wymaga wiec jednorazowego podlaczenia kablem. Po niej OTA dziala dalej
-# normalnie.
+# Aktualizacja po sieci wgrywa TYLKO obraz aplikacji do drugiej polowki — NIE potrafi
+# zmienic tablicy partycji, ktora lezy pod adresem 0x8000, POZA wszystkimi partycjami.
+# I dobrze: nieudany zapis pod 0x8000 zamienia urzadzenie w cegle, bo bootloader nie
+# wie juz, gdzie szukac programu, a zadna siec tego nie odratuje.
 #
-# JAK WGRAC (z katalogu projektu, urzadzenie podlaczone przez USB):
-#   arduino-cli compile --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=custom,PSRAM=enabled" .
-#   arduino-cli upload  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=custom,PSRAM=enabled" -p <PORT> .
-# Plik musi nazywac sie partitions.csv w katalogu szkicu, zeby rdzen go zobaczyl
-# przy PartitionScheme=custom — patrz instrukcja przy wdrozeniu.
+# JAK WGRAC (urzadzenie podlaczone kablem, port np. /dev/cu.usbmodem1101):
+#   arduino-cli compile --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=custom,PSRAM=enabled" --output-dir build .
+#   esptool --port <PORT> --baud 921600 write-flash \
+#       0x0 build/pogoda-gdynia.ino.bootloader.bin \
+#       0x8000 build/pogoda-gdynia.ino.partitions.bin \
+#       0x30000 build/pogoda-gdynia.ino.bin
+# NIGDY nie uzywac erase-flash ani erase-region na 0x9000 — to kasuje NVS, czyli
+# haslo WiFi, token pieca, klucze czujnikow i WSZYSTKIE zbiory pomiarowe.
 #
-# UWAGA: pierwsze uruchomienie po zmianie ukladu kasuje zawartosc NVS tylko wtedy,
-# gdy przesunelby sie POCZATEK partycji nvs. Tutaj nvs i otadata zostaja na swoich
-# adresach (0x9000 i 0xe000), wiec ustawienia (WiFi, MQTT, klucze BLE, token pieca,
-# wybrany wyglad) PRZEZYWAJA zmiane.
+# CO Z DANYMI PRZY TEJ ZMIANIE: nvs zaczyna sie pod tym SAMYM adresem 0x9000 i tylko
+# rosnie "w prawo", wiec istniejace strony NVS zostaja na miejscu i sa dalej wazne;
+# dolozone strony sa puste i biblioteka inicjalizuje je sama. Ustawienia i zbiory
+# przezywaja. otadata PRZESUWA sie (0xe000 -> 0x2e000), wiec po tej zmianie bootloader
+# nie wie, z ktorej polowki startowac i bierze app0 — dlatego program wgrywamy do app0.
 #
 # Name,     Type, SubType,  Offset,   Size,     Flags
-nvs,        data, nvs,      0x9000,   0x5000,
-otadata,    data, ota,      0xe000,   0x2000,
-app0,       app,  ota_0,    0x10000,  0x1F0000,
-app1,       app,  ota_1,    0x200000, 0x1F0000,
+nvs,        data, nvs,      0x9000,   0x25000,
+otadata,    data, ota,      0x2E000,  0x2000,
+app0,       app,  ota_0,    0x30000,  0x1E0000,
+app1,       app,  ota_1,    0x210000, 0x1E0000,
 coredump,   data, coredump, 0x3F0000, 0x10000,
