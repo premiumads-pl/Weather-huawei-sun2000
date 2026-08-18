@@ -4245,6 +4245,29 @@ void apiForget() {
   ESP.restart();
 }
 
+// Nieznany endpoint DANYCH musi konczyc sie kodem 404, bo odeslanie panelu z kodem 200
+// jest dla klienta API (Home Assistant, curl, wlasny skrypt) FALSZYWYM SUKCESEM: dostaje
+// "OK" i tresc, ktorej nie da sie sparsowac, wiec literowka w adresie wychodzi dopiero
+// przy probie odczytu pola — albo wcale, jesli klient tylko sprawdza kod odpowiedzi.
+// Wszystko POZA /api/ dostaje strone dokladnie jak dotad i tak ma zostac: na tym stoi
+// captive portal. Telefon po wejsciu do AP urzadzenia puka pod swoje wlasne adresy
+// (/generate_204, /hotspot-detect.html, /ncsi.txt, cokolwiek producent wymysli) i musi
+// dostac panel; blad w odpowiedzi na ktorykolwiek z nich sprawia, ze okienko logowania
+// w ogole sie nie otwiera i wlasciciel nie ma jak skonfigurowac WiFi.
+// SWIADOMIE: tutaj wpada takze NIEZGODNOSC METODY — np. GET /api/bl, gdzie zarejestrowany
+// jest sam HTTP_POST — i od teraz dostanie 404, a nie panel. To NIE jest 405 i nie udajemy,
+// ze jest: w tym miejscu serwer nie mowi nam, czy sciezka istnieje pod inna metoda, wiec
+// nie mamy z czego zbudowac uczciwej odpowiedzi "zla metoda".
+void sendNotFound() {
+  const String u = server.uri();
+  if (u == "/api" || u.startsWith("/api/")) {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(404, "application/json; charset=utf-8", "{\"err\":\"nieznany endpoint\"}");
+    return;
+  }
+  sendPage();
+}
+
 void routes() {
   server.on("/", sendPage);
   server.on("/api/state", apiState);
@@ -4293,7 +4316,7 @@ void routes() {
   // Recznie: curl -X POST "http://<ip>/api/vi/set?t=45"
   server.on("/api/vi/set", HTTP_POST, apiViSet);
   server.on("/vicare", apiViCallback);   // tu wraca autoryzacja
-  server.onNotFound(sendPage);  // captive portal
+  server.onNotFound(sendNotFound);  // captive portal + 404 dla nieznanych /api/
   server.begin();
   started = true;
 }
