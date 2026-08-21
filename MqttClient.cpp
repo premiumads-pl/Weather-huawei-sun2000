@@ -1,6 +1,7 @@
 #include "MqttClient.h"
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
 #include <cstdarg>
@@ -15,6 +16,15 @@
 // Celowo NIE wlaczamy WeatherIcons.h — to naglowek z ~96 kB tablic ikon
 // (static const w naglowku = osobna kopia w kazdej jednostce kompilacji)
 // i calym TFT_eSPI w zaleznosciach. Opis pogody skladamy nizej sami.
+//
+// (v174) ArduinoJson JEST juz w tym programie (WeatherClient, AirClient,
+// FlightClient, BleGateway) i to on rozstrzyga wybor parsera dla przychodzacego
+// <prefix>/auto/stan: drugi, recznie pisany skaner JSON-a bylby DRUGA definicja
+// tego, jak w tym projekcie czyta sie odpowiedzi — a takich rozjazdow ten plik
+// juz raz kosztowal (patrz "38/22" przy sendDiscovery nizej). Naglowek jest
+// szablonowy i nie dodaje ANI BAJTA statycznego RAM-u; JsonDocument bierze swoja
+// pule na STERCIE, na czas jednego wywolania parsera (kilkaset bajtow przy 150 B
+// ladunku), i oddaje ja przed powrotem z callbacku.
 
 namespace mqttha {
 namespace {
@@ -24,9 +34,20 @@ namespace {
 // jaki wysylamy, to retained config encji. Przy maksymalnym prefiksie (23 znaki)
 // i najdluzszej nazwie encji wychodzi 430 B razem z tematem i naglowkiem — 512 B
 // daje na to zapas, a jest to okolo 1/80 tego, co zjada jeden handshake TLS.
-// Nic nie subskrybujemy, wiec bufor wejsciowy (ten sam) nie musi byc wiekszy:
-// przychodza tylko CONNACK (4 B) i PINGRESP (2 B).
 // publishConfig() i tak sprawdza rozmiar kazdego pakietu i odrzuca za duze.
+//
+// (v174) BUFORA NIE POWIEKSZAMY, mimo ze od tego wydania takze ODBIERAMY. Ten sam
+// bufor obsluguje oba kierunki, wiec trzeba bylo policzyc najwiekszy pakiet
+// PRZYCHODZACY — czyli PUBLISH na <prefix>/auto/stan:
+//     1 B naglowka stalego + 2 B dlugosci zmiennej (ladunek > 127 B)
+//   + 2 B dlugosci tematu + 33 B tematu (23 znaki maks. prefiksu + "/auto/stan")
+//   + ~150 B ladunku JSON (pelny przyklad z opisu tematu ma 151 B)
+//   = ~188 B, czyli 37% bufora i o 242 B MNIEJ niz nasz wlasny pakiet wychodzacy.
+// Bufor wyznacza wiec dalej retained config encji (430 B) i nic sie nie zmienia.
+// Gdyby ktos po drugiej stronie kiedys dolozyl pol do tego JSON-a, granica lezy przy
+// ~470 B ladunku; PubSubClient wieksza wiadomosc PO CICHU ODRZUCA (readPacket ustawia
+// len = 0, PubSubClient.cpp:364), wiec objawem byloby "ekran AUTO przestal sie
+// pokazywac", a nie awaria — dlatego ta granica jest tu wypisana liczba.
 constexpr uint16_t kBufSize = 512;
 
 constexpr uint16_t kKeepAliveS = 60;      // PINGREQ co minute, nie co 15 s
@@ -42,6 +63,22 @@ PubSubClient* gCli = nullptr;
 
 char gDevId[16] = {};   // pg_a1b2c3 — node_id, client id, prefiks unique_id
 char gAvail[36] = {};   // <prefix>/status (LWT)
+char gAutoTopic[40] = {};   // (v174) <prefix>/auto/stan — jedyna nasza subskrypcja
+
+// (v174) Ostatni odebrany stan auta + jego wlasny mutex.
+//
+// MUTEX POWSTAJE TUTAJ, W INICJALIZACJI STATYCZNEJ, a nie leniwie przy pierwszym
+// uzyciu — "if (gMx == nullptr) gMx = xSemaphoreCreateMutex()" samo jest wyscigiem,
+// gdy dwa zadania trafia tam naraz. Dokladnie ta sama decyzja i to samo uzasadnienie,
+// co przy gMx w Viessmann.cpp; tam stoi pelny opis.
+//
+// KTO PISZE, KTO CZYTA: pisze onMessage() (callback PubSubClienta, czyli netTask),
+// czyta autoSnapshot() wolane z petli rysujacej na drugim rdzeniu. 44 B to nie jest
+// zapis atomowy, wiec bez tej blokady dalo by sie zlapac polowe starej i polowe nowej
+// wiadomosci — na ekranie objawiloby sie to naladowaniem z jednej sekundy przy mocy
+// z innej, czyli bledem nie do powiazania z przyczyna.
+AutoModel gAutoRx{};
+SemaphoreHandle_t gAutoMx = xSemaphoreCreateMutex();
 
 uint32_t gNextTryAt = 0;
 uint32_t gBackoffMs = kBackoffMinMs;
@@ -280,6 +317,109 @@ void sendDiscovery() {
       kEntCount, static_cast<unsigned long>(ESP.getFreeHeap()));
 }
 
+// ------------------------------------------------------- ODBIOR: stan auta ----
+// (v174) Do v173 ten klient TYLKO publikowal. Doszedl JEDEN temat przychodzacy:
+// <prefix>/auto/stan, ktory Home Assistant publikuje co ~15 s ze stanem Tesli.
+//
+// Kopiuje najwyzej n-1 znakow do bufora `dst` o rozmiarze `cap` i ZAWSZE zamyka
+// go zerem. Osobna funkcja, bo obie wartosci tekstowe (tryb, stan) maja ten sam
+// problem: JsonDocument oddaje wskaznik do SWOJEJ puli na stercie, ktora ginie
+// razem z dokumentem na koncu onMessage(). Przepisanie do char[] w modelu jest
+// wiec obowiazkowe, a nie kosmetyczne.
+void copyStr(char* dst, size_t cap, const char* src) {
+  if (src == nullptr) { dst[0] = '\0'; return; }
+  strncpy(dst, src, cap - 1);
+  dst[cap - 1] = '\0';
+}
+
+// CALLBACK PubSubClienta — biegnie WEWNATRZ gCli->loop(), czyli w netTasku.
+//
+// CZEGO TU BYC NIE MOZE: rysowania, dotykania sprite'a i BRANIA gLock (globalnej
+// blokady danych z pogoda-gdynia.ino). gLock trzyma rdzen rysujacy na czas
+// kopiowania wszystkich modeli klatki; czekanie na niego w callbacku wstrzymaloby
+// caly netTask — razem z keepalive MQTT, ktory wlasnie ten callback obsluguje.
+// Piszemy wiec do gAutoRx pod WLASNYM mutexem tego modulu (gAutoMx), a przelozeniem
+// danych do modelu ekranowego zajmuje sie petla rysujaca przez autoSnapshot().
+// To ta sama sciezka, ktora chodza dane z BleGateway i Viessmanna.
+void onMessage(char* topic, uint8_t* payload, unsigned int len) {
+  // Subskrybujemy DOKLADNIE jeden temat i bez znakow wieloznacznych, ale broker
+  // potrafi dostarczyc zalegly pakiet z poprzedniej sesji (inny prefiks po zmianie
+  // ustawien), wiec temat sprawdzamy zamiast zakladac.
+  if (topic == nullptr || strcmp(topic, gAutoTopic) != 0) return;
+
+  // LADUNEK NIE JEST ZAKONCZONY ZEREM — PubSubClient oddaje wskaznik w srodek
+  // swojego bufora razem z dlugoscia. Dlatego deserializeJson dostaje jawna
+  // dlugosc, a nie sam wskaznik; przepisywanie do wlasnego bufora tylko po to,
+  // zeby dokleic NUL, byloby 200 B stosu bez powodu.
+  if (len == 0) return;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, payload, static_cast<size_t>(len))) {
+    // Niepelna albo popsuta wiadomosc NIE MOZE skasowac tej poprzedniej: ekran ma
+    // wtedy pokazywac ostatni znany stan i jego wiek, a nie pustke. Tak samo dziala
+    // netTask z gPv/gVi od v161 — blad zostawia dane nietkniete.
+    LOG("MQTT: /auto/stan — zly JSON (%u B)\n", len);
+    return;
+  }
+
+  AutoModel a{};
+  // is<...>() zamiast golego przypisania: ArduinoJson po cichu oddaje 0 dla pola,
+  // ktorego nie ma (ta sama pulapka, co opisana przy Viessmann.h), a "0 kW przy
+  // 0% baterii" wyglada jak prawdziwy pomiar. Wymagamy wiec, zeby wiadomosc niosla
+  // komplet — inaczej odrzucamy ja w calosci i zostajemy przy poprzedniej.
+  if (!doc["soc"].is<int>() || !doc["tryb"].is<const char*>() ||
+      !doc["stan"].is<const char*>()) {
+    LOG("MQTT: /auto/stan — brak pol soc/tryb/stan, pomijam\n");
+    return;
+  }
+
+  const int soc = doc["soc"].as<int>();
+  const int lim = doc["limit"] | 0;
+  const int amp = doc["a"] | 0;
+  // Przyciecie do zakresu pola, nie do zakresu fizyki: soc i limit ida na pasek
+  // baterii jako ulamek szerokosci, wiec 120% wypchneloby wypelnienie poza ekran.
+  a.soc = static_cast<uint8_t>(soc < 0 ? 0 : (soc > 100 ? 100 : soc));
+  a.limitPct = static_cast<uint8_t>(lim < 0 ? 0 : (lim > 100 ? 100 : lim));
+  a.amps = static_cast<uint8_t>(amp < 0 ? 0 : (amp > 255 ? 255 : amp));
+  const int km = doc["km"] | 0;
+  a.rangeKm = static_cast<int16_t>(km < 0 ? 0 : (km > 9999 ? 9999 : km));
+  a.kw = doc["kw"] | 0.f;
+  a.addedKwh = doc["kwh"] | 0.f;
+  a.sunKwh = doc["sl"] | 0.f;
+  a.gridKwh = doc["si"] | 0.f;
+  a.cable = (doc["kabel"] | 0) != 0;
+  copyStr(a.mode, sizeof(a.mode), doc["tryb"]);
+  copyStr(a.state, sizeof(a.state), doc["stan"]);
+  a.atMs = millis();
+  // atMs == 0 znaczy "nigdy nie bylo wiadomosci", wiec przy przekreceniu millis()
+  // (raz na ~49 dni) nie wolno go tak zostawic — jedna milisekunda roznicy jest
+  // niewidoczna, a falszywe "nigdy" wygasiloby ekran na 45 s.
+  if (a.atMs == 0) a.atMs = 1;
+
+  // Sprawdzenie na nullptr, mimo ze mutex powstaje w inicjalizacji statycznej:
+  // xSemaphoreCreateMutex() moze oddac nullptr przy braku sterty, a xSemaphoreTake()
+  // na pustym uchwycie to asercja rdzenia, czyli restart urzadzenia. Ta sama obrona
+  // stoi w autoSnapshot() — bez niej brak 80 B sterty przy starcie wywracalby caly
+  // program zamiast tylko wygasic jeden ekran.
+  if (gAutoMx != nullptr && xSemaphoreTake(gAutoMx, pdMS_TO_TICKS(20)) == pdTRUE) {
+    gAutoRx = a;
+    xSemaphoreGive(gAutoMx);
+  }
+  // Nieudane wziecie mutexu (20 ms to i tak wiecznosc jak na kopie 44 B) oznacza
+  // tylko tyle, ze ta jedna wiadomosc przepadla — nastepna przyjdzie za 15 s.
+  // Czekanie w nieskonczonosc wstrzymaloby keepalive MQTT.
+}
+
+// Subskrypcja tematu auta. Wolana po KAZDYM udanym polaczeniu, bo broker nie
+// pamieta subskrypcji zerwanej sesji (laczymy sie z cleanSession — PubSubClient
+// nie umie inaczej), wiec po kazdym zerwaniu trzeba ja zlozyc od nowa.
+void subscribeAuto() {
+  snprintf(gAutoTopic, sizeof(gAutoTopic), "%s/auto/stan", settings().mqttPrefix);
+  if (!gCli->subscribe(gAutoTopic)) {
+    LOG("MQTT: nie udalo sie zasubskrybowac %s\n", gAutoTopic);
+  }
+}
+
 // ------------------------------------------------------------------ transport --
 
 void teardown(bool sayGoodbye) {
@@ -318,6 +458,10 @@ bool ensureClient() {
   }
   gCli->setKeepAlive(kKeepAliveS);
   gCli->setSocketTimeout(kSockTimeoutS);
+  // (v174) Callback podpinamy PRZED connect() i raz na zycie obiektu — inaczej
+  // pierwszy retained pakiet, ktory broker dosyla natychmiast po SUBSCRIBE, trafilby
+  // w pusty wskaznik i przepadl bez sladu.
+  gCli->setCallback(onMessage);
   return true;
 }
 
@@ -369,6 +513,11 @@ bool tryConnect() {
       static_cast<unsigned long>(ESP.getFreeHeap()));
 
   gCli->publish(gAvail, "online", true);
+  // (v174) SUBSKRYPCJA PRZED discovery, nie po. sendDiscovery() wysyla 38 pakietow
+  // z vTaskDelay miedzy nimi, czyli trwa grubo ponad sekunde — a przez ten czas
+  // ekran AUTO nie mialby jeszcze skad wziac danych, choc broker ma je gotowe jako
+  // retained i odda w tej samej milisekundzie, w ktorej dostanie SUBSCRIBE.
+  subscribeAuto();
   sendDiscovery();
   gNextDevAt = 0;  // od razu wyslij telemetrie urzadzenia
   return true;
@@ -454,6 +603,20 @@ void configChanged() {
   gReconfig = true;
 }
 
+// (v174) Migawka stanu auta dla warstwy rysowania — pelny opis przy deklaracji
+// w MqttClient.h.
+bool autoSnapshot(AutoModel& out) {
+  if (gAutoMx == nullptr) return false;
+  // Krotki timeout zamiast portMAX_DELAY: wola to petla rysujaca, a jedyny
+  // konkurent trzyma mutex na czas przepisania 44 B. Gdyby mimo to nie wyszlo,
+  // klatka zostaje przy poprzednich danych — a nie zacina sie ekran.
+  if (xSemaphoreTake(gAutoMx, pdMS_TO_TICKS(5)) != pdTRUE) return false;
+  const bool have = gAutoRx.atMs != 0;
+  if (have) out = gAutoRx;
+  xSemaphoreGive(gAutoMx);
+  return have;
+}
+
 void loop() {
   const Settings& s = settings();
 
@@ -482,7 +645,10 @@ void loop() {
   }
 
   if (gCli != nullptr && gCli->connected()) {
-    gCli->loop();  // keepalive; nic nie subskrybujemy, wiec nie ma callbackow
+    // Keepalive I ODBIOR: to wlasnie tutaj, w srodku tego wywolania, PubSubClient
+    // wola onMessage() dla kazdego przychodzacego PUBLISH (<prefix>/auto/stan).
+    // Czyli callback biegnie w netTasku — patrz komentarz przy onMessage().
+    gCli->loop();
     if (static_cast<int32_t>(millis() - gNextDevAt) >= 0) {
       publishDevice();
       gNextDevAt = millis() + kDevPublishMs;

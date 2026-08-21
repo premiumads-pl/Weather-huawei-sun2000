@@ -71,14 +71,21 @@ constexpr int CH = cfg::CONTENT_H;                  // 172
 // CB usuniete — bylo martwe (zero uzyc) i bylo TRZECIM bytem opisujacym liczbe 206,
 // obok VIEW_H (jedyny zywy) i skasowanego juz cfg::FOOTER_Y, ktory twierdzil 208.
 
-// PETLA 8 WIDOKOW V3 "Pasmowy" — JEDYNE zrodlo prawdy o kolejnosci (spec 7a):
-// GLOWNY->RADAR->5 DNI->PRAD->POKOJE->OGRZEWANIE->POWIETRZE->SAMOLOTY->(GLOWNY).
+// PETLA 9 WIDOKOW V3 "Pasmowy" — JEDYNE zrodlo prawdy o kolejnosci (spec 7a):
+// GLOWNY->RADAR->5 DNI->PRAD->AUTO->POKOJE->OGRZEWANIE->POWIETRZE->SAMOLOTY->(GLOWNY).
 // NIE numeryczna cfg::VIEW_* — ta kolejnosc jest projektowa. Do v_now byla lokalna
 // w touchTapV3(); wyniesiona tu, bo korzystaja z niej TRZY miejsca w TYM pliku:
 // touchTapV3() (krok 1x), render() (auto-rotacja co dwellS) i v3ProgressPos()
-// (pasek postepu). Pomijanie niedostepnych widokow liczy viewSkipped(v, air_).
+// (pasek postepu). Pomijanie niedostepnych widokow liczy viewSkipped(v, air_, auto_).
+//
+// (v174) AUTO stoi ZARAZ ZA PRADEM, a nie na koncu petli — mimo ze numerycznie jest
+// dwunasty. Powod jest tresciowy: PRAD konczy sie paskiem "DOM DZIŚ" z podzialem na
+// energie z PV i z sieci, a AUTO otwiera dokladnie ten sam podzial dla samochodu
+// ("SKĄD PRĄD DZISIAJ", te same dwa kolory). Postawienie ich obok siebie pozwala
+// przeczytac jedno przez drugie; miedzy POWIETRZEM a SAMOLOTAMI byloby to samo
+// pasmo bez zadnego kontekstu.
 constexpr uint8_t kV3Loop[] = {
-    cfg::VIEW_NOW, cfg::VIEW_RADAR, cfg::VIEW_DAYS, cfg::VIEW_PV,
+    cfg::VIEW_NOW, cfg::VIEW_RADAR, cfg::VIEW_DAYS, cfg::VIEW_PV, cfg::VIEW_AUTO,
     cfg::VIEW_HOME, cfg::VIEW_BOILER, cfg::VIEW_AIR, cfg::VIEW_FLIGHTS};
 constexpr int kV3LoopN = sizeof(kV3Loop) / sizeof(kV3Loop[0]);
 
@@ -418,7 +425,7 @@ void WeatherUi::drawColorTest() {
 // cfg::VIEW_COUNT, zeby indeksowanie dowolnym cfg::VIEW_* dalej bylo w zakresie.
 const char* const kViewNames[cfg::VIEW_COUNT] = {
     "—", "TERAZ", "—", "RADAR", "5 DNI", "W DOMU", "PIEC", "FOTOWOLTAIKA",
-    "SAMOLOTY", "POWIETRZE", "PAMIĘĆ", "RUCH", "STATYSTYKI"};
+    "SAMOLOTY", "POWIETRZE", "PAMIĘĆ", "RUCH", "AUTO", "STATYSTYKI"};
 
 // Zdrowie calego systemu w jednej liczbie: 0 = OK, 1 = uwaga, 2 = awaria.
 //
@@ -492,7 +499,7 @@ int systemHealth(bool wifiOk) {
 // co do v118 stalo wprost w pasku postepu; wydzielenie nie zmienia zadnego z nich,
 // tylko daje im jedno miejsce zamiast dwoch.
 
-bool WeatherUi::viewSkipped(int i, const AirModel* air) {
+bool WeatherUi::viewSkipped(int i, const AirModel* air, const AutoModel* au) {
   // (v162) ZNIKLO STAD jawne pomijanie slotow 0 (RETRO) i 2 (GODZINY). Nie dlatego,
   // ze przestalo byc potrzebne — dlatego, ze BYLO NIEOSIAGALNE. Wszystkie cztery
   // wywolania viewSkipped() (prevViewV3, render, nextViewV3, v3ProgressPos) podaja
@@ -502,7 +509,19 @@ bool WeatherUi::viewSkipped(int i, const AirModel* air) {
   return (i == cfg::VIEW_RADAR && !radarmap::hasRain()) ||
          (i == cfg::VIEW_HOME && ble::count() == 0) ||
          (i == cfg::VIEW_BOILER && !settings().hasViessmann()) ||
-         (i == cfg::VIEW_AIR && (!air || !air->ready));
+         (i == cfg::VIEW_AIR && (!air || !air->ready)) ||
+         // (v174) AUTO wypada z rotacji, gdy automatyka w garazu milczy. DWA
+         // warunki, nie jeden, bo znacza co innego i oba trzeba obsluzyc:
+         //   * au->atMs == 0    — nie przyszla ANI JEDNA wiadomosc od uruchomienia
+         //                        (MQTT wylaczony, zly prefiks, HA jeszcze nie wstal),
+         //   * wiek >= prog     — wiadomosci przychodzily, ale przestaly.
+         // Wiek liczymy ZE ZNAKIEM na int32 (idiom freshMs z WeatherUiV3.cpp):
+         // atMs pisze netTask, a millis() przekreca sie po ~49 dniach pracy —
+         // bez tego ekran zniknalby na dobre po pierwszym przekreceniu licznika.
+         (i == cfg::VIEW_AUTO &&
+          (!au || au->atMs == 0 ||
+           static_cast<int32_t>(millis() - au->atMs) >=
+               static_cast<int32_t>(cfg::AUTO_STALE_MS)));
 }
 
 // Czyścimy CAŁY obszar rysowania (0..205), a nie tylko treść (34..205).
@@ -598,7 +617,7 @@ bool WeatherUi::needsFlights(uint32_t nowMs) const {
   uint8_t prev = cfg::VIEW_FLIGHTS;
   for (int step = 0; step < kV3LoopN; ++step) {
     idx = (idx + kV3LoopN - 1) % kV3LoopN;   // krok WSTECZ po petli
-    if (!viewSkipped(kV3Loop[idx], air_)) { prev = kV3Loop[idx]; break; }
+    if (!viewSkipped(kV3Loop[idx], air_, auto_)) { prev = kV3Loop[idx]; break; }
   }
   if (view_ == prev && !transitioning_ && !alertActive_) {
     const uint32_t hold = holdFor(view_);
@@ -700,7 +719,7 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
             if (kV3Loop[i] == view_) { idx = i; break; }
           for (int step = 0; step < kV3LoopN; ++step) {
             idx = (idx + 1) % kV3LoopN;
-            if (!viewSkipped(kV3Loop[idx], air_)) break;
+            if (!viewSkipped(kV3Loop[idx], air_, auto_)) break;
           }
           prevView_ = view_;
           view_ = kV3Loop[idx];
@@ -798,6 +817,15 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
     // zeby sie aktualizowaly, ale nie 20x/s.
     if (view_ == cfg::VIEW_MEM || view_ == cfg::VIEW_MOTION || view_ == cfg::VIEW_STATS)
       mix(nowMs / 2000);
+    // (v174) EKRAN AUTO — znacznik ODBIORU, a nie takt zegara. Dane przychodza co
+    // ~15 s, wiec bez tej linii nowy stan baterii czekalby na ekranie do nastepnego
+    // taktu minuty (mix(nt/60) wyzej), czyli nawet 60 s. Dorzucenie AUTO do trojki
+    // "co 2 s" wyzej byloby gorsze: przerysowywaloby ekran 7 razy miedzy kolejnymi
+    // wiadomosciami, a kazde wypchniecie bufora widac na ST7789 jako blysk (to jest
+    // cala przyczyna, dla ktorej ten mechanizm pomijania klatek w ogole istnieje).
+    // atMs zmienia sie DOKLADNIE wtedy, gdy przyszla nowa wiadomosc — ani rzadziej,
+    // ani czesciej.
+    if (view_ == cfg::VIEW_AUTO) mix(auto_ ? auto_->atMs : 0u);
     // Ekran GLOWNY: przerysowanie co SEKUNDE, zeby dwukropek zegara mogl mrugac
     // (wlasciciel). 1 klatka/s na jasnym tle jest niezauwazalna, a nie 20/s jak przed
     // naprawa migotania. Reszta ekranow (radar animuje sam) bez sekundowego ticku.
@@ -1305,7 +1333,7 @@ void WeatherUi::touchTapV3() {
   // pomijany).
   for (int step = 0; step < kV3LoopN; ++step) {
     idx = (idx + 1) % kV3LoopN;
-    if (!viewSkipped(kV3Loop[idx], air_)) break;
+    if (!viewSkipped(kV3Loop[idx], air_, auto_)) break;
   }
   setViewV3(kV3Loop[idx]);
 }
@@ -1346,7 +1374,7 @@ bool WeatherUi::v3ProgressPos(int& cur, int& total) const {
   cur = -1;
   total = 0;
   for (int i = 0; i < kV3LoopN; ++i) {
-    if (viewSkipped(kV3Loop[i], air_)) continue;
+    if (viewSkipped(kV3Loop[i], air_, auto_)) continue;
     if (kV3Loop[i] == view_) cur = total;
     ++total;
   }

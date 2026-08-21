@@ -135,8 +135,12 @@ Urządzenie wisi na ścianie bez USB, więc `Serial` jest ślepy. Zamiast tego:
 - `GET /api/diag` — migawka JSON: heap, Wi-Fi, ostatni sukces/błąd każdego
   podsystemu, status OTA
 - `GET /api/view` — odczyt bieżącego widoku `{"cur":X,"pin":Y}` (tylko odczyt)
-- `POST /api/view?i=N` — przypina ekran (0–5, `-1` = powrót do rotacji); od v154 mutacja
-  wymaga POST, żeby obca strona nie przestawiła ekranu przez `<img src=".../api/view?i=3">`
+- `POST /api/view?i=N` — przypina ekran (0–13, `-1` = powrót do rotacji); od v154 mutacja
+  wymaga POST, żeby obca strona nie przestawiła ekranu przez `<img src=".../api/view?i=3">`.
+  Numery pochodzą **wyłącznie** ze stałych `cfg::VIEW_*` w `Config.h` — nie z tej listy.
+  **v174: `i=12` to od tego wydania ekran AUTO (dane samochodu), a STATYSTYKI przesunęły
+  się na `i=13`.** Nowy ekran musi wchodzić przed `VIEW_STATS`, bo `static_assert`
+  wymaga, żeby ekran serwisowy był ostatni — pełne uzasadnienie stoi w `Config.h`.
 - `GET /api/screen` — bieżący ekran jako BMP 320×240 24-bit
 - `POST /api/reboot` — restart bez kasowania konfiguracji
 

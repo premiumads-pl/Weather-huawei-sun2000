@@ -4,6 +4,7 @@
 #include <WiFiClient.h>
 
 #include "AirData.h"
+#include "AutoData.h"
 #include "FlightData.h"
 #include "PvData.h"
 #include "RadarData.h"
@@ -103,6 +104,11 @@ class WeatherUi {
   // render()/drawView() — ekran POWIETRZE nie potrzebuje watku danych az tak
   // centralnego jak pogoda/PV/loty (brak prefetchu, brak wplywu na inne widoki).
   void setAir(const struct AirModel* a) { air_ = a; }
+  // (v174) Stan auta z MQTT — TEN SAM wzorzec, co setAir() wyzej: wskaznik do kopii
+  // odswiezanej w loop() (uiAuto w pogoda-gdynia.ino), a nie kolejny parametr
+  // render()/drawV3(). Powod bez zmian: jeden ekran nie jest wart przewleczenia
+  // czwartego modelu przez cztery sygnatury.
+  void setAuto(const struct AutoModel* a) { auto_ = a; }
 
   // v126: modele POSREDNIE — gotowe wiersze/liczby dla dwoch ekranow, ktore do
   // v125 same siegaly po singletony w trakcie rysowania (patrz RoomData.h i
@@ -119,11 +125,12 @@ class WeatherUi {
   }
 
   // Czy ekran `i` jest pomijany w rotacji (radar bez opadu, "w domu" bez czujnikow,
-  // piec bez autoryzacji, powietrze bez danych z obu stacji) — JEDYNE miejsce z tymi
-  // czterema warunkami, zeby definicja "pomijany" nie rozjechala sie miedzy rotacja,
-  // nawigacja dotykiem i paskiem postepu V3. Statyczna celowo — v3ProgressPos() liczy
-  // z niej pozycje "x z y" bez potrzeby stanu instancji.
-  static bool viewSkipped(int i, const struct AirModel* air);
+  // piec bez autoryzacji, powietrze bez danych z obu stacji, AUTO bez swiezej
+  // wiadomosci MQTT) — JEDYNE miejsce z tymi pieciu warunkami, zeby definicja
+  // "pomijany" nie rozjechala sie miedzy rotacja, nawigacja dotykiem i paskiem
+  // postepu V3. Statyczna celowo — v3ProgressPos() liczy z niej pozycje "x z y"
+  // bez potrzeby stanu instancji, dlatego oba modele wchodza argumentem.
+  static bool viewSkipped(int i, const struct AirModel* air, const struct AutoModel* au);
 
   void raiseAlert(const Alert& a, uint32_t nowMs);
   void setBacklightTarget(uint8_t v) {
@@ -222,6 +229,7 @@ class WeatherUi {
   const vi::Model* boiler_ = nullptr;
   const struct BurnerHistory* burner_ = nullptr;
   const struct AirModel* air_ = nullptr;
+  const struct AutoModel* auto_ = nullptr;   // (v174) stan Tesli z MQTT (ekran AUTO)
   // Gotowe modele dla W DOMU i RADAR (v126). nullptr = warstwa danych jeszcze ich
   // nie podpiela; rysowanie uzywa wtedy pustej struktury, czyli zachowuje sie tak,
   // jakby nie bylo czujnikow / klatek.

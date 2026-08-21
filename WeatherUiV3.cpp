@@ -1706,6 +1706,259 @@ void v3PvBottom(TFT_eSPI& tft, const PvModel& pv, const PvHistory& hist) {
   }
 }
 
+// ============================================================ AUTO =============
+// (v174) Stan Tesli, wariant "pasmowy" przyjety przez wlasciciela. Uklad od gory:
+// naglowek -> wielkie naladowanie + zasieg -> pasek baterii -> cztery kolumny
+// (moc/prad/dodane/stan) -> pasmo "skad prad dzisiaj" -> [dolny pas: kafelek trybu].
+//
+// EKRAN STOI ZARAZ ZA PRADEM w petli rotacji (kV3Loop w WeatherUi.cpp) i CELOWO
+// powtarza jego jezyk: to samo dwukolorowe pasmo, ten sam podzial "z PV / z sieci".
+//
+// DANE PRZYCHODZA, A NIE SA POBIERANE. Wszystko, co tu widac, przyszlo po MQTT
+// z Home Assistanta (MqttClient.cpp, temat <prefix>/auto/stan). Ta funkcja NIE ma
+// prawa niczego dopytywac ani liczyc wieku z innego zrodla niz a.atMs.
+
+// Kolor kafelka trybu. TO JEST KONTRAKT Z PIERSCIENIEM WLED W GARAZU, a nie dobor
+// estetyczny: ten sam tryb ma tam swiecic tym samym kolorem, wiec zmiana tutaj bez
+// zmiany tam sprawia, ze ekran i lampa mowia co innego o tym samym stanie.
+//   PV     zielony  — ladujemy wylacznie nadwyzka, czyli darmowa energia,
+//   PV+MIN niebieski — nadwyzka plus minimalny dobor z sieci (kolor "opadu", jedyny
+//                      niebieski w palecie poza col::SELF, ktory jest zarezerwowany
+//                      dla energii z PV zuzytej na miejscu — patrz kontrakt v167),
+//   MAX    czerwony  — pelna moc z sieci, czyli placimy za wszystko: col::GRID, ten
+//                      sam czerwony, ktorym na PRADZIE malowana jest energia dobrana
+//                      z sieci. To NIE jest przypadek — obie rzeczy znacza to samo,
+//   OFF    bursztyn  — ladowanie wylaczone. col::WARN, a NIE col::PV/col::SUN: na
+//                      kafelku stoi BIALY tekst, a bialy na #E0A92E ma kontrast 2,1,
+//                      czyli z dwoch metrow jest nieczytelny; na ciemniejszym
+//                      #B8901F wychodzi 3,0. Sens sie zgadza takze semantycznie —
+//                      col::WARN jest w tej palecie kolorem "uwaga / nieaktywne".
+// NOWYCH KOLOROW NIE DOKLADAMY DO PALETY: wszystkie cztery juz w niej stoja.
+uint16_t autoModeCol(const AutoModel& a) {
+  if (a.modeIs("PV")) return col::OK;
+  if (a.modeIs("PV+MIN")) return col::RAIN;
+  if (a.modeIs("MAX")) return col::GRID;
+  if (a.modeIs("OFF")) return col::WARN;
+  return col::MUTE;   // tryb spoza kontraktu — szary, zeby nie udawac znaczenia
+}
+
+// Kolor WARTOSCI w kolumnie STAN. Zielony tylko wtedy, gdy energia naprawde plynie;
+// "czeka"/"postoj" to stany czynne, ale bezczynne energetycznie (SECOND), a "spi"
+// i brak kabla to stany, w ktorych auto nic od nas nie chce (MUTE).
+uint16_t autoStateCol(const AutoModel& a) {
+  if (a.stateIs("laduje")) return col::OK;
+  if (a.stateIs("czeka") || a.stateIs("stoi")) return col::SECOND;
+  return col::MUTE;
+}
+
+// Ile procent dzisiejszego ladowania przyszlo ze slonca. Zwraca -1, gdy dzis nie
+// bylo czego dzielic (obie liczby ~zero) — procent z pustej podstawy to szum, ta
+// sama zasada, co przy autokonsumpcji w v3PvBottom.
+int autoSunPct(const AutoModel& a) {
+  const float tot = a.sunKwh + a.gridKwh;
+  if (tot < 0.05f) return -1;
+  return static_cast<int>(a.sunKwh / tot * 100.f + 0.5f);
+}
+
+void v3Auto(TFT_eSPI& s, const AutoModel* ap) {
+  s.fillRect(0, 0, grid::W, 206, col::BG);
+  static const AutoModel kEmpty{};
+  const AutoModel& a = ap ? *ap : kEmpty;
+
+  // Rotacja tego ekranu tu NIE DOJEDZIE bez danych (viewSkipped), ale przypiac go
+  // przez POST /api/view?i=12 mozna ZAWSZE — i wtedy musi byc co pokazac.
+  if (a.atMs == 0) {
+    lightHeader(s, "AUTO", nullptr, Fresh::UNKNOWN);
+    plex::strCenter(s, plex::f20(), "Brak danych o aucie", grid::W / 2, 110, col::MUTE);
+    plex::strCenter(s, plex::f13(), "nie przyszła żadna wiadomość MQTT",
+                    grid::W / 2, 134, col::MUTE);
+    return;
+  }
+
+  // Wiek odczytu w naglowku — ta sama para (agoWords + freshDot), co na PRADZIE
+  // i OGRZEWANIU. Prog cfg::AUTO_STALE_MS jest TYM SAMYM progiem, ktory wyrzuca ten
+  // ekran z rotacji, wiec kropka STALE moze sie tu pojawic tylko na ekranie
+  // PRZYPIETYM z panelu — i wtedy jest jedyna informacja, ze dane stanely.
+  const bool fresh = freshMs(a.atMs, cfg::AUTO_STALE_MS);
+  char ago[24];
+  agoWords(ago, sizeof(ago), okAgeS(a.atMs));
+  lightHeader(s, "AUTO", ago, fresh ? Fresh::OK : Fresh::STALE);
+
+  // Stare dane wyciszamy tak samo jak moc chwilowa na PRADZIE (v161): liczby zostaja
+  // (to wciaz jedyne, co o aucie wiemy), znika kolor, czyli sugestia "dzieje sie teraz".
+  const uint16_t cMain = fresh ? col::PANEL : col::MUTE;
+  const uint16_t cSec = fresh ? col::SECOND : col::MUTE;
+
+  // --- WIELKIE NALADOWANIE + ZASIEG (y=33..72) ---------------------------------
+  // Szerokosci policzone, nie przymierzone: "100" w f52 ma 99 px (x=7..106) i razem
+  // ze znakiem "%" (f20, 18 px) konczy sie na x=129. Po prawej zasieg czterocyfrowy
+  // "9999 km" (f20, 89 px) zaczyna sie na x=224 — zostaje 95 px luzu, wiec kolizji
+  // nie ma nawet w wariancie skrajnym.
+  char big[8];
+  snprintf(big, sizeof(big), "%u", static_cast<unsigned>(a.soc));
+  const int bw = plex::str(s, plex::f52(), big, grid::MARGIN, 72, cMain);
+  plex::str(s, plex::f20(), "%", grid::MARGIN + bw + 5, 72, cSec);
+
+  char km[16];
+  snprintf(km, sizeof(km), "%d km", static_cast<int>(a.rangeKm));
+  plex::strRight(s, plex::f20(), km, grid::DATA_R, 52, cMain);
+  char lim[16];
+  snprintf(lim, sizeof(lim), "limit %u%%", static_cast<unsigned>(a.limitPct));
+  plex::strRight(s, plex::f13(), lim, grid::DATA_R, 71, col::MUTE);
+
+  // --- PASEK BATERII (x=7..312, y=82..90) --------------------------------------
+  // NIE uzywamy tv3::bar(): tamten helper rysuje prostokaty o ostrych rogach (paski
+  // bilansu na PRADZIE), a bateria ma byc zaokraglona — to jedyny element tego
+  // ekranu, ktory przedstawia FIZYCZNY przedmiot, i zaokraglenie odroznia go od
+  // pasm energii nizej. Promien 4 przy wysokosci 9 daje pelne polkola na koncach.
+  constexpr int kBarX = grid::MARGIN, kBarY = 82, kBarH = 9;
+  constexpr int kBarW = grid::DATA_R - grid::MARGIN;   // 306
+  s.fillRoundRect(kBarX, kBarY, kBarW, kBarH, 4, col::LINE);
+  const int fillW = (kBarW * a.soc) / 100;
+  // Ponizej ~9 px zaokraglony prostokat degeneruje sie do kropki, wiec bardzo niskie
+  // naladowanie rysujemy prostokatem — inaczej "3%" wygladaloby jak zero.
+  if (fillW >= kBarH) s.fillRoundRect(kBarX, kBarY, fillW, kBarH, 4, fresh ? col::OK : col::MUTE);
+  else if (fillW > 0) s.fillRect(kBarX, kBarY, fillW, kBarH, fresh ? col::OK : col::MUTE);
+
+  // Kreska limitu: gdzie ladowanie ma sie zatrzymac. Wystaje 2 px nad i pod pasek,
+  // zeby byla widoczna takze wtedy, gdy stoi na wypelnieniu (kolor PANEL na zielonym).
+  // Przyciecie do prawej krawedzi paska: przy limicie 100% wyliczony x wypadlby
+  // DOKLADNIE na 313, czyli o piksel za paskiem, i kreska wisialaby w powietrzu.
+  int limX = kBarX + (kBarW * a.limitPct) / 100;
+  if (limX > kBarX + kBarW - 2) limX = kBarX + kBarW - 2;
+  if (limX < kBarX) limX = kBarX;
+  s.fillRect(limX, kBarY - 2, 2, kBarH + 4, col::PANEL);
+
+  s.drawFastHLine(grid::MARGIN, 100, grid::W - 2 * grid::MARGIN, col::LINE);
+
+  // --- CZTERY KOLUMNY (etykieta y=118, wartosc y=140) --------------------------
+  // Podzial 306 px na cztery rowne slupki po ~76 px: x = 7 / 83 / 159 / 235.
+  // NAJCIASNIEJSZE MIEJSCE CALEGO EKRANU, policzone dla wartosci skrajnych:
+  //   MOC    "11,0 kW"    45 px -> 7..52     (kolumna do 83  => 31 px luzu)
+  //   PRĄD   "255 A"      33 px -> 83..116   (kolumna do 159 => 43 px luzu)
+  //   DODANE "99,9 kWh"   52 px -> 159..211  (kolumna do 235 => 24 px luzu)  <- MIN
+  //   STAN   "brak kabla" 58 px -> 235..293  (krawedz 313    => 20 px luzu)
+  // Etykiety sa wezsze od wartosci w kazdej kolumnie, wiec nie one wyznaczaja limit.
+  auto colCell = [&](int x, const char* label, const char* value, uint16_t vc) {
+    // Etykieta ZAWSZE col::MUTE — takze przy starych danych. Wyciszanie dotyczy
+    // WARTOSCI (one klamia, gdy sa stare), a nie nazwy wielkosci: "MOC" znaczy
+    // "moc" niezaleznie od tego, kiedy przyszla ostatnia wiadomosc.
+    plex::str(s, plex::f11(), label, x, 118, col::MUTE);
+    plex::str(s, plex::f13(), value, x, 140, vc);
+  };
+  char mv[16];
+  fmt1(mv, sizeof(mv), a.kw);
+  char m2[20];
+  snprintf(m2, sizeof(m2), "%s kW", mv);
+  colCell(7, "MOC", m2, cMain);
+
+  char av[12];
+  snprintf(av, sizeof(av), "%u A", static_cast<unsigned>(a.amps));
+  colCell(83, "PRĄD", av, cMain);
+
+  char dv[16];
+  fmt1(dv, sizeof(dv), a.addedKwh);
+  char d2[20];
+  snprintf(d2, sizeof(d2), "%s kWh", dv);
+  colCell(159, "DODANE", d2, cMain);
+
+  colCell(235, "STAN", autoStateLabel(a), fresh ? autoStateCol(a) : col::MUTE);
+
+  s.drawFastHLine(grid::MARGIN, 152, grid::W - 2 * grid::MARGIN, col::LINE);
+
+  // --- SKAD PRAD DZISIAJ (pasmo dwuczesciowe, y=174..185) ----------------------
+  // KOLORY SA KONTRAKTEM Z v167, NIE WYBOREM TEGO EKRANU (patrz komentarz przy
+  // tv3::col::OK). Energia oddana do auta ZE SLONCA to energia z PV ZUZYTA NA
+  // MIEJSCU — czyli dokladnie ta sama wielkosc, ktora na ekranie GLOWNYM i na
+  // PRADZIE nazywa sie "z PV" i ma kolor col::SELF (niebieski). Zielony col::OK
+  // znaczy w tym projekcie "ODDANE DO SIECI", a energia, ktora poszla do samochodu,
+  // do sieci wlasnie NIE poszla — pomalowanie jej na zielono twierdziloby, ze ta
+  // sama kilowatogodzina jednoczesnie wyjechala z domu i w nim zostala.
+  // Druga czesc to col::GRID, ten sam czerwony, co "z sieci" na PRADZIE.
+  // Zadnego nowego zielonego (ani zadnego innego koloru) tu nie wprowadzamy.
+  plex::str(s, plex::f11(), "SKĄD PRĄD DZISIAJ", grid::MARGIN, 168, cSec);
+  constexpr int kBandX = grid::MARGIN, kBandY = 174, kBandH = 12;
+  constexpr int kBandW = grid::DATA_R - grid::MARGIN;   // 306
+  const float sun = a.sunKwh > 0.f ? a.sunKwh : 0.f;
+  const float net = a.gridKwh > 0.f ? a.gridKwh : 0.f;
+  const float tot = sun + net;
+  if (tot < 0.05f) {
+    // Dzis jeszcze nic nie wjechalo w auto. Pusta sciezka zamiast dzielenia przez
+    // zero — i zaden podpis z liczbami, bo obie wynosza zero.
+    s.fillRect(kBandX, kBandY, kBandW, kBandH, col::LINE);
+    plex::str(s, plex::f13(), "dziś nic nie ładowano", grid::MARGIN, 200, col::MUTE);
+  } else {
+    int sunW = static_cast<int>(kBandW * (sun / tot) + 0.5f);
+    if (sunW < 0) sunW = 0;
+    if (sunW > kBandW) sunW = kBandW;
+    s.fillRect(kBandX, kBandY, kBandW, kBandH, col::GRID);
+    if (sunW > 0) s.fillRect(kBandX, kBandY, sunW, kBandH, col::SELF);
+    // Podpisy: "słońce 99,9 kWh" (91 px, x=7..98) i "sieć 99,9 kWh" (77 px, do
+    // prawej krawedzi, x=236..313) — 138 px luzu miedzy nimi w wariancie skrajnym.
+    char sv[12], nv[12], line[32];
+    fmt1(sv, sizeof(sv), sun);
+    fmt1(nv, sizeof(nv), net);
+    snprintf(line, sizeof(line), "słońce %s kWh", sv);
+    plex::str(s, plex::f13(), line, grid::MARGIN, 200, cSec);
+    snprintf(line, sizeof(line), "sieć %s kWh", nv);
+    plex::strRight(s, plex::f13(), line, grid::DATA_R, 200, cSec);
+  }
+}
+
+// Dolny pas AUTO: kafelek trybu po lewej + dwie linijki pomocnicze po prawej.
+// Konwencja jak w v3PvBottom/v3HomeBottom — wlasne tlo, cienka linia u gory pasa
+// (to jest ta sama linia, ktora na innych ekranach oddziela tresc od stopki),
+// rysowane WPROST na TFT, bo pas 206..239 lezy poza sprite'em.
+void v3AutoBottom(TFT_eSPI& tft, const AutoModel* ap) {
+  tft.fillRect(0, 206, grid::W, 34, col::BG);
+  tft.drawFastHLine(grid::MARGIN, 210, grid::W - 2 * grid::MARGIN, col::LINE);
+  static const AutoModel kEmpty{};
+  const AutoModel& a = ap ? *ap : kEmpty;
+  if (a.atMs == 0) {
+    plex::str(tft, plex::f13(), "czekam na dane z auta", grid::MARGIN, 228, col::MUTE);
+    return;
+  }
+  const bool fresh = freshMs(a.atMs, cfg::AUTO_STALE_MS);
+
+  // KAFELEK TRYBU (92x26, x=7..98, y=212..237). Najszerszy napis "PV+MIN" ma w f13
+  // 46 px i wysrodkowany na x=53 zajmuje 30..76, czyli po 11 px marginesu w kafelku.
+  // Bialy tekst na wypelnieniu: to jedyny element ekranu z odwroconym kontrastem
+  // i tak ma byc — tryb ma byc widoczny z drugiego konca pokoju bez czytania.
+  // Przy STARYCH danych kafelek schodzi na col::MUTE: kolor trybu jest obietnica
+  // "tak wlasnie teraz laduje", a po 45 s ciszy nie mamy jej czym pokryc.
+  //
+  // NAPIS TRYBU PRZYCHODZI Z SIECI, wiec nie mamy nad nim wladzy — a tu jest jedyne
+  // miejsce na ekranie, w ktorym cudzy tekst ma zostac WEWNATRZ figury. Straznikiem
+  // jest rozmiar pola: AutoModel::mode ma 8 B, czyli najwyzej 7 znakow, a siedem
+  // NAJSZERSZYCH glifow f13 (~12 px) to 84 px — wysrodkowane na x=53 zajmuja 11..95
+  // i nadal miesza sie w kafelku 7..99. Powiekszenie tamtego pola bez powiekszenia
+  // kafelka wypuscilo by napis poza zaokraglona krawedz.
+  constexpr int kTileX = grid::MARGIN, kTileY = 212, kTileW = 92, kTileH = 26;
+  tft.fillRoundRect(kTileX, kTileY, kTileW, kTileH, 6,
+                    fresh ? autoModeCol(a) : col::MUTE);
+  const int tcx = kTileX + kTileW / 2;
+  plex::strCenter(tft, plex::f10(), "TRYB", tcx, 223, col::BG);
+  plex::strCenter(tft, plex::f13(), a.mode[0] ? a.mode : "?", tcx, 236, col::BG);
+
+  // DWIE LINIJKI POMOCNICZE (do prawej krawedzi). Zadna z nich NIE POWTARZA liczby
+  // z gory ekranu — powtorzenie kosztowaloby miejsce i nie dodawaloby nic:
+  //   1) stan kabla: jedyne pole z wiadomosci, ktorego nigdzie indziej nie widac
+  //      (kolumna STAN mowi, co auto ROBI, nie czy jest w ogole podpiete),
+  //   2) udzial slonca w dzisiejszym ladowaniu: pasmo wyzej pokazuje to ksztaltem,
+  //      ale z dwoch metrow nie da sie odczytac proporcji 60/40 od 70/30. Ta sama
+  //      decyzja i to samo uzasadnienie, co przy "autokonsumpcja %" w v3PvBottom.
+  // Szerokosci: "kabel odłączony" 88 px (x=225..313), "100% dzisiaj ze słońca"
+  // 124 px (x=189..313) — kafelek konczy sie na x=98, wiec 91 px luzu.
+  plex::strRight(tft, plex::f13(), a.cable ? "kabel podpięty" : "kabel odłączony",
+                 grid::DATA_R, 223, a.cable ? col::PANEL : col::MUTE);
+  const int pct = autoSunPct(a);
+  if (pct >= 0) {
+    char l2[32];
+    snprintf(l2, sizeof(l2), "%d%% dzisiaj ze słońca", pct);
+    plex::strRight(tft, plex::f13(), l2, grid::DATA_R, 236, col::MUTE);
+  }
+}
+
 // ============================================================ POKOJE ===========
 // Wykres temperatur wielu pokoi na WSPOLNEJ, OPISANEJ osi Y (°C) i osi X (ruchome
 // okno 24 h). Zastapil dawna liste wierszy ze sparkline w tle: wlasciciel odrzucil
@@ -2730,6 +2983,9 @@ void WeatherUi::drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const Weath
     case cfg::VIEW_AIR:
       v3Air(spr, air_);
       break;
+    case cfg::VIEW_AUTO:
+      v3Auto(spr, auto_);
+      break;
     case cfg::VIEW_FLIGHTS:
       v3Flights(spr, fl, nowMs);
       break;
@@ -2875,6 +3131,9 @@ void WeatherUi::drawV3Bottom(TFT_eSPI& tft, uint8_t view, const WeatherModel& w,
       break;
     case cfg::VIEW_AIR:
       v3AirBottom(tft, air_);
+      break;
+    case cfg::VIEW_AUTO:
+      v3AutoBottom(tft, auto_);   // kafelek trybu + stan kabla + udzial slonca
       break;
     case cfg::VIEW_FLIGHTS:
       v3FlightsBottom(tft, fl);

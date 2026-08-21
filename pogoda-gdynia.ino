@@ -639,6 +639,13 @@ PvModel uiPv{};
 PvHistory uiHist{};
 FlightModel uiFlights{};
 AirModel uiAir{};   // kopia dla rdzenia rysujacego — patrz ui.setAir() w setup()
+// (v174) Stan auta z MQTT. NIE MA odpowiednika "gAuto" pod gLock — i to jest
+// swiadoma roznica wobec wszystkich modeli powyzej. Tamte pisze netTask do globalnej
+// zmiennej, a loop() robi z niej migawke pod gLock. Ten model zyje w MqttClient.cpp
+// (pisze go callback PubSubClienta), ma tam SWOJ mutex i wychodzi stamtad wylacznie
+// przez kopie — mqttha::autoSnapshot(). Drugi globalny bufor pod gLock byloby
+// trzecia kopia tych samych 44 B i nie kupowalby nic.
+AutoModel uiAuto{};
 
 // --- MODELE POSREDNIE dla warstwy rysowania (v126) ---------------------------
 // Wszystko powyzej to MIGAWKI modeli, ktore wypelnia warstwa sieciowa. Dwa ekrany
@@ -2069,6 +2076,10 @@ void setup() {
   // (w odroznieniu od gHist/gRooms/gGas/gBurner wyzej) — to biezacy odczyt, jak
   // pogoda/PV, wiec pierwsza probka po prostu poczeka na pierwszy udany fetch.
   ui.setAir(&uiAir);
+  // (v174) Auto — jak wyzej: bez wczytywania z NVS, bo to biezacy stan, a nie
+  // historia. Do pierwszej wiadomosci MQTT uiAuto.atMs == 0, wiec ekran AUTO jest
+  // pomijany w rotacji (viewSkipped) i nie miga pustka.
+  ui.setAuto(&uiAuto);
   // Modele posrednie (v126): wskaznik podpinamy raz, zawartosc odswieza loop().
   // Bez tego rysowanie zobaczy pusta strukture — czyli "brak czujnikow" i
   // "pobieram mape opadow" — a nie czarny ekran ani wskaznik w nicosc.
@@ -2579,6 +2590,15 @@ void loop() {
   uiFlights = gFlights;
   uiAir = gAir;
   xSemaphoreGive(gLock);
+
+  // (v174) Stan auta — POZA gLock i celowo. Zrodlem nie jest zadne g*, tylko
+  // MqttClient.cpp, ktory pilnuje swoich 44 B wlasnym mutexem (dokladnie jak ble::
+  // i radarmap:: nizej). Trzymanie tu globalnej blokady wydluzaloby tylko okno,
+  // w ktorym netTask nie moze zapisac reszty danych.
+  // Nieudana migawka (brak wiadomosci, MQTT wylaczony, mutex zajety) ZOSTAWIA
+  // uiAuto nietkniete — ostatni znany stan zostaje, a o jego wieku rozstrzyga
+  // uiAuto.atMs (viewSkipped i naglowek ekranu).
+  mqttha::autoSnapshot(uiAuto);
 
   // --- modele posrednie dla dwoch ekranow, ktore ich nie mialy (v126) ---
   // POZA gLock swiadomie: zrodlem nie jest zadne g*, tylko ble:: i radarmap::,

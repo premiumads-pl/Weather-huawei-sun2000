@@ -290,8 +290,24 @@ constexpr uint32_t MQTT_STALE_MS = 3UL * 60UL * 1000UL;
 //   minute NIEZALEZNIE od tego, czy cokolwiek sie zmienilo, wiec to ona wyznacza
 //   rytm. 2,5 x 60 s = 150 s -> 3 min. Bylo: 900 s w panelu, czyli 15 pominietych
 //   publikacji z rzedu wygladalo na zdrowe polaczenie.
+constexpr uint32_t AUTO_STALE_MS = 45UL * 1000UL;
+// ^ (v174) DANE AUTA. Kadencja 15 s: tyle wynosi okres, z jakim Home Assistant
+//   publikuje <prefix>/auto/stan. 2,5 x 15 = 37,5 s -> 45 s, czyli ta sama liczba,
+//   co FLIGHT_STALE_MS przy tej samej kadencji — regula z v158 dziala tu wprost,
+//   bez wyjatku.
+//
+//   TA STALA ROBI WIECEJ NIZ WYSZARZENIE. Poza ocena swiezosci w naglowku decyduje
+//   takze o POMIJANIU calego ekranu AUTO w rotacji (WeatherUi::viewSkipped), czyli
+//   dziala jak `air->ready` dla POWIETRZA i `hasViessmann()` dla PIECA. Dlatego jest
+//   celowo KROTKA: ekran ma zniknac z rotacji, gdy automatyka w garazu zamilkla, a
+//   nie pokazywac przez kwadrans stanu baterii sprzed obiadu. Dane sa PCHANE, nie
+//   ciagniete — po naszej stronie NIE MA ponowienia, ktore mogloby wydluzyc realny
+//   czas do nastepnej udanej proby (uwaga o ponowieniach kilkanascie linii wyzej
+//   dotyczy zrodel odpytywanych przez netTask i tutaj nie obowiazuje). Milczenie
+//   dluzsze niz 45 s znaczy wiec dokladnie jedno: broker albo Home Assistant nie
+//   dostarczaja, i nie ma czego przeczekiwac.
 
-constexpr int VIEW_COUNT = 13;  // [0 wycofany] / TERAZ / [2 wycofany] / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / POWIETRZE / PAMIEC / RUCH / STATYSTYKI
+constexpr int VIEW_COUNT = 14;  // [0 wycofany] / TERAZ / [2 wycofany] / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / POWIETRZE / PAMIEC / RUCH / AUTO / STATYSTYKI
 // Zrodlem prawdy dla numeru widoku jest WYLACZNIE ta stala (cfg::VIEW_*) — dawniej
 // switch w drawView() mial gole "case 0:" / "case 1:" i przezyl niezauwazony przez
 // kilka wersji. Kazde nowe uzycie numeru widoku ma isc przez cfg::VIEW_*, nigdy
@@ -341,7 +357,22 @@ constexpr int VIEW_AIR = 9;     // POWIETRZE: PM10/PM2.5 + indeks ARMAAG (GA17, 
 // ten kontrakt.
 constexpr int VIEW_MEM = 10;    // PAMIEC: wszystkie rodzaje (SRAM/PSRAM/flash/partycje/RTC/ROM/stos)
 constexpr int VIEW_MOTION = 11; // RUCH: PIR (rytm doby) + LDR (jasnosc) + wydajnosc rysowania (fps)
-constexpr int VIEW_STATS = 12;  // ekran serwisowy — MUSI zostac VIEW_COUNT-1 (patrz wyzej)
+// v174: AUTO (dane Tesli z MQTT) wszedl PRZED STATS — TA SAMA operacja, co przy AIR
+// (v117) i przy parze MEM/RUCH (v111), i z tego samego powodu: static_assert nizej
+// wymaga VIEW_STATS == VIEW_COUNT - 1, wiec na koniec listy nic nie wchodzi.
+// CENA JEST REALNA I ZOSTALA ZAPLACONA SWIADOMIE: STATYSTYKI przesuwaja sie z 12 na
+// 13, czyli /api/view?i=12 od tego wydania pokazuje AUTO, a nie STATYSTYKI. To jest
+// zmiana kontraktu WYCHODZACEGO NA ZEWNATRZ (POST /api/view?i=N i GET /api/view),
+// wiec zakladka w przegladarce albo rest_command w Home Assistancie przypinajacy 12
+// pokaze CUDZY ekran. Alternatywa — dopisanie AUTO jako 13 i zostawienie STATS na 12
+// — wymagalaby ZDJECIA static_assert, czyli oddania jedynego straznika, ktory pilnuje,
+// ze ekran serwisowy stoi na koncu; przy trzech poprzednich okazjach projekt wybieral
+// przesuniecie STATS i tak zostaje. Miejsca W REPOZYTORIUM, ktore znaja numery,
+// zaktualizowano razem z ta zmiana: panel WWW (VDIAG w Portal.cpp), tools/
+// capture_screens.py (VIEWS + SLUG_TO_CONST, ma wlasny straznik zgodnosci z tym
+// plikiem) i kViewNames w WeatherUi.cpp.
+constexpr int VIEW_AUTO = 12;   // AUTO: stan Tesli z MQTT — pomijany, gdy brak swiezej wiadomosci
+constexpr int VIEW_STATS = 13;  // ekran serwisowy — MUSI zostac VIEW_COUNT-1 (patrz wyzej)
 
 // (v162) TEN WARUNEK MIESZKA TERAZ TUTAJ, NIE W FUNKCJI. Do v159 stal w
 // WeatherUi.cpp::drawView() — i zniknal razem z ta funkcja przy usuwaniu motywow
@@ -380,6 +411,17 @@ constexpr uint32_t VIEW_HOLD_STATS_MS = VIEW_HOLD_MS;   // tyle samo co reszta
 // wiec czas jego trzymania tez sie nie zmienia.
 constexpr uint32_t VIEW_HOLD_MEM_MS = 14000;
 constexpr uint32_t VIEW_HOLD_MOTION_MS = 14000;
+// (v174) EKRAN AUTO CELOWO NIE MA TU WLASNEJ STALEJ — i to jest decyzja, nie
+// przeoczenie. Wlasna liczbe maja WYLACZNIE ekrany, ktore albo czekaja na ANIMACJE
+// (RADAR: dwa przejscia klatek), albo na POBRANIE (SAMOLOTY: prefetch), albo stoja
+// POZA petla rotacji (STATS/PAMIEC/RUCH — do nich nie da sie dojechac rotacja, wiec
+// dwellS ich nie dotyczy). AUTO nalezy do petli i jest ekranem tej samej klasy, co
+// PRAD, POWIETRZE, POKOJE i OGRZEWANIE — a te wszystkie jada na settings().dwellS,
+// czyli na liczbie, ktora wlasciciel ustawia w panelu (3..60 s). Dolozenie
+// VIEW_HOLD_AUTO_MS ZABRALOBY mu ten suwak dla jednego ekranu: przy dwellS = 20 s
+// AUTO i tak schodziloby po swoich kilkunastu, bez zadnego widocznego powodu.
+// Gdyby kiedys okazalo sie, ze uklad AUTO wymaga wiecej czasu na przeczytanie,
+// wlasciwym miejscem zmiany jest dwellS (dotyczy calej rotacji), a nie wyjatek tutaj.
 // Pelny cykl animacji radaru to (n+2)*RADAR_FRAME_MS: n klatek + 2 "przystanki"
 // pauzy na najnowszej (patrz v3Radar w WeatherUiV3.cpp). Przy 13 klatkach (v109,
 // bylo 7, co 20 min) to (13+2)*650 = 9750 ms, wiec dwa pelne cykle to 19,5 s.

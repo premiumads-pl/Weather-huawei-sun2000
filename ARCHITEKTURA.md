@@ -55,6 +55,14 @@ GitHub Releases          →   Ota::checkAndUpdate()       →   otaStatus()    
 (`.ino:251, 318, 418`) — nie ma osobnego cyklu MQTT dla danych. Telemetria samego urządzenia
 (`publishDevice`) leci z `mqttha::loop()` co 60 s (`MqttClient.cpp:37`).
 
+**Kierunek do środka (v174):** jedyne dane, które **przychodzą**, to stan samochodu na
+`<prefix>/auto/stan` (ekran AUTO). Callback PubSubClienta biegnie **w netTasku**, w środku
+`gCli->loop()`, więc **nie wolno mu** rysować ani brać `gLock` — pisze do `AutoModel`
+prywatnego dla `MqttClient.cpp`, pod **własnym** mutexem tego modułu. `loop()` bierze stamtąd
+kopię przez `mqttha::autoSnapshot(uiAuto)` **poza** `gLock`. To ta sama ścieżka, co dane
+z `ble::` i `radarmap::` (każdy moduł pilnuje swoich danych sam), a **nie** wzorzec
+`g* pod gLock` używany przez pogodę/PV/loty — tam piszącym jest netTask, tutaj callback.
+
 ---
 
 ## 2. Wątki — kto na czym siedzi i co chroni `gLock`
@@ -121,7 +129,7 @@ progi zdrowia (`CPU_T_*`, `HEAP_*`), indeksy widoków. **W `Config.h` nie ma i n
 
 | Gdzie | Co | Dlaczego tam |
 |---|---|---|
-| `MqttClient.cpp:30-37` | `kBufSize=512`, `kKeepAliveS`, `kSockTimeoutS`, `kConnTimeoutMs`, `kBackoff*`, `kDevPublishMs` | to **budżet pamięci PubSubClienta**, sprzężony z długością prefiksu i payloadu discovery. Ma sens tylko razem z `publishConfig()` obok. Wyciągnięcie do `Config.h` zerwałoby związek z komentarzem `:22-29`, który jest tu ważniejszy niż stała. |
+| `MqttClient.cpp:30-37` | `kBufSize=512`, `kKeepAliveS`, `kSockTimeoutS`, `kConnTimeoutMs`, `kBackoff*`, `kDevPublishMs` | to **budżet pamięci PubSubClienta**, sprzężony z długością prefiksu i payloadu discovery. Ma sens tylko razem z `publishConfig()` obok. Wyciągnięcie do `Config.h` zerwałoby związek z komentarzem `:22-29`, który jest tu ważniejszy niż stała. (v174) Ten sam bufor obsługuje teraz **oba kierunki**; największy pakiet przychodzący (`<prefix>/auto/stan`, ~188 B) jest o 242 B mniejszy od naszego największego wychodzącego, więc rozmiar wyznacza dalej discovery. Próg świeżości tych danych (`cfg::AUTO_STALE_MS`) leży natomiast **w `Config.h`**, bo to reguła o danych, a nie o buforze. |
 | `Viessmann.cpp:18-20` | `kIam`, `kApi`, `kRefreshTtlDays=180` | adresy jednego dostawcy + TTL jego tokena. Nikt tego nie stroi; zmienią się razem z całym plikiem. |
 | `.ino:94-95` | `kRssiRoamBelow=-67`, `kRssiRoamGain=8` | próg roamingu — używany w jednym pliku, w dwóch miejscach obok siebie. |
 | `.ino:109` | `NET_INFO_MS=10000` | czas ekranu „połączono”, jeden plik. |

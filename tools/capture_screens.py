@@ -3,7 +3,7 @@
 oraz contact sheet do README.
 
 Urzadzenie udostepnia:
-  POST /api/view?i=N  -> przelacza/przypina ekran (N: 0..12, -1 = powrot do rotacji)
+  POST /api/view?i=N  -> przelacza/przypina ekran (N: 0..13, -1 = powrot do rotacji)
                          (od fw v154 mutacja wymaga POST; GET tylko odczytuje stan)
   GET /api/screen     -> biezacy ekran jako BMP 320x240 24-bit (pobranie ~1 s)
 
@@ -50,12 +50,13 @@ GIF_FRAME_MS = 2500
 # Ekrany RETRO (0) i GODZINY (2) zostaly skasowane, ale pozostalych widokow CELOWO
 # nie przenumerowano — sloty 0 i 2 sa w Config.h zarezerwowane, bo numer widoku
 # wychodzi na zewnatrz przez /api/view. Dziury w numeracji ponizej sa wiec POPRAWNE
-# i maja takie zostac; lista ma 11 pozycji, a VIEW_COUNT dalej wynosi 13.
+# i maja takie zostac; lista ma 12 pozycji (v174: doszlo AUTO), a VIEW_COUNT wynosi 14.
 # Gdyby ktos mimo to przypial i=0 albo i=2, urzadzenie narysuje ekran GLOWNY
 # (galaz `default:` w drawV3) — czyli zrzut byby duplikatem "now", nie czernia.
 #
 # Ekrany pomijane przez ROTACJE (radar bez opadu, dom bez czujnikow BLE, piec bez
-# autoryzacji, powietrze bez danych) i tak daja sie PRZYPIAC przez /api/view,
+# autoryzacji, powietrze bez danych, auto bez swiezej wiadomosci MQTT) i tak daja sie
+# PRZYPIAC przez /api/view,
 # wiec sa na liscie normalnie. Jesli akurat nie maja danych, zrzut pokaze ich
 # stan pusty — i to tez jest prawda o urzadzeniu.
 VIEWS = [
@@ -69,7 +70,11 @@ VIEWS = [
     (9, "air", "Powietrze", "Air"),
     (10, "mem", "Pamiec", "Memory"),
     (11, "motion", "Ruch", "Motion"),
-    (12, "stats", "Statystyki", "Stats"),
+    # (v174) AUTO weszlo PRZED STATYSTYKAMI (Config.h: static_assert wymaga, zeby
+    # VIEW_STATS byl ostatni), wiec STATYSTYKI przesunely sie z 12 na 13. Kto ma
+    # zapisane "i=12" poza tym repozytorium, dostanie teraz ekran samochodu.
+    (12, "auto", "Samochod", "Car"),
+    (13, "stats", "Statystyki", "Stats"),
 ]
 
 # Slug z VIEWS -> nazwa stalej cfg::VIEW_* w Config.h. Sluzy WYLACZNIE weryfikacji
@@ -85,6 +90,7 @@ SLUG_TO_CONST = {
     "air": "AIR",
     "mem": "MEM",
     "motion": "MOTION",
+    "auto": "AUTO",
     "stats": "STATS",
 }
 

@@ -61,7 +61,7 @@ endpoints stand in for a serial console (all also reachable from the
 | `GET /api/log` | in-RAM ring buffer of the last ~120 log lines |
 | `GET /api/diag` | JSON snapshot: heap (current/min-ever/largest free block), Wi-Fi RSSI, per-subsystem last-success age and last error, OTA status |
 | `GET /api/view` | reads current view: `{"cur":X,"pin":Y}` (read-only) |
-| `POST /api/view?i=N` | pins screen `N` (`0`–`5`); `i=-1` returns to auto-rotation (mutating — POST since v154, so a foreign `<img>` tag can't switch the screen) |
+| `POST /api/view?i=N` | pins screen `N` (`0`–`13`, see `cfg::VIEW_*` in `Config.h` — that header is the only source of truth for these numbers); `i=-1` returns to auto-rotation (mutating — POST since v154, so a foreign `<img>` tag can't switch the screen). **v174: `i=12` is now the CAR screen and stats moved to `i=13`** — a new screen must go in before `VIEW_STATS`, which a `static_assert` keeps last. |
 | `GET /api/screen` | current screen as a 320×240 24-bit BMP (~1 s to fetch) |
 | `POST /api/reboot` | restarts without touching saved configuration |
 
@@ -214,6 +214,31 @@ States are grouped into one retained JSON per topic (`<prefix>/pv/state`,
 Availability uses `<prefix>/status` (`online` / `offline`, retained) with an MQTT
 Last Will, so Home Assistant marks the entities unavailable if the display drops
 off the network.
+
+### The one topic the device *subscribes* to (v174)
+
+`<prefix>/auto/stan` — car (Tesla) state, published by Home Assistant roughly
+every 15 s and rendered on the **AUTO** screen (`/api/view?i=12`). This is the
+only inbound topic; the subscription is re-established after every reconnect.
+The payload is one flat JSON object, all fields required unless noted:
+
+```json
+{"soc":95,"km":389,"kw":2.5,"a":4,"kwh":13.5,"tryb":"PV",
+ "stan":"laduje","kabel":1,"limit":100,"sl":2.6,"si":10.9}
+```
+
+`soc` battery %, `km` range, `kw` charging power, `a` requested current (A),
+`kwh` energy added this session, `tryb` charging mode — exactly one of `OFF`,
+`PV`, `PV+MIN`, `MAX` (the colour of the mode tile is a contract with the WLED
+ring in the garage), `stan` one of `laduje` / `czeka` / `stoi` / `spi` / `brak`
+(ASCII on purpose — it is a technical field, the display maps it to Polish),
+`kabel` 0/1 cable plugged, `limit` target charge %, `sl` / `si` kWh delivered to
+the car today from the sun and from the grid.
+
+A message that fails to parse, or that is missing `soc`/`tryb`/`stan`, is
+dropped and the previous state stays on screen. If nothing arrives for 45 s
+(2.5 × the 15 s cadence) the AUTO screen drops out of the rotation — it can
+still be pinned from the panel, and then says so.
 
 If the broker is unreachable the device keeps working normally — connection
 attempts use short timeouts and back off from 5 s to 5 min, and the failure is
