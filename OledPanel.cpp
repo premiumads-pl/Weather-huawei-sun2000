@@ -134,7 +134,9 @@ const uint8_t kInit[] PROGMEM = {
     0x40,        // pierwsza linia = 0
     0x8D, 0x14,  // pompka ladunkowa WLACZONA (modul nie ma zewnetrznego 7,5 V)
     0x20, 0x02,  // adresowanie STRONICOWE — patrz wyzej
-    0xA1, 0xC8,  // obrot 180 stopni
+    // Obrot sterowany stala z Config.h — patrz OLED_FLIP180 i komentarz przy niej.
+    static_cast<uint8_t>(cfg::OLED_FLIP180 ? 0xA0 : 0xA1),
+    static_cast<uint8_t>(cfg::OLED_FLIP180 ? 0xC0 : 0xC8),
     0xDA, 0x12,  // uklad wyprowadzen COM: alternatywny, bez zamiany lewa/prawa
     0x81, 0x7F,  // kontrast sredni — w lazience w nocy pelny oslepia
     0xD9, 0xF1,  // faza wstepnego ladowania

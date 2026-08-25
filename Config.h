@@ -65,12 +65,18 @@ constexpr int PIN_PIR = 13;
 // PINY POTWIERDZONE NA SPRZECIE (25.08.2026), nie wziete z propozycji w notatce:
 // dokumentacja projektu proponowala K1..K4 na 15/16/17/18, wlasciciel polutowal
 // 6/15/16/17. Zrodlem prawdy jest ten plik.
-constexpr int PIN_OLED_SDA = 4;
-constexpr int PIN_OLED_SCL = 5;
+constexpr int PIN_OLED_SDA = 5;
+constexpr int PIN_OLED_SCL = 6;
 // 400 kHz, bo cala klatka to 1024 B: przy 100 kHz jedna strona (128 B) szlaby ~12 ms,
 // czyli dluzej niz CALA klatka glownego ekranu. Modul ma wlasne podciagniecia,
 // wiec szybki tryb jest w jego zasiegu.
 constexpr uint32_t OLED_I2C_HZ = 400000;
+// (v176) OBROT OBRAZU. Modul wisi PRZYKRECONY DO GORY NOGAMI — piny na dole,
+// przyciski po lewej — wiec obraz trzeba obrocic wzgledem tego, co uznaje za
+// normalne sam sterownik. false = ustawienie fabryczne modulu (0xA1,0xC8),
+// true = obrot o 180 stopni (0xA0,0xC0). To jest wylacznie kwestia MONTAZU,
+// nie sprzetu: przy przykreceniu na drugi sposob wraca sie na false.
+constexpr bool OLED_FLIP180 = true;
 // Adresu NIE zakladamy: te moduly jada 0x3C albo 0x3D (zworka SA0 na spodzie).
 // begin() sprawdza po kolei — ACK rozstrzyga, nie nadruk na plytce.
 constexpr uint8_t OLED_ADDR_A = 0x3C;
@@ -79,10 +85,10 @@ constexpr uint8_t OLED_ADDR_B = 0x3D;
 // Przyciski ZWIERAJA PIN DO MASY (zmierzone miernikiem), wiec INPUT_PULLUP i logika
 // odwrocona: LOW = wcisniety. Zaden z tych pinow nie jest strapujacy ani zajety
 // (TFT ma 8-12/14, dotyk 7, PIR 13, LDR 1, USB CDC 19/20).
-constexpr int PIN_BTN_1 = 6;
-constexpr int PIN_BTN_2 = 15;
-constexpr int PIN_BTN_3 = 16;
-constexpr int PIN_BTN_4 = 17;
+constexpr int PIN_BTN_1 = 18;   // K1 na module
+constexpr int PIN_BTN_2 = 17;   // K2
+constexpr int PIN_BTN_3 = 16;   // K3
+constexpr int PIN_BTN_4 = 15;   // K4
 
 // MAPOWANIE ROL — JEDNO MIEJSCE I TYLKO TO JEDNO.
 // Nadruk na listwie idzie K4 K3 K2 K1 OD LEWEJ, a same przyciski sa opisane
