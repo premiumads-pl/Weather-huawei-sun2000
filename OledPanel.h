@@ -29,6 +29,15 @@
 // 3. PANEL NIE UDAJE, ZE COS USTAWIL. Kropka "tryb aktywny" pochodzi WYLACZNIE
 //    z pola `tryb` w <prefix>/auto/stan. Zatwierdzenie publikuje polecenie i czeka;
 //    bez potwierdzenia w cfg::OLED_CONFIRM_MS menu pisze o tym wprost.
+//
+// (v178) EKRAN TEST MA WYJSCIE POD PALCEM. Wchodzi sie w niego cfg::BTN_OK
+// i cfg::BTN_BACK trzymanymi RAZEM przez cfg::OLED_TEST_HOLD_MS, a wychodzi
+// KAZDYM krotkim nacisnieciem i puszczeniem dowolnego przycisku — patrz
+// pollButtons() w OledPanel.cpp. Do v177 wejsciem bylo przytrzymanie DOWOLNEGO
+// przycisku, a jedynym wyjsciem 10 s bezczynnosci, i to byla pulapka bez klamki:
+// w tescie przyciski nic nie robia, wiec wlasciciel naciskal wiecej i mocniej,
+// a kazde nacisniecie zerowalo licznik wyjscia. Skonczylo sie zgloszeniem, ze
+// "przyciski sa zepsute i zmiana trybu nie dziala".
 namespace oled {
 
 // Wykrywa modul po I2C (ACK pod 0x3C, potem 0x3D) i konfiguruje przyciski.
@@ -69,8 +78,9 @@ const uint8_t* shadow();
 // Wirtualne nacisniecie przycisku. `role` to ROLA (cfg::BTN_UP / BTN_DOWN / BTN_OK /
 // BTN_BACK), a NIE numer K na module — dzieki temu strona WWW nie musi wiedziec nic
 // o tym, jak modul jest przykrecony. Poza zakresem 0..3 i przy niewykrytym panelu
-// nie robi nic. Dziala jak KROTKIE nacisniecie i puszczenie: przytrzymania (wejscia
-// w ekran TEST po 3 s) nie da sie tedy wywolac.
+// nie robi nic. Dziala jak KROTKIE nacisniecie i puszczenie POJEDYNCZEGO przycisku,
+// wiec (v178) chwytu otwierajacego ekran TEST — cfg::BTN_OK i cfg::BTN_BACK trzymane
+// RAZEM przez cfg::OLED_TEST_HOLD_MS — nie da sie tedy zlozyc.
 // Sama akcja NIE wykonuje sie tutaj — patrz komentarz przy gInject w OledPanel.cpp.
 void injectPress(uint8_t role);
 

@@ -119,10 +119,19 @@ constexpr uint8_t BTN_BACK = 2;  // wyjscie bez zmiany  (K3, GPIO16)
 constexpr uint32_t OLED_BTN_HOLDOFF_MS = 120;
 // Menu wraca do ekranu spoczynkowego po tylu ms bez zadnego zbocza.
 constexpr uint32_t OLED_MENU_IDLE_MS = 15000;
-// Wejscie w ekran testu: przytrzymanie DOWOLNEGO przycisku. Celowo nie zalezy od
-// konkretnego guzika — to wlasnie ich mapowania jeszcze nie znamy.
+// (v178) Wejscie w ekran testu: cfg::BTN_OK i cfg::BTN_BACK wcisniete JEDNOCZESNIE
+// przez tyle ms. DO v177 wystarczylo przytrzymanie DOWOLNEGO przycisku i to bylo
+// zle, bo robilo z tamtego ekranu PULAPKE: w tescie zadne nacisniecie nic nie robi,
+// wiec wlasciciel — przekonany, ze przyciski sa zepsute — naciskal DLUZEJ, wpadal
+// w test i tam tez nic nie dostawal, a kazde kolejne nacisniecie zerowalo licznik
+// wyjscia po bezczynnosci. Wejscie mogloby nie zalezec od konkretnych guzikow tylko
+// dopoty, dopoki ich mapowania nie znalismy; po pomiarze z v176 (patrz BTN_* wyzej)
+// juz je znamy. OK i WSTECZ to dwa SASIADUJACE klawisze na gorze modulu, wiec chwyt
+// jest wygodny celowo, a przypadkiem nie do zrobienia.
 constexpr uint32_t OLED_TEST_HOLD_MS = 3000;
-// Wyjscie z testu: tyle ms bez ANI JEDNEGO nacisniecia.
+// Wyjscie z testu PO BEZCZYNNOSCI — DRUGA furtka, na wypadek gdyby wlasciciel po
+// prostu odszedl od panelu. Pierwsza i wazniejsza jest natychmiastowa: krotkie
+// nacisniecie i puszczenie dowolnego przycisku (patrz pollButtons w OledPanel.cpp).
 constexpr uint32_t OLED_TEST_EXIT_MS = 10000;
 // Ile czekamy na POTWIERDZENIE wyslanego trybu w <prefix>/auto/stan. Po tym czasie
 // menu pisze wprost, ze potwierdzenia nie ma — panel NIGDY nie przesuwa kropki sam

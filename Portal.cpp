@@ -419,8 +419,9 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
 <!-- (v176) DRUGI WYSWIETLACZ. To nie jest kolejny widok glownego ekranu, tylko osobne
      urzadzenie na tej samej plytce (OLED 128x64 po I2C + cztery przyciski), ktore sluzy
      do WYBORU TRYBU LADOWANIA AUTA. Dlatego dostaje wlasna sekcje zaraz za "Ekranem",
-     a nie blok wewnatrz niego. Podglad i klawisze chodza przez /api/oled i
-     /api/oled/btn — patrz apiOled()/apiOledBtn() nizej w tym pliku. -->
+     a nie blok wewnatrz niego. (v178) Podglad i klawisze chodza przez TRZY endpointy:
+     stan przez /api/oled, obraz przez /api/oled/img (surowe 1024 B), klawisze przez
+     /api/oled/btn — patrz apiOled()/apiOledImg()/apiOledBtn() nizej w tym pliku. -->
 <section id=sec-oled>
 <button class=sechead data-sec=oled><span>Panel OLED</span><span class=hgrp><span class=chev>▸</span></span></button>
 <div class=secbody>
@@ -445,6 +446,12 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
    moduł wisi przykręcony do góry nogami, klawiszami po lewej. Podpisy mówią o <b>roli</b>
    (góra / dół / zatwierdź / wstecz), a nie o nadruku na guziku: to, który guzik pełni którą rolę,
    ustala jedno miejsce w firmwarze (<span class=b>cfg::BTN_*</span> w Config.h).</div>
+  <div class=hint>Ekran <b>TEST</b> (diagnostyka przycisków) otwiera się na module
+   przytrzymaniem <b>„Zatwierdź” i „Wstecz” naraz</b> przez 3 s — to dwa sąsiadujące klawisze,
+   więc chwyt jest wygodny, a przypadkiem się go nie zrobi. Zamyka go <b>dowolne krótkie
+   naciśnięcie</b>, które przy okazji <b>niczego nie wybiera</b>, więc wyjście z testu nie zmieni
+   trybu ładowania. Przyciski w kolumnie obok szkła są krótkimi naciśnięciami pojedynczego
+   klawisza, więc testu nimi ani nie otworzysz, ani nie zamkniesz.</div>
  </div>
 </div>
 </section>
@@ -1666,44 +1673,60 @@ function shotDot(){
 document.addEventListener('visibilitychange',()=>{
  live=!document.hidden;shotDot();liveSync();oledSync();});
 // --- (v176) PANEL OLED: podglad drugiego wyswietlacza + cztery klawisze ------------
-// OBRAZ. /api/oled oddaje pole "img": 1024 B kopii klatki w base64, w UKLADZIE
-// SSD1306, czyli STRONICOWYM — bajt o indeksie page*128+x trzyma OSIEM PIONOWYCH
-// pikseli kolumny x, gdzie bit b to wiersz page*8+b (bit 0 = najwyzszy). Nie jest to
-// wiec zwykla mapa bitowa wiersz po wierszu i nie da sie tego wrzucic do putImageData
-// bez przeplecenia. Rysujemy prostokatami 1x1 w canvasie o NATYWNYCH 128x64 pikselach,
-// a powiekszenie zalatwia CSS (mnoznik calkowity + image-rendering:pixelated).
+// (v178) DWA ZAPYTANIA ZAMIAST JEDNEGO — stan z /api/oled, obraz z /api/oled/img.
+// Do v177 obraz jechal jako pole "img" w tym samym JSON-ie, zakodowany base64, i to
+// wywracalo urzadzenie: 1024 B rozdymalo sie do 1368 znakow, ktore lezaly na stercie
+// w trzech egzemplarzach naraz (pelne uzasadnienie przy apiOled w Portal.cpp).
+// OBRAZ. /api/oled/img oddaje SUROWE 1024 B w UKLADZIE SSD1306, czyli STRONICOWYM —
+// bajt o indeksie page*128+x trzyma OSIEM PIONOWYCH pikseli kolumny x, gdzie bit b to
+// wiersz page*8+b (bit 0 = najwyzszy). Nie jest to wiec zwykla mapa bitowa wiersz po
+// wierszu i nie da sie tego wrzucic do putImageData bez przeplecenia. Rysujemy
+// prostokatami 1x1 w canvasie o NATYWNYCH 128x64 pikselach, a powiekszenie zalatwia
+// CSS (mnoznik calkowity + image-rendering:pixelated). Samo dekodowanie jest DOKLADNIE
+// to samo, co bylo — zmienilo sie tylko zrodlo bajtow (Uint8Array zamiast atob()).
 // Obrazu NIE obracamy: obrot o 180 stopni robi sam sterownik SSD1306
 // (cfg::OLED_FLIP180 — modul jest przykrecony do gory nogami), wiec kopia odpowiada
 // temu, co widac na szkle.
-// ODSWIEZANIE. Co ~0,7 s, ale TYLKO gdy sekcja jest na wierzchu (komputer: .active,
-// telefon: .open) i karta przegladarki widoczna — wzorem podgladu ekranu i sekcji
-// "Na zywo". Do tego straznik oledBusy: nastepne zapytanie NIE poleci, dopoki
-// poprzednie nie wroci, bo przy wolnej sieci zapytania nakladalyby sie na siebie
-// i urzadzenie dostawaloby ich kilka naraz.
+// ODSWIEZANIE. Co 1 s (do v177: 0,7 s — zwolnione razem z rozdzieleniem endpointow,
+// bo panel na scianie i tak nie zmienia sie czesciej niz raz na sekunde, a kazde
+// zapytanie mniej to mniej ruchu na stercie urzadzenia), ale TYLKO gdy sekcja jest na
+// wierzchu (komputer: .active, telefon: .open) i karta przegladarki widoczna — wzorem
+// podgladu ekranu i sekcji "Na zywo". Do tego straznik oledBusy: nastepne zapytanie
+// NIE poleci, dopoki poprzednie nie wroci (oba naraz), bo przy wolnej sieci zapytania
+// nakladalyby sie na siebie i urzadzenie dostawaloby ich kilka jednoczesnie.
 let oledTimer=null,oledBusy=false;
 function oledVisible(){const el=$('sec-oled');
  return !!el&&!document.hidden&&(el.classList.contains('active')||el.classList.contains('open'));}
 function oledSync(){
  const v=oledVisible();
- if(v){if(!oledTimer){oledTick();oledTimer=setInterval(oledTick,700);}}
+ if(v){if(!oledTimer){oledTick();oledTimer=setInterval(oledTick,1000);}}
  else if(oledTimer){clearInterval(oledTimer);oledTimer=null;}
- if($('oledDot'))$('oledDot').textContent=v?'● odświeża co 0,7 s':'‖ wstrzymane';
+ if($('oledDot'))$('oledDot').textContent=v?'● odświeża co 1 s':'‖ wstrzymane';
 }
-function oledDraw(img){
+function oledDraw(b){                                   // b = Uint8Array(1024) albo null
  const c=$('oledCv');if(!c)return;
  const g=c.getContext('2d');
  g.fillStyle='#04120C';g.fillRect(0,0,128,64);          // ciemne szklo, jak prawdziwy OLED
- if(!img)return;                                        // brak kopii obrazu — samo tlo
- let b;try{b=atob(img);}catch(e){return}
+ if(!b)return;                                          // brak kopii obrazu — samo tlo
  g.fillStyle='#79F0BE';                                 // zapalony piksel
  for(let p=0;p<8;p++){
   if((p+1)*128>b.length)break;
   for(let x=0;x<128;x++){
-   const v=b.charCodeAt(p*128+x);
+   const v=b[p*128+x];
    if(!v)continue;                                      // cala kolumna zgaszona
    for(let bit=0;bit<8;bit++)if(v&(1<<bit))g.fillRect(x,p*8+bit,1,1);
   }
  }
+}
+// Zwraca 1024 B klatki albo null. NULL TO NIE BLAD: 503 znaczy "urzadzenie nie ma
+// teraz sterty na podglad" (albo kopii obrazu w ogole nie ma) i wtedy na canvasie ma
+// ZOSTAC POPRZEDNIA KLATKA — mrugniecie starym obrazem jest uczciwsze niz czarne
+// szklo, ktore wygladaloby na dzialajacy, ale wygaszony panel.
+async function oledImgBytes(){
+ const r=await fetch('/api/oled/img?'+Date.now());
+ if(!r.ok)return null;
+ const b=new Uint8Array(await r.arrayBuffer());
+ return b.length>=1024?b:null;                          // uciety transfer tez odrzucamy
 }
 async function oledTick(){
  if(oledBusy)return;
@@ -1714,7 +1737,8 @@ async function oledTick(){
   $('oledGlass').style.display=has?'':'none';
   $('oledNone').style.display=has?'none':'';
   document.querySelectorAll('#oledKeys button').forEach(b=>b.disabled=!has);
-  if(has)oledDraw(d.img);
+  // Obraz dociagamy DOPIERO gdy panel jest — i tylko wtedy przerysowujemy canvas.
+  if(has){const px=await oledImgBytes();if(px)oledDraw(px);}
   // Jeden wiersz diagnostyczny: gdzie siedzi, co rysuje, ile transakcji przepadlo
   // i ile trwal ostatni obieg. Rosnace "bledy I2C" to przewod albo styk, a nie
   // logika panelu — dlatego stoja tuz obok adresu.
@@ -4028,19 +4052,27 @@ void apiTap() {
 
 // --- (v176) PANEL OLED W PRZEGLADARCE ---------------------------------------
 // DRUGI wyswietlacz (128x64, I2C, cztery przyciski — wybor trybu ladowania auta) wisi
-// w lazience razem z glownym ekranem. Ten endpoint sluzy do tego, zeby dalo sie go
+// w lazience razem z glownym ekranem. Te endpointy sluza do tego, zeby dalo sie go
 // OBEJRZEC I OBSLUZYC ze strony, bez podchodzenia do urzadzenia.
 //
 // DLACZEGO OSOBNY ENDPOINT, SKORO STAN JEST JUZ W /api/diag: bo /api/diag sklada
 // kilkadziesiat kilobajtow JSON-a z calego firmware'u i serializuje go PRETTY. Panel
-// odpytuje podglad co ~0,7 s — na takiej kadencji tamten endpoint bylby marnotrawstwem
+// odpytuje podglad co 1 s — na takiej kadencji tamten endpoint bylby marnotrawstwem
 // czasu procesora i sterty. Tutaj leci tylko to, co rysuje podglad.
 //
-// OBRAZ IDZIE BASE64 I POWSTAJE NA STERCIE, NIE W .bss. Kopia klatki to 1024 B, czyli
-// 1368 znakow base64; statyczny bufor tej wielkosci zabralby prawie caly zapas do
-// bariery statycznego RAM-u (76 000 B, tools/release.sh — zajete juz ~74,4 kB).
-// String trzyma znaki na stercie, ktorej ta bariera nie dotyczy, i zyje tylko przez
-// czas obslugi jednego zadania.
+// (v178) STAN I OBRAZ TO OD TERAZ DWA ROZNE ENDPOINTY, i jest to NAPRAWA AWARII,
+// a nie porzadki. Do v177 /api/oled oddawalo takze pole "img": kopie klatki (1024 B)
+// zakodowana base64, czyli 1368 znakow, ktore w trakcie obslugi JEDNEGO zadania
+// lezaly na stercie w TRZECH egzemplarzach naraz — w String-u, w puli JsonDocument
+// i w buforze wyjsciowym serializacji. Przy odpytywaniu dwa razy na sekunde
+// urzadzenie zaczelo padac: wolna sterta zeszla do 11 kB przy najwiekszym CIAGLYM
+// bloku 31 kB, czyli sterta byla juz mocno POFRAGMENTOWANA, a obok czekal TLS do
+// Viessmanna, ktoremu sam uscisk dloni zabiera kilkadziesiat kB.
+//
+// Teraz:
+//   * /api/oled     — SAM STAN, kilkaset bajtow zwyklego JSON-a,
+//   * /api/oled/img — SUROWE 1024 B obrazu, bez base64, bez JsonDocument i bez ani
+//                     jednego String-a z trescia obrazu (patrz apiOledImg nizej).
 //
 // TYLKO ODCZYT, wiec GET jest wlasciwy — nic tu nie mutuje (mutacja stoi nizej,
 // w apiOledBtn(), i jest POST-em).
@@ -4056,42 +4088,73 @@ void apiOled() {
   d["i2c_err"] = oled::i2cErrors();   // rosnie = przewod/styk, a nie logika panelu
   d["step_us"] = oled::lastStepUs();
   d["buttons"] = oled::buttonMask();  // bity 0..3 = klawisze wcisniete FIZYCZNIE
-
-  // Pole "img" POMIJAMY, gdy kopii obrazu nie ma (brak modulu albo nieudana alokacja
-  // w PSRAM). To nie jest blad i nie udajemy, ze jest: strona traktuje brak pola tak
-  // samo jak null i rysuje samo ciemne szklo.
-  const uint8_t* img = oled::shadow();
-  if (img != nullptr) {
-    constexpr size_t kImgBytes = 1024;   // 128 x 64 / 8 — pelna klatka SSD1306
-    // Alfabet stoi w .rodata (flash) jako literal, nie w RAM-ie.
-    const char* const kB64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    // KLAMRA CELOWO: String z base64 ma sie zwolnic ZARAZ po przepisaniu do dokumentu,
-    // a nie dopiero na koncu funkcji. ArduinoJson kopiuje tresc do wlasnej puli, wiec
-    // bez tego zakresu ten sam kilobajt lezalby na stercie w trzech egzemplarzach
-    // naraz (tutaj, w puli dokumentu i w buforze wyjsciowym).
-    {
-      String b64;
-      b64.reserve(1372);   // 1368 znakow + zapas, zeby String nie rosl po kawalku
-      for (size_t i = 0; i < kImgBytes; i += 3) {
-        const uint32_t b0 = img[i];
-        const uint32_t b1 = (i + 1 < kImgBytes) ? img[i + 1] : 0;
-        const uint32_t b2 = (i + 2 < kImgBytes) ? img[i + 2] : 0;
-        const uint32_t v = (b0 << 16) | (b1 << 8) | b2;
-        b64 += kB64[(v >> 18) & 63];
-        b64 += kB64[(v >> 12) & 63];
-        // 1024 nie dzieli sie przez 3, wiec ostatnia grupa jest niepelna i konczy
-        // sie wypelniaczem "==" — bez tego atob() w przegladarce odrzuca caly ciag.
-        b64 += (i + 1 < kImgBytes) ? kB64[(v >> 6) & 63] : '=';
-        b64 += (i + 2 < kImgBytes) ? kB64[v & 63] : '=';
-      }
-      d["img"] = b64;
-    }
-  }
+  // (v178) POLA "img" TU JUZ NIE MA — obraz stoi pod /api/oled/img. Nie dokladac go
+  // z powrotem "dla wygody": to wlasnie ono wywracalo urzadzenie (patrz naglowek).
 
   String out;
   serializeJson(d, out);
   server.sendHeader("Cache-Control", "no-store");
   server.send(200, "application/json", out);
+}
+
+// (v178) SUROWA KOPIA KLATKI PANELU: dokladnie 1024 B w ukladzie pamieci SSD1306
+// (osiem stron po 128 B, bajt = kolumna, bit = wiersz w obrebie strony, bit 0 gorny).
+// Zadnego opakowania: base64 rozdymalo te bajty o 34%, a co gorsza kazdy egzemplarz
+// lezal na stercie. Rozklada to przegladarka — patrz oledDraw() w PAGE.
+//
+// JAK TO IDZIE BEZ KOPII NA STERCIE — wzorem apiCoredumpRaw() wyzej w tym pliku, bo
+// to dokladnie ten sam problem raz juz tutaj rozwiazany: znany Content-Length, puste
+// send() (samo naglowki), a tresc jednym sendContent() prosto ZE ZRODLOWEGO bufora.
+// oled::shadow() pokazuje na 1024 B lezace w PSRAM, wiec sendContent() dostaje
+// wskaznik na pamiec, ktora juz istnieje — nie ma tu ani String-a, ani JsonDocument-a,
+// ani bufora posredniego, ani jednej alokacji na czas obslugi zadania.
+// Recznie: curl -o oled.bin http://<ip>/api/oled/img
+//
+// DLACZEGO NIE KAWALKAMI PO 512 B, jak coredump: bo tam zrodlem jest FLASH i trzeba
+// go najpierw wciagnac do bufora na stosie, wiec kawalki OGRANICZAJA ten bufor. Tu
+// zrodlo lezy juz w RAM-ie i dzielenie niczego by nie zaoszczedzilo.
+//
+// PROG BEZPIECZENSTWA. Podglad jest NAJMNIEJ WAZNYM konsumentem pamieci w calym
+// urzadzeniu: bez niego dziala wszystko inne, bez sterty nie dziala nic. Skad 24 kB:
+// jedna odpowiedz HTTP kosztuje bufor nadawczy gniazda LWIP (~5,7 kB na polaczenie)
+// plus Stringi naglowkow i obslugi zadania w WebServerze — razem najwyzej kilka
+// kilobajtow, przyjmijmy 8 kB w najgorszym razie. 24 kB to POTROJNY zapas nad ta
+// liczba, a jednoczesnie prog lezy WYRAZNIE powyzej 11 kB, przy ktorych urzadzenie
+// zaczelo padac przy odpytywaniu dwa razy na sekunde.
+// DLACZEGO NIE WYZEJ, na wysokosci kMinHeapForRadar (64 kB) albo TRIAL_MIN_HEAP
+// (40 kB): tamte progi chronia operacje, ktore SAME zjadaja dziesiatki kilobajtow
+// (dekoder PNG, uscisk TLS). Podglad zjada kilka. Prog ustawiony na ich wysokosci
+// gasilby obraz przy kazdym normalnym dolku sterty, czyli akurat wtedy, gdy najbardziej
+// chce sie na urzadzenie popatrzec — a to jest narzedzie diagnostyczne.
+constexpr uint32_t kMinHeapForOledImg = 24000;
+
+void apiOledImg() {
+  // BRAK KOPII TO 503, A NIE PUSTE 1024 B. Wyslanie samych zer narysowaloby na
+  // stronie czarne szklo, czyli obraz PRAWDOPODOBNY i nieprawdziwy — wygladalby jak
+  // dzialajacy panel z pustym ekranem. Kod bledu mowi wprost, ze obrazu nie ma.
+  const uint8_t* img = oled::shadow();
+  if (!oled::present() || img == nullptr) {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(503, "application/json",
+                "{\"ok\":false,\"msg\":\"brak kopii obrazu panelu OLED\"}");
+    return;
+  }
+
+  const uint32_t heap = ESP.getFreeHeap();
+  if (heap < kMinHeapForOledImg) {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(503, "application/json",
+                "{\"ok\":false,\"msg\":\"za malo wolnej sterty na podglad panelu\"}");
+    return;
+  }
+
+  constexpr size_t kImgBytes = 1024;   // 128 x 64 / 8 — pelna klatka SSD1306
+  server.sendHeader("Cache-Control", "no-store");
+  // Znany Content-Length => odpowiedz idzie BEZ kodowania kawalkowego, wiec klient
+  // wie z gory, ile bajtow ma przyjac, i uciety transfer widac od razu.
+  server.setContentLength(kImgBytes);
+  server.send(200, "application/octet-stream", "");
+  server.sendContent(reinterpret_cast<const char*>(img), kImgBytes);
 }
 
 // Wirtualne nacisniecie klawisza panelu OLED.
@@ -4567,12 +4630,15 @@ void routes() {
   server.on("/api/theme", apiTheme);
   server.on("/api/view", apiView);
   server.on("/api/tap", HTTP_POST, apiTap);
-  // (v176) Panel OLED: GET = czysty ODCZYT stanu razem z kopia obrazu (podglad na
-  // stronie odpytuje go co ~0,7 s), POST = wirtualne nacisniecie klawisza.
+  // (v176) Panel OLED. (v178) STAN I OBRAZ SA ROZDZIELONE — patrz apiOled/apiOledImg:
+  //   GET  /api/oled     = czysty ODCZYT stanu, kilkaset bajtow JSON-a,
+  //   GET  /api/oled/img = surowe 1024 B kopii klatki (application/octet-stream),
+  //   POST /api/oled/btn = wirtualne nacisniecie klawisza.
   // Podzial na metody jest tu z tego samego powodu, co przy /api/bl nizej: klikniecie
   // MUTUJE stan i konczy sie wyslaniem trybu ladowania auta do Home Assistanta, wiec
   // obca strona nie ma go odpalac przez <img src=".../api/oled/btn?r=ok">.
   server.on("/api/oled", HTTP_GET, apiOled);
+  server.on("/api/oled/img", HTTP_GET, apiOledImg);
   server.on("/api/oled/btn", HTTP_POST, apiOledBtn);
   server.on("/api/tuning", HTTP_POST, apiTuning);
   // POST, nie GET: MUTUJA podswietlenie, wiec obca strona nie odpali ich przez

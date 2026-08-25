@@ -405,11 +405,29 @@ void drawMenu(const AutoModel& a, bool fresh) {
   }
 }
 
-// Diagnostyka mapowania przyciskow. Wchodzi sie tu PRZYTRZYMANIEM DOWOLNEGO
-// przycisku, bo tego, ktory jest ktory, wlasnie NIE WIEMY — wejscie zalezne od
-// konkretnego guzika bylo by pytaniem o odpowiedz, ktorej szukamy.
+// Diagnostyka mapowania przyciskow. (v178) Wchodzi sie tu cfg::BTN_OK i cfg::BTN_BACK
+// trzymanymi RAZEM przez cfg::OLED_TEST_HOLD_MS, a wychodzi KAZDYM krotkim
+// nacisnieciem i puszczeniem — uzasadnienie obu polowek stoi przy pollButtons().
+//
+// INSTRUKCJA WYJSCIA MUSI BYC NA EKRANIE i to nie jest ozdoba. Przyciski w tescie
+// celowo nic nie wybieraja, wiec bez tej linijki ekran wyglada dokladnie jak
+// zawieszony panel — i tak wlasnie zostal odczytany przez wlasciciela.
+//
+// TYTUL SKROCONY Z "TEST PRZYCISKÓW" DO "TEST" I TO JEST SWIADOMY UBYTEK, nie
+// niedopatrzenie. Pomiar w metrykach f10: "TEST PRZYCISKÓW" ma 86 px, a
+// "naciśnij, aby wyjść" 82 px — na jednej linii (122 px uzytecznych) nie mieszcza
+// sie razem, a pionowo nie ma juz ANI JEDNEGO wolnego wiersza: naglowek siedzi na
+// linii bazowej 8, cztery wiersze po kRowH koncza sie ogonkiem "Ę" na y=62, a ekran
+// ma 64. Zmieszczenie pietej linii wymagaloby scisniecia wierszy do 11 px, czyli
+// zejscia z siatki wspolnej z menu i zerowych odstepow miedzy akcentami. Wiersze
+// mowia same za siebie ("K1  GPIO18  WCIŚNIĘTY"), wiec slowo "PRZYCISKÓW" jest tu
+// mniej warte niz zdanie o tym, jak stad wyjsc.
 void drawTest() {
-  str(plex::f10(), "TEST PRZYCISKÓW", kMarginX, kIdleTagY, true);
+  str(plex::f10(), "TEST", kMarginX, kIdleTagY, true);
+  // Ta sama prawa krawedz, co kolumna stanu ponizej — naglowek nie rusza siatki
+  // kolumn, tylko dosiada sie do wolnego miejsca po prawej (koniec "TEST" na x=25,
+  // poczatek napisu na x=43, czyli 18 px przerwy).
+  strRight(plex::f10(), "naciśnij, aby wyjść", kTestRightX, kIdleTagY, true);
   for (int i = 0; i < 4; ++i) {
     const int base = kRow0Y + i * kRowH + 10;
     char b[8];
@@ -482,7 +500,10 @@ void sendMode(uint32_t now) {
 // Akcja przypisana do PUSZCZENIA przycisku (patrz pollButtons — i tam jest
 // uzasadnienie, dlaczego nie do wcisniecia).
 void onKey(uint8_t i, uint32_t now, const AutoModel& a) {
-  if (gScr == SCR_TEST) return;  // w tescie przyciski TYLKO sie pokazuja
+  // W tescie przyciski TYLKO sie pokazuja. (v178) Puszczenie, ktore z tego ekranu
+  // WYCHODZI, w ogole tu nie dociera — pollButtons() obsluguje je u siebie i celowo
+  // nie wola onKey(), zeby wyjscie z testu nie zmienilo przy okazji trybu ladowania.
+  if (gScr == SCR_TEST) return;
 
   if (gScr == SCR_IDLE) {
     // Pierwsze nacisniecie BUDZI menu i celowo NICZEGO nie wybiera: wlasciciel
@@ -509,30 +530,61 @@ void onKey(uint8_t i, uint32_t now, const AutoModel& a) {
   }
 }
 
+// (v178) CHWYT OTWIERAJACY EKRAN TEST: cfg::BTN_OK i cfg::BTN_BACK wcisniete
+// JEDNOCZESNIE przez cfg::OLED_TEST_HOLD_MS. Fizycznie sa to dwa SASIADUJACE
+// klawisze na gorze modulu, wiec chwyt jest wygodny, a przypadkiem sie go nie zrobi.
+// Uzasadnienie samej zmiany (i tego, czemu przytrzymanie DOWOLNEGO przycisku bylo
+// pulapka) stoi przy cfg::OLED_TEST_HOLD_MS w Config.h.
+//
+// TRZYMANIE LICZYMY OD POZNIEJSZEGO Z DWOCH WCISNIEC, czyli bierzemy KROTSZY z dwoch
+// czasow: chwyt zaczyna sie dopiero wtedy, gdy OBA klawisze sa juz na dole. Roznice
+// "now - gDownAt" sa odporne na przekrecenie millis(), porownanie samych znacznikow
+// nie byloby.
+void checkTestCombo(uint32_t now) {
+  constexpr uint8_t kCombo =
+      static_cast<uint8_t>((1u << cfg::BTN_OK) | (1u << cfg::BTN_BACK));
+  if (gScr == SCR_TEST) return;
+  if ((gDown & kCombo) != kCombo) return;
+
+  // ZASLONA ZAPADA JUZ TERAZ, a nie dopiero po 3 s. Dzieki temu chwyt PRZERWANY
+  // w polowie (wlasciciel puscil za wczesnie) nie konczy sie wyslaniem trybu do auta
+  // przez puszczenie "zatwierdz" — to dokladnie ten wzglad bezpieczenstwa, ktorego
+  // do v177 pilnowal warunek czasowy przy puszczeniu, skasowany nizej.
+  gSwallow = static_cast<uint8_t>(gSwallow | kCombo);
+
+  const uint32_t heldOk = now - gDownAt[cfg::BTN_OK];
+  const uint32_t heldBack = now - gDownAt[cfg::BTN_BACK];
+  const uint32_t held = (heldOk < heldBack) ? heldOk : heldBack;
+  if (held < cfg::OLED_TEST_HOLD_MS) return;
+
+  gScr = SCR_TEST;
+  gMsg = MSG_NONE;
+  gLastKeyMs = now;
+  gSwallow = gDown;   // patrz uzasadnienie przy wyjsciu z testu w pollButtons()
+}
+
 // AKCJE LECA NA PUSZCZENIE, NIE NA WCISNIECIE — i to jest decyzja o bezpieczenstwie,
-// nie o wygodzie. Wejscie w ekran testu wymaga PRZYTRZYMANIA dowolnego przycisku,
-// wiec przy akcjach na wcisnieciu przytrzymanie tego, ktory okaze sie "zatwierdz",
-// najpierw WYSLALOBY zmiane trybu do auta, a dopiero potem otworzylo diagnostyke.
-// Jedna regula — "akcja przy puszczeniu, jesli trzymanie bylo krotsze niz
-// cfg::OLED_TEST_HOLD_MS" — usuwa ten przypadek w calosci i nie ma wyjatkow.
+// nie o wygodzie. Na koncu roli "zatwierdz" stoi WYSLANIE TRYBU LADOWANIA AUTA, wiec
+// ma sie ono dziac wtedy, gdy palec SCHODZI z guzika, a nie w chwili dotkniecia.
+//
+// (v178) ZNIKNAL WARUNEK "trzymane krocej niz cfg::OLED_TEST_HOLD_MS" przy puszczeniu
+// i to jest zmiana zamierzona, a nie zgubiona linia. Byl potrzebny dopoty, dopoki
+// ekran testu otwieralo PRZYTRZYMANIE DOWOLNEGO przycisku: bez niego przytrzymanie
+// tego, ktory okazywal sie "zatwierdz", najpierw wyslaloby zmiane trybu, a dopiero
+// potem otworzylo diagnostyke. Skoro pojedyncze przytrzymanie niczego juz nie
+// otwiera, ma sie zachowywac jak ZWYKLE NACISNIECIE — inaczej guzik trzymany
+// "chwile dluzej" bylby ignorowany po cichu, czyli dokladnie tak, jak wygladala
+// usterka zgloszona przez wlasciciela. Przypadek, ktorego tamten warunek pilnowal,
+// zalatwia teraz checkTestCombo(): oba klawisze chwytu dostaja zaslone gSwallow
+// w chwili, gdy oba sa na dole, wiec chwyt przerwany w polowie tez nic nie wysyla.
 void pollButtons(uint32_t now, const AutoModel& a) {
   for (uint8_t i = 0; i < 4; ++i) {
     const bool down = digitalRead(kPins[i]) == LOW;  // zwiera do masy, INPUT_PULLUP
     const bool was = (gDown & (1u << i)) != 0;
 
-    if (down == was) {
-      // Trzymany dostatecznie dlugo -> ekran testu. gSwallow zaslania WSZYSTKIE
-      // cztery przyciski, bo wlasciciel moze puscic je w dowolnej kolejnosci,
-      // a zadne z tych puszczen nie ma juz nic wykonac.
-      if (down && gScr != SCR_TEST &&
-          (now - gDownAt[i]) >= cfg::OLED_TEST_HOLD_MS) {
-        gScr = SCR_TEST;
-        gMsg = MSG_NONE;
-        gLastKeyMs = now;
-        gSwallow = 0x0F;
-      }
-      continue;
-    }
+    // Brak zbocza. Samo PRZYTRZYMANIE nie ma juz tu nic do roboty — jedyne, co
+    // z niego wynika, to chwyt otwierajacy test, a ten liczy checkTestCombo() nizej.
+    if (down == was) continue;
 
     // Holdoff na drgania styku. Liczony od OSTATNIEGO PRZYJETEGO zbocza, wiec
     // dziala tak samo na zbocze w dol i w gore.
@@ -549,10 +601,30 @@ void pollButtons(uint32_t now, const AutoModel& a) {
     gDown = static_cast<uint8_t>(gDown & ~(1u << i));
     const bool swallowed = (gSwallow & (1u << i)) != 0;
     gSwallow = static_cast<uint8_t>(gSwallow & ~(1u << i));
-    if (!swallowed && (now - gDownAt[i]) < cfg::OLED_TEST_HOLD_MS) {
-      onKey(i, now, a);
+
+    // (v178) WYJSCIE Z TESTU JEST NATYCHMIASTOWE i jest JEDYNYM skutkiem tego
+    // puszczenia: onKey() sie nie wykonuje, wiec wyjscie nie zmienia przy okazji
+    // trybu ladowania auta. Gornego limitu czasu trzymania tu NIE MA celowo — caly
+    // sens tej poprawki polega na tym, ze z ekranu testu da sie wyjsc ZAWSZE, a nie
+    // tylko wtedy, gdy trafi sie we wlasciwe okno czasowe.
+    //
+    // Przyciski TRZYMANE W TEJ CHWILI zaslaniamy, bo ich puszczenia naleza do tego
+    // samego ruchu reki i tez nie maja nic wybierac. gSwallow = gDown, a NIE 0x0F:
+    // bit zapalony na przycisku, ktorego nikt nie trzyma, dotrwalby do jego
+    // nastepnego nacisniecia i POLKNALBY je (ten sam blad opisuje komentarz przy
+    // wyjsciu po bezczynnosci w tick()).
+    if (gScr == SCR_TEST) {
+      if (!swallowed) {
+        gScr = SCR_IDLE;
+        gSwallow = gDown;
+      }
+      continue;
     }
+
+    if (!swallowed) onKey(i, now, a);
   }
+
+  checkTestCombo(now);
 }
 
 // (v176) ZDJECIE WIRTUALNYCH NACISNIEC Z KOLEJKI — patrz gInject u gory pliku.
@@ -561,10 +633,18 @@ void pollButtons(uint32_t now, const AutoModel& a) {
 //
 // STANU PRZYCISKOW CELOWO NIE DOTYKAMY: gDown/gDownAt/gSwallow zostaja nietkniete,
 // bo to one licza PRZYTRZYMANIE. Dzieki temu klikniecie ze strony jest zawsze
-// KROTKIM nacisnieciem i puszczeniem — nie da sie nim wejsc w ekran TEST po 3 s
-// (a wejscie w niego z drugiego konca miasta nie mialoby sensu: ten ekran sluzy do
-// patrzenia na guziki, ktore ma sie pod palcem) i nie da sie nim zaklamac ekranu
-// testu, ktory pokazuje wylacznie stan fizycznych stykow.
+// KROTKIM nacisnieciem i puszczeniem POJEDYNCZEGO przycisku — (v178) nie da sie nim
+// zlozyc chwytu otwierajacego ekran TEST (cfg::BTN_OK + cfg::BTN_BACK trzymane RAZEM
+// przez cfg::OLED_TEST_HOLD_MS; a wejscie w ten ekran z drugiego konca miasta nie
+// mialoby sensu: sluzy on do patrzenia na guziki, ktore ma sie pod palcem) i nie da
+// sie nim zaklamac ekranu testu, ktory pokazuje wylacznie stan fizycznych stykow.
+//
+// Z TESTU TEZ SIE STAD NIE WYCHODZI, i to jest wybor, nie przeoczenie: onKey()
+// wychodzi w tescie pierwsza linia, a wyjscie siedzi w pollButtons() przy PUSZCZENIU
+// fizycznego styku. Ekran testu oglada sie stojac przy module, wiec klikniecie
+// w przegladarce nie ma prawa przerwac komus tego ogladania. Wlasciciel przy panelu
+// ma dwie wlasne drogi wyjscia (dowolne nacisniecie oraz cfg::OLED_TEST_EXIT_MS),
+// a z przegladarki i tak nie da sie w test WEJSC, wiec nie da sie w nim utknac.
 //
 // gLastKeyMs przesuwamy tak samo, jak przy zboczu fizycznym: klikniecie w przegladarce
 // ma trzymac menu otwarte przez cfg::OLED_MENU_IDLE_MS, a nie pozwalac mu zgasnac
@@ -606,17 +686,20 @@ void tick(uint32_t now, const AutoModel& a, bool fresh) {
     gMsg = MSG_NONE;
     gSentAtMs = 0;   // patrz uzasadnienie przy BTN_BACK w onKey()
   }
-  // Z testu wychodzimy dopiero, gdy przez 10 s nic nie jest wciskane ANI trzymane —
-  // inaczej trzymanie guzika, ktore wlasnie sie sprawdza, wyrzucaloby z ekranu.
+  // (v178) DRUGA FURTKA Z TESTU: 10 s bez zadnego zbocza i bez trzymanego guzika.
+  // Pierwsza i wazniejsza jest natychmiastowa — krotkie nacisniecie i puszczenie
+  // dowolnego przycisku (pollButtons). Ta zostaje na wypadek, gdyby wlasciciel wszedl
+  // w test i po prostu odszedl od panelu. Warunek gDown == 0 pilnuje, zeby trzymanie
+  // guzika, ktory wlasnie sie sprawdza, nie wyrzucalo z ekranu.
   if (gScr == SCR_TEST && gDown == 0 && (now - gLastKeyMs) >= cfg::OLED_TEST_EXIT_MS) {
     gScr = SCR_IDLE;
-    // KASUJEMY ZASLONE. Wejscie w test ustawia ja na WSZYSTKICH czterech przyciskach
-    // (bo puscic je mozna w dowolnej kolejnosci), a zdejmuje ja dopiero puszczenie
-    // DANEGO przycisku. Bez tej linii bity trzech nienacisnietych zostawaly by
-    // zapalone i po powrocie do spoczynku POLKNELY BY pierwsze nacisniecie kazdego
-    // z nich — czyli menu nie otworzyloby sie za pierwszym razem. Bezpieczne tutaj,
-    // bo do tego miejsca dochodzimy wylacznie przy gDown == 0, czyli gdy nie ma juz
-    // ani jednego puszczenia do obsluzenia.
+    // ZASLONA JEST TU JUZ PUSTA i to zerowanie tylko to potwierdza — zostaje jako
+    // straznik niezmiennika, a nie jako naprawa. DO v177 wejscie w test zapalalo
+    // WSZYSTKIE cztery bity (0x0F), wiec bity trzech nienacisnietych przyciskow
+    // dotrwalyby tutaj i po powrocie do spoczynku POLKNELY BY pierwsze nacisniecie
+    // kazdego z nich — menu nie otworzyloby sie za pierwszym razem. Od v178 zaslone
+    // stawiamy WYLACZNIE na przyciski faktycznie trzymane (gSwallow = gDown), a do
+    // tego miejsca dochodzimy przy gDown == 0, wiec nie ma juz czego kasowac.
     gSwallow = 0;
   }
 }
