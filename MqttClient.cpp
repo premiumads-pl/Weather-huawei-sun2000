@@ -48,6 +48,20 @@ namespace {
 // ~470 B ladunku; PubSubClient wieksza wiadomosc PO CICHU ODRZUCA (readPacket ustawia
 // len = 0, PubSubClient.cpp:364), wiec objawem byloby "ekran AUTO przestal sie
 // pokazywac", a nie awaria — dlatego ta granica jest tu wypisana liczba.
+//
+// (v179) TRZECI KANDYDAT, PRZELICZONY PO DOLOZENIU LICZNIKOW MIERNIKA. Grupa `pv`
+// dostala pola `gin`/`gout` (encje pv_grid_in / pv_grid_out), wiec jej pakiet stanu
+// urosl i wypada policzyc go jawnie zamiast zakladac, ze "state jest maly":
+//     1 B naglowka stalego + 2 B dlugosci zmiennej + 2 B dlugosci tematu
+//   + 32 B tematu (23 znaki maks. prefiksu + "/pv/state") + 194 B ladunku
+//   = 231 B, czyli 45% bufora — pelna rozpiska ladunku stoi przy publishPv().
+// Retained config encji (430 B) zostaje wiec dalej NAJWIEKSZYM pakietem i to on
+// wyznacza kBufSize. Same nowe encje tez tej granicy nie podnosza: przy maksymalnym
+// prefiksie ich configi wychodza 405 i 408 B razem z tematem i naglowkiem, czyli
+// TYLE SAMO co juz obecny pv_total (408 B) — nazwy "Pobrane z sieci" / "Oddane do
+// sieci" sa krotsze od "Produkcja całkowita" dokladnie o tyle, o ile dluzsze sa
+// klucze pv_grid_in / pv_grid_out. Najgrubsze pakiety i tak robi discovery BLE,
+// gdzie nazwa encji sklada sie z nazwy pokoju wpisanej przez uzytkownika.
 constexpr uint16_t kBufSize = 512;
 
 constexpr uint16_t kKeepAliveS = 60;      // PINGREQ co minute, nie co 15 s
@@ -170,6 +184,21 @@ const Ent kEnts[] = {
      nullptr, false},
     {"pv_total", "Produkcja całkowita", "pv", "total", "energy", "kWh", "total_increasing",
      nullptr, false},
+    // (v179) LICZNIKI MIERNIKA, NIE NASZA CALKA. Panel Energia w HA chce dwoch
+    // licznikow narastajacych kWh, a do v178 powstawaly one po stronie HA przez
+    // calkowanie chwilowego `pv_grid` — czyli z bledu kwantyzacji 30-sekundowej
+    // kadencji. Firmware od v165 czyta PRAWDZIWE rejestry miernika (37121 pobor,
+    // 37119 oddanie; PvClient::readMeterEnergy) i tylko ich nie publikowal. To ten
+    // sam miernik, ktory raportuje do FusionSolar, wiec HA pokaze liczby IDENTYCZNE
+    // z portalem Huawei zamiast wlasnego przyblizenia.
+    //
+    // Pola `gin`/`gout`, a nie `grid_in`/`grid_out`: nazwa pola wchodzi do payloadu
+    // stanu grupy `pv` PRZY KAZDEJ publikacji (co 30 s), a nie raz w discovery —
+    // rozliczenie bajtow jest w komentarzu przy publishPv() nizej.
+    {"pv_grid_in", "Pobrane z sieci", "pv", "gin", "energy", "kWh", "total_increasing",
+     nullptr, false},
+    {"pv_grid_out", "Oddane do sieci", "pv", "gout", "energy", "kWh", "total_increasing",
+     nullptr, false},
     // znak: + oddawanie do sieci, - pobor
     {"pv_grid", "Bilans sieci", "pv", "grid", "power", "W", "measurement", nullptr, false},
     {"pv_house", "Pobór domu", "pv", "house", "power", "W", "measurement", nullptr, false},
@@ -236,7 +265,7 @@ bool publishConfig(const Ent& e) {
   if (e.icon != nullptr) n = addf(p, cap, n, ",\"ic\":\"%s\"", e.icon);
   if (e.diagnostic) n = addf(p, cap, n, ",\"ent_cat\":\"diagnostic\"");
 
-  // Wspolny blok device — dzieki niemu HA sklei wszystkie 22 encje w JEDNO urzadzenie.
+  // Wspolny blok device — dzieki niemu HA sklei wszystkie 24 encje w JEDNO urzadzenie.
   n = addf(p, cap, n,
            ",\"dev\":{\"ids\":[\"%s\"],\"name\":\"%s\",\"mf\":\"premiumads-pl\","
            "\"mdl\":\"ESP32-S3 pogoda+PV\",\"sw\":\"%d\"}}",
@@ -314,7 +343,7 @@ void sendDiscovery() {
     if (publishConfig(kEnts[i])) {
       ++entOk;
     }
-    // 22 pakiety po ~490 B pod rzad potrafia zapchac okno TCP — oddajemy procesor,
+    // 24 pakiety po ~490 B pod rzad potrafia zapchac okno TCP — oddajemy procesor,
     // zeby webTask (nizszy priorytet, ten sam rdzen) nie zglodnial.
     vTaskDelay(pdMS_TO_TICKS(5));
   }
@@ -571,7 +600,7 @@ bool tryConnect() {
       static_cast<unsigned long>(ESP.getFreeHeap()));
 
   gCli->publish(gAvail, "online", true);
-  // (v174) SUBSKRYPCJA PRZED discovery, nie po. sendDiscovery() wysyla 38 pakietow
+  // (v174) SUBSKRYPCJA PRZED discovery, nie po. sendDiscovery() wysyla 40 pakietow
   // z vTaskDelay miedzy nimi, czyli trwa grubo ponad sekunde — a przez ten czas
   // ekran AUTO nie mialby jeszcze skad wziac danych, choc broker ma je gotowe jako
   // retained i odda w tej samej milisekundzie, w ktorej dostanie SUBSCRIBE.
@@ -819,15 +848,73 @@ void publishPv(const PvModel& pv, bool ok) {
 
   const char* status = ok ? pvStatusLabel(d.statusCode) : "Offline";
 
-  char p[224];
-  const int n = snprintf(
+  // (v179) 256 B zamiast 224 po dolozeniu `gin`/`gout`. Przeliczony najgorszy
+  // przypadek ladunku to 194 B (rozpiska nizej), wiec 224 by wystarczylo — ale
+  // z zapasem 30 B, a ten bufor rosnie przy KAZDYM nowym polu i nikt tego zapasu
+  // nie widzi, dopoki snprintf po cichu nie utnie JSON-a i pubState() go nie
+  // odrzuci. To stos netTaska, nie statyczny RAM: 32 B kosztuje tyle, co nic.
+  char p[256];
+  const int cap = static_cast<int>(sizeof(p));
+  int n = snprintf(
       p, sizeof(p),
       "{\"ac\":%ld,\"dc\":%ld,\"grid\":%ld,\"house\":%ld,"
-      "\"today\":%.2f,\"total\":%.2f,\"temp\":%.1f,\"status\":\"%s\"}",
+      "\"today\":%.2f,\"total\":%.2f,\"temp\":%.1f,\"status\":\"%s\"",
       ok ? static_cast<long>(d.powerAcW) : 0L, ok ? static_cast<long>(d.powerDcW) : 0L,
       ok ? static_cast<long>(d.gridPowerW) : 0L, ok ? static_cast<long>(d.houseLoadW) : 0L,
       gPvCache.todayKwh, gPvCache.totalKwh, gPvCache.tempC, status);
-  if (n > 0 && n < static_cast<int>(sizeof(p))) {
+
+  // ===== (v179) LICZNIKI MIERNIKA — WARTOWNIK -1 POMIJAMY, NIE ZERUJEMY ========
+  //
+  // TO JEST NAJWAZNIEJSZA DECYZJA W TEJ FUNKCJI. Obie encje sa `total_increasing`,
+  // a HA traktuje KAZDY spadek takiego licznika jako przekrecenie miernika: bierze
+  // nowa (nizsza) wartosc za poczatek nowego cyklu i dolicza cala dotychczasowa
+  // sume do statystyki dlugoterminowej. Wyslanie tu `-1` — albo `0`, albo `null` —
+  // raz jeden trwale rozjechaloby dane Panelu Energia, a naprawa to reczne
+  // grzebanie w bazie `statistics` Home Assistanta, nie restart urzadzenia.
+  //
+  // PvData.h ustawia meterImportKwh/meterExportKwh na -1.f, gdy odczytu NIE BYLO
+  // (wartownik jest -1, a nie 0, wlasnie dlatego, ze 0 jest prawdziwa wartoscia
+  // swiezo wymienionego miernika — pelny wywod stoi tam przy deklaracji pol).
+  // Wartosc ujemna oznacza wiec "nie wiem", a jedyna uczciwa odpowiedz na "nie
+  // wiem" w JSON-ie stanu to CISZA: pole znika z ladunku, val_tpl w HA renderuje
+  // sie na pusty napis, a MQTT sensor pusty ladunek IGNORUJE i zostawia encje na
+  // poprzednim stanie. Dokladnie to samo robi publishBle() z czujnikiem, ktory
+  // zamilkl — tam tez pole po prostu wypada z payloadu.
+  //
+  // DLACZEGO BEZ WLASNEGO CACHE (jak gPvCache dla today/total). gPvCache istnieje
+  // po to, zeby nieudany odczyt nie wyslal ZERA tam, gdzie zero jest nieodroznialne
+  // od pomiaru. Tutaj taki cache byl by zbedny: wartownik -1 jest jawnie nie-
+  // -pomiarem, wiec da sie go odsiac bez pamietania czegokolwiek, a przeniesienie
+  // ostatniego dobrego odczytu i tak juz zrobil netTask (pogoda-gdynia.ino, galaz
+  // `!meterEnergyFresh`). Drugi cache byl by druga kopia tej samej prawdy.
+  //
+  // ROZLICZENIE BAJTOW (najgorszy przypadek ladunku, wartosci na granicach typow):
+  //   nazwy pol + interpunkcja stalej czesci ......................  68 B
+  //   ac/dc/grid/house, int32 "-2147483648" x4 ....................  44 B
+  //   today/total, %.2f z rejestru int32/100 ("21474836.00") x2 ....  22 B
+  //   temp, %.1f z int16/10 ("-3276.8") ...........................   7 B
+  //   status, najdluzsza etykieta "Praca (derating)" ..............  16 B
+  //   ,"gin":  + wartosc %.2f (int32/100, max 11 znakow) ..........  18 B
+  //   ,"gout": + wartosc %.2f (int32/100, max 11 znakow) ..........  19 B
+  //                                                          RAZEM  194 B
+  // Pakiet MQTT: 1 B naglowka stalego + 2 B dlugosci zmiennej + 2 B dlugosci
+  // tematu + 32 B tematu (23 znaki maks. prefiksu + "/pv/state") + 194 B ladunku
+  // = 231 B, czyli 45% bufora kBufSize. Najwiekszym pakietem zostaje dalej retained
+  // config encji (430 B) — bufora NIE ruszamy.
+  if (d.meterImportKwh >= 0.f) {
+    n = addf(p, cap, n, ",\"gin\":%.2f", d.meterImportKwh);
+  }
+  if (d.meterExportKwh >= 0.f) {
+    n = addf(p, cap, n, ",\"gout\":%.2f", d.meterExportKwh);
+  }
+  // Zaokraglenie do 2 miejsc, bo gain rejestru wynosi 100 — trzecia cyfra po
+  // przecinku byla by szumem po dzieleniu, nie rozdzielczoscia miernika.
+  n = addf(p, cap, n, "}");
+
+  // addf() przy przepelnieniu zwraca dlugosc >= cap i zostawia bufor obciety,
+  // wiec ten warunek jest tu takze bramka na uciety JSON — lepiej nie wyslac nic
+  // niz wyslac polowe ladunku, ktorej HA nie sparsuje.
+  if (n > 0 && n < cap) {
     pubState("pv", p, n);
   }
 }

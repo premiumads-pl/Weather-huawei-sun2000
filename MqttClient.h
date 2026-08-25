@@ -65,6 +65,9 @@ void loop();
 // Wywolywac po UDANYM odczycie (ok == true) i po nieudanym (ok == false).
 // Przy bledzie moce ida na 0, a liczniki energii trzymaja ostatnia znana wartosc —
 // inaczej HA zobaczylby zjazd total_increasing do zera i policzyl falszywy reset.
+// (v179) Liczniki miernika (pola `gin`/`gout`) traktowane sa jeszcze ostrozniej:
+// przy wartowniku -1 z PvData.h ZNIKAJA z ladunku zamiast isc jako 0 — pelne
+// uzasadnienie przy publishPv() w MqttClient.cpp.
 void publishPv(const PvModel& pv, bool ok);
 
 // Tylko po udanym pobraniu prognozy.
