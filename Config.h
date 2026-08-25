@@ -57,6 +57,63 @@ constexpr int PIN_LDR = 1;
 // mierzymy dopiero teraz — pir_* w /api/diag.
 constexpr int PIN_PIR = 13;
 
+// ---------- (v175) PANEL OLED + CZTERY PRZYCISKI — WYBOR TRYBU LADOWANIA AUTA ----
+// To OSOBNE URZADZENIE na tej samej plytce, a nie nowy widok glownego ekranu: ma
+// wlasny sterownik, wlasny rytm rysowania i wlasne przyciski. Numerow widokow
+// (VIEW_*) nie dotyka — patrz nota przy VIEW_COUNT nizej.
+//
+// PINY POTWIERDZONE NA SPRZECIE (25.08.2026), nie wziete z propozycji w notatce:
+// dokumentacja projektu proponowala K1..K4 na 15/16/17/18, wlasciciel polutowal
+// 6/15/16/17. Zrodlem prawdy jest ten plik.
+constexpr int PIN_OLED_SDA = 4;
+constexpr int PIN_OLED_SCL = 5;
+// 400 kHz, bo cala klatka to 1024 B: przy 100 kHz jedna strona (128 B) szlaby ~12 ms,
+// czyli dluzej niz CALA klatka glownego ekranu. Modul ma wlasne podciagniecia,
+// wiec szybki tryb jest w jego zasiegu.
+constexpr uint32_t OLED_I2C_HZ = 400000;
+// Adresu NIE zakladamy: te moduly jada 0x3C albo 0x3D (zworka SA0 na spodzie).
+// begin() sprawdza po kolei — ACK rozstrzyga, nie nadruk na plytce.
+constexpr uint8_t OLED_ADDR_A = 0x3C;
+constexpr uint8_t OLED_ADDR_B = 0x3D;
+
+// Przyciski ZWIERAJA PIN DO MASY (zmierzone miernikiem), wiec INPUT_PULLUP i logika
+// odwrocona: LOW = wcisniety. Zaden z tych pinow nie jest strapujacy ani zajety
+// (TFT ma 8-12/14, dotyk 7, PIR 13, LDR 1, USB CDC 19/20).
+constexpr int PIN_BTN_1 = 6;
+constexpr int PIN_BTN_2 = 15;
+constexpr int PIN_BTN_3 = 16;
+constexpr int PIN_BTN_4 = 17;
+
+// MAPOWANIE ROL — JEDNO MIEJSCE I TYLKO TO JEDNO.
+// Nadruk na listwie idzie K4 K3 K2 K1 OD LEWEJ, a same przyciski sa opisane
+// strzalkami i symbolami OD GORY — czyli nie wiadomo, ktory fizyczny guzik siedzi
+// na ktorym pinie, dopoki wlasciciel nie zobaczy ekranu TEST PRZYCISKOW. Do tego
+// czasu przyjmujemy kolejnosc naturalna. Poprawka po tescie to zmiana TYCH CZTERECH
+// LICZB i nic wiecej — dlatego sa indeksami w tablicy pinow (0 = PIN_BTN_1), a nie
+// numerami GPIO: kod obslugi nigdzie indziej nie zna zwiazku "rola -> pin".
+constexpr uint8_t BTN_UP = 0;    // przewijanie w gore
+constexpr uint8_t BTN_DOWN = 1;  // przewijanie w dol
+constexpr uint8_t BTN_OK = 2;    // zatwierdz — wysyla tryb do Home Assistanta
+constexpr uint8_t BTN_BACK = 3;  // wyjscie bez zmiany
+
+// Debounce PRZEZ HOLDOFF, a nie przez probkowanie: panel jest odpytywany raz na
+// obieg petli rysowania (33-50 ms), czyli rzadziej niz trwaja drgania styku (~5 ms).
+// Probkowanie potwierdzajace kosztowaloby caly obieg opoznienia na kazde zbocze;
+// holdoff nie kosztuje nic i tak samo dziala dotyk GPIO7 (Touch.cpp).
+constexpr uint32_t OLED_BTN_HOLDOFF_MS = 120;
+// Menu wraca do ekranu spoczynkowego po tylu ms bez zadnego zbocza.
+constexpr uint32_t OLED_MENU_IDLE_MS = 15000;
+// Wejscie w ekran testu: przytrzymanie DOWOLNEGO przycisku. Celowo nie zalezy od
+// konkretnego guzika — to wlasnie ich mapowania jeszcze nie znamy.
+constexpr uint32_t OLED_TEST_HOLD_MS = 3000;
+// Wyjscie z testu: tyle ms bez ANI JEDNEGO nacisniecia.
+constexpr uint32_t OLED_TEST_EXIT_MS = 10000;
+// Ile czekamy na POTWIERDZENIE wyslanego trybu w <prefix>/auto/stan. Po tym czasie
+// menu pisze wprost, ze potwierdzenia nie ma — panel NIGDY nie przesuwa kropki sam
+// z siebie. 10 s to ~2/3 kadencji Home Assistanta (15 s), czyli jedna pominieta
+// publikacja jeszcze sie miesci, dwie juz nie.
+constexpr uint32_t OLED_CONFIRM_MS = 10000;
+
 // ---------- Siatka layoutu ----------
 // Wysokosc gornej belki. UWAGA: to NIE jest juz stala motywu V1 — po usunieciu V1/V2
 // (v160) jej jedynymi czytelnikami sa ekrany SYSTEMOWE, wspolne dla calego firmware:

@@ -31,6 +31,7 @@
 #include "Led.h"
 #include "Log.h"
 #include "MqttClient.h"
+#include "OledPanel.h"   // (v175) panel OLED + 4 przyciski — wybor trybu ladowania auta
 #include "Ota.h"
 #include "BleGateway.h"
 #include "BleSensors.h"
@@ -2142,6 +2143,12 @@ void setup() {
   // ma bronić.
   ble::begin();
   touch::begin();
+  // (v175) Panel OLED. PO ui.begin() i ble::begin() celowo: jesli modulu nie ma,
+  // begin() zwalnia magistrale i wylacza panel na stale, wiec nic tu nie zajmuje
+  // pamieci ani czasu. Jesli jest — probowanie dwoch adresow to najwyzej ~100 ms
+  // raz na uruchomienie. Zaden z pinow (4, 5, 6, 15, 16, 17) nie koliduje z TFT,
+  // dotykiem, PIR-em ani LDR-em, wiec kolejnosc wzgledem nich jest bez znaczenia.
+  oled::begin();
   // Wynik NIE jest juz ignorowany. Nieudana alokacja nie konczy sprawy — netTask
   // ponawia ja w tle (radarmap::ensureReady()) — ale ma zostawic slad w dzienniku
   // razem z POWODEM, bo to jedyne miejsce, w ktorym widac stan pamieci dokladnie
@@ -2754,6 +2761,27 @@ void loop() {
   }
 
   const bool animating = ui.render(uiWeather, uiPv, uiHist, uiFlights, gWifiOk, now);
+
+  // (v175) PANEL OLED — DOKLADAMY SIE DO TEGO RYTMU, A NIE OBOK NIEGO.
+  // Miejsce jest tu, MIEDZY zlozeniem klatki a policzeniem pauzy, i to nie jest
+  // obojetne. Ponizej stoi taktowanie, ktore czeka RESZTE okresu klatki: to, co
+  // zrobimy w tej linii, po prostu skraca te pauze i nie przesuwa celu nastepnej
+  // klatki. Gdyby panel siedzial PO delay(left), jego 3 ms doklejalyby sie do
+  // okresu — czyli wrocilby dokladnie ten blad, ktory opisuje komentarz nizej
+  // ("rysowanie + 33 ms" zamiast rownych 33 ms).
+  //
+  // ILE TO KOSZTUJE: przy zmianie tresci jedna strona (~3 ms) razy osiem obiegow,
+  // czyli ~9% budzetu klatki przez niecala sekunde. Bez zmiany tresci — sam odczyt
+  // czterech pinow. Wysylanie CALEJ klatki (1 kB, ~25 ms) w jednym obiegu zjadloby
+  // 3/4 okresu klatki aktywnej i widac by to bylo na animacji radaru.
+  //
+  // NIE JEST WOLANE, gdy loop() konczy sie wczesniej: tryb AP, ekran OTA, ekran IP
+  // i ekran startowy maja wlasne `return` wyzej. Dla OTA jest to WSKAZANE (nie
+  // dotykamy magistrali, gdy trwa zapis partycji), dla pozostalych oznacza tylko
+  // tyle, ze panel stoi na ostatniej klatce, dopoki urzadzenie nie wejdzie
+  // w normalna prace. Ma tez skad brac dane dopiero stad — uiAuto jest wypelniane
+  // kilkadziesiat linii wyzej.
+  oled::step(uiAuto, now);
 
   // TAKTOWANIE KLATEK, nie stala pauza. Poprzednio bylo delay(33) PO renderowaniu,
   // wiec okres klatki wynosil "rysowanie + 33 ms": przy 66 ms rysowania dawalo to

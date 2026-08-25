@@ -52,6 +52,9 @@
 #include "RadarMap.h"
 #include "SecureClient.h"   // YieldingSecureClient — geokoder w apiGeo() (patrz tam)
 #include "Touch.h"          // liczniki gestow -> /api/diag.touch (v158)
+#include "OledPanel.h"      // (v175) panel OLED -> sekcja "oled" w /api/diag
+                            // (mqttha::autoModeReqState() do tej samej sekcji bierzemy
+                            //  z MqttClient.h, dolaczonego wyzej)
 #include "Viessmann.h"
 #include "Settings.h"
 #include "Version.h"
@@ -3324,6 +3327,29 @@ void apiDiag() {
     g["stale_s"] = blegw::STALE_S;
     g["frames"] = blegw::lastCount(i);         // ramek w ostatniej udanej odpowiedzi
     g["err"] = blegw::lastError(i);            // "" = ostatnia proba sie udala
+  }
+
+  // --- (v175) PANEL OLED: JEST CZY GO NIE MA, I CO NA NIM STOI ---
+  // Wlasciciel wgrywa firmware ZANIM podlaczy modul, wiec "panel nie dziala" ma dwie
+  // zupelnie rozne przyczyny (nie wykryto przy starcie / wykryto, ale cos innego jest
+  // nie tak) i bez tej sekcji nie da sie ich rozroznic bez kabla USB. `addr` mowi
+  // przy okazji, ktory z dwoch adresow odpowiedzial. `buttons` to maska po debounce —
+  // przy nieznanym jeszcze mapowaniu przyciskow da sie ja odczytac ZDALNIE, bez
+  // patrzenia komukolwiek przez ramie na ekran testu. `req_state` odroznia "panel
+  // wyslal, automatyka milczy" od "panel w ogole nie wyslal" — a to jest pierwsza
+  // rzecz, o ktora sie zapyta, gdy tryb sie nie przelaczy.
+  // Zero nowych pol w Diag, wiec zero bajtow w .bss.
+  JsonObject ol = j["oled"].to<JsonObject>();
+  ol["present"] = oled::present();
+  ol["addr"] = oled::address();
+  if (oled::present()) {
+    ol["screen"] = oled::screenName();
+    ol["pages"] = oled::pagesSent();
+    ol["i2c_err"] = oled::i2cErrors();   // rosnie = przewod/styk, a nie logika panelu
+    ol["step_us"] = oled::lastStepUs();
+    ol["buttons"] = oled::buttonMask();
+    ol["sent_mode"] = oled::sentMode();             // "" = nic jeszcze nie wyslano
+    ol["req_state"] = mqttha::autoModeReqState();   // 0 nic / 1 czeka / 2 poszlo / 3 blad
   }
 
   // --- DOTYK GPIO7: ile gestow policzylismy i ile ODRZUCILISMY ---

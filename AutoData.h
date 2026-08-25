@@ -63,6 +63,58 @@ static_assert(sizeof(AutoModel) < 80,
               "AutoModel zyje w dwoch kopiach — powyzej 80 B zaczyna byc widoczny "
               "w budzecie statycznego RAM-u (bariera 76 000 B)");
 
+// ============================ TRYBY LADOWANIA ================================
+// (v175) JEDNO MIEJSCE, w ktorym polska nazwa z panelu OLED spotyka sie z wartoscia
+// techniczna ida po MQTT. Panel POKAZUJE "TYLKO SŁOŃCE", a na <prefix>/auto/tryb/set
+// wysyla "PV" — i to musi byc jedna tablica, a nie dwie listy w dwoch plikach.
+//
+// KOLEJNOSC JEST CZESCIA UKLADU MENU (rosnaca moc: nic -> nadwyzka -> nadwyzka plus
+// minimum -> pelna moc), wiec strzalka w dol znaczy na ekranie to samo, co znaczy
+// dla auta. Zmiana kolejnosci zmienia menu i nic wiecej — indeksy nie wychodza
+// nigdzie poza panel (po MQTT ida NAPISY, nie numery), wiec nie ma tu kontraktu
+// takiego, jak przy numerach widokow w Config.h.
+//
+// switch zamiast tablicy z `const char*`: literaly siedza wtedy w .rodata bez
+// tablicy wskaznikow, ktora przy inline w naglowku potrafi sie zwielokrotnic po
+// jednostkach kompilacji. Zero bajtow statycznego RAM-u — a jego zostalo 1816 B.
+constexpr int kAutoModeCount = 4;
+
+// Wartosc, ktora IDZIE PO DRUCIE. Musi sie zgadzac z tym, co Home Assistant
+// przyjmuje na <prefix>/auto/tryb/set i co oddaje w polu `tryb` w auto/stan.
+inline const char* autoModeMqtt(int i) {
+  switch (i) {
+    case 0: return "OFF";
+    case 1: return "PV";
+    case 2: return "PV+MIN";
+    case 3: return "MAX";
+    default: return "";
+  }
+}
+
+// Napis dla CZLOWIEKA. Kazdy polski znak sprawdzony w tablicy kodow fontow Plex
+// (Plex10/11/13 maja komplet: ą ć ę ł ń ó ś ź ż i wersalikami) — pltxt::drawString
+// POMIJA PO CICHU glif spoza fontu, wiec "SŁOŃCE" bez sprawdzenia potrafiloby sie
+// wyswietlic jako "SOCE".
+inline const char* autoModeLabel(int i) {
+  switch (i) {
+    case 0: return "STOP";
+    case 1: return "TYLKO SŁOŃCE";
+    case 2: return "SŁOŃCE + MIN.";
+    case 3: return "CAŁA NAPRZÓD";
+    default: return "-";   // tryb spoza listy: kreska, a nie zgadywanie
+  }
+}
+
+// Napis z MQTT -> indeks (-1 = nieznany). Panel bierze STAD kropke "tryb aktywny",
+// czyli wprost z tego, co przyszlo w auto/stan — nigdy z wlasnej wysylki.
+inline int autoModeIndex(const char* m) {
+  if (m == nullptr || m[0] == '\0') return -1;
+  for (int i = 0; i < kAutoModeCount; ++i) {
+    if (strcmp(m, autoModeMqtt(i)) == 0) return i;
+  }
+  return -1;
+}
+
 // Techniczny `state` -> napis dla czlowieka. Zwraca literal z flasha, wiec nie
 // kosztuje ani bajta RAM-u i nie trzeba go nigdzie kopiowac.
 //

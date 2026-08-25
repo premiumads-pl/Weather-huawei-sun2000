@@ -35,6 +35,29 @@ namespace mqttha {
 // wiadomosc — wtedy `out` zostaje NIETKNIETE.
 bool autoSnapshot(AutoModel& out);
 
+// (v175) WYSYLKA TRYBU LADOWANIA — <prefix>/auto/tryb/set, ladunek to DOKLADNIE
+// jedna z wartosci "OFF" / "PV" / "PV+MIN" / "MAX" (patrz autoModeMqtt w AutoData.h).
+//
+// DLACZEGO NIE `gCli->publish()` WPROST Z PANELU: PubSubClient nie jest bezpieczny
+// watkowo, a JEDYNYM zadaniem, ktore go dotyka, jest netTask (rdzen 0) — to on wola
+// gCli->loop() i w srodku tego wywolania biegnie callback odbioru. Panel OLED zyje
+// w petli rysowania (rdzen 1). Publikacja stamtad weszlaby w to samo gniazdo i ten
+// sam bufor 512 B, ktory netTask akurat czyta. Dlatego panel tylko SKLADA ZAMOWIENIE,
+// a wysyla je mqttha::loop() u siebie — ta sama sciezka co przy pozostalych danych.
+//
+// requestAutoMode() nadpisuje zamowienie, ktore jeszcze nie poszlo: liczy sie
+// OSTATNI wybor wlasciciela, a nie kolejka jego wahania.
+void requestAutoMode(const char* mode);
+
+// Stan tego zamowienia — panel na tym opiera komunikat, a NIE na wlasnym zalozeniu,
+// ze skoro wyslal, to zadzialalo:
+//   0 = nic nie zamawiano (albo panel juz odczytal koniec sprawy),
+//   1 = czeka na wyslanie (netTask jeszcze nie doszedl albo nie ma polaczenia),
+//   2 = pakiet POSZEDL do brokera (to NIE jest potwierdzenie zmiany trybu!),
+//   3 = nie udalo sie wyslac (MQTT wylaczony, brak polaczenia, broker odrzucil).
+// Potwierdzeniem ZMIANY jest wylacznie pole `tryb` wracajace w auto/stan.
+uint8_t autoModeReqState();
+
 // Utrzymuje polaczenie (albo je zrywa, gdy MQTT wylaczono), obsluguje keepalive
 // i cyklicznie publikuje telemetrie urzadzenia. Wolac z netTaska w kazdej petli.
 void loop();

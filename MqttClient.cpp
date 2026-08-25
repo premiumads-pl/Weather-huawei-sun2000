@@ -80,6 +80,16 @@ char gAutoTopic[40] = {};   // (v174) <prefix>/auto/stan — jedyna nasza subskr
 AutoModel gAutoRx{};
 SemaphoreHandle_t gAutoMx = xSemaphoreCreateMutex();
 
+// (v175) ZAMOWIENIE Z PANELU OLED: tryb do wyslania na <prefix>/auto/tryb/set.
+// Sklada je petla rysowania (rdzen 1), wysyla netTask (rdzen 0) — pelne uzasadnienie
+// przy requestAutoMode() w MqttClient.h. Napis chodzi pod TYM SAMYM mutexem, co
+// gAutoRx: sekcje krytyczne to przepisanie 8 B, wiec drugi mutex bylby kosztem bez
+// zysku. Stan jest `volatile uint8_t` i celowo POZA mutexem — pojedynczy bajt na
+// Xtensie zapisuje sie jedna instrukcja, a czytelnik i tak reaguje dopiero na
+// wartosc koncowa (2 albo 3).
+char gModeReq[8] = {};
+volatile uint8_t gModeReqState = 0;   // 0 nic / 1 czeka / 2 wyslane / 3 blad
+
 uint32_t gNextTryAt = 0;
 uint32_t gBackoffMs = kBackoffMinMs;
 uint32_t gNextDevAt = 0;
@@ -410,6 +420,54 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
   // Czekanie w nieskonczonosc wstrzymaloby keepalive MQTT.
 }
 
+// (v175) WYSLANIE ZAMOWIENIA Z PANELU. Wolane WYLACZNIE z mqttha::loop(), czyli
+// z netTaska — to jedyne zadanie, ktore ma prawo dotykac gCli.
+//
+// retain = FALSE, i to nie jest przeoczenie: to POLECENIE, a nie stan. Retained
+// polecenie broker dosylalby kazdemu nowemu subskrybentowi — czyli po restarcie
+// Home Assistanta auto dostawaloby "MAX" sprzed tygodnia jako swiezy rozkaz.
+// Stanem jest <prefix>/auto/stan i to on jest retained po tamtej stronie.
+void flushModeRequest() {
+  if (gModeReqState != 1) return;
+
+  // Brak klienta albo brak polaczenia konczy sprawe NATYCHMIAST bledem, zamiast
+  // trzymac zamowienie do skutku. Panel ma 10 s na komunikat i lepiej, zeby napisal
+  // "nie wyslano" od razu, niz zeby wlasciciel patrzyl w "wysylam..." przez caly
+  // backoff brokera (do 5 minut).
+  if (gCli == nullptr || !gCli->connected()) {
+    gModeReqState = 3;
+    return;
+  }
+
+  char topic[48];
+  const int tn = snprintf(topic, sizeof(topic), "%s/auto/tryb/set", settings().mqttPrefix);
+  if (tn < 0 || tn >= static_cast<int>(sizeof(topic))) {
+    gModeReqState = 3;
+    return;
+  }
+
+  // Kopia pod mutexem: panel moze wlasnie nadpisywac gModeReq nowym wyborem.
+  char m[sizeof(gModeReq)] = {};
+  if (gAutoMx != nullptr && xSemaphoreTake(gAutoMx, pdMS_TO_TICKS(20)) == pdTRUE) {
+    memcpy(m, gModeReq, sizeof(m));
+    xSemaphoreGive(gAutoMx);
+  }
+  if (m[0] == '\0') {
+    gModeReqState = 3;
+    return;
+  }
+
+  const bool ok = gCli->publish(topic, m, false);
+  gModeReqState = ok ? 2 : 3;
+  if (ok) {
+    diag().mqttOkAt = millis();
+    ++diag().mqttPublished;
+    LOG("MQTT: panel OLED -> %s = %s\n", topic, m);
+  } else {
+    setErr("Broker odrzucił wybór trybu");
+  }
+}
+
 // Subskrypcja tematu auta. Wolana po KAZDYM udanym polaczeniu, bo broker nie
 // pamieta subskrypcji zerwanej sesji (laczymy sie z cleanSession — PubSubClient
 // nie umie inaczej), wiec po kazdym zerwaniu trzeba ja zlozyc od nowa.
@@ -617,8 +675,38 @@ bool autoSnapshot(AutoModel& out) {
   return have;
 }
 
+// (v175) Zamowienie z panelu OLED — pelny opis przy deklaracji w MqttClient.h.
+// Wolane z petli rysowania (rdzen 1); TU nie ma ani jednego dotkniecia gCli.
+void requestAutoMode(const char* mode) {
+  if (mode == nullptr || mode[0] == '\0') return;
+  if (gAutoMx != nullptr && xSemaphoreTake(gAutoMx, pdMS_TO_TICKS(5)) == pdTRUE) {
+    strncpy(gModeReq, mode, sizeof(gModeReq) - 1);
+    gModeReq[sizeof(gModeReq) - 1] = '\0';
+    xSemaphoreGive(gAutoMx);
+    // Stan podnosimy DOPIERO po udanym zapisie napisu — inaczej netTask mogl by
+    // zobaczyc "czeka" przy pustym albo poprzednim trybie.
+    gModeReqState = 1;
+    return;
+  }
+  // Nie udalo sie wziac mutexu (5 ms): zamowienie NIE zostalo zlozone i panel ma
+  // sie o tym dowiedziec, zamiast czekac 10 s na potwierdzenie czegos, czego nikt
+  // nie wyslal.
+  gModeReqState = 3;
+}
+
+uint8_t autoModeReqState() {
+  return gModeReqState;
+}
+
 void loop() {
   const Settings& s = settings();
+
+  // (v175) Zamowienie trybu z panelu OLED zalatwiamy PRZED wszystkimi wczesnymi
+  // powrotami ponizej. Kazdy z nich (MQTT wylaczony, brak WiFi, backoff) jest
+  // powodem, dla ktorego wysylka sie NIE UDA — a panel ma dostac odpowiedz "nie
+  // wyslano" zaraz, nie po ustaniu przyczyny. flushModeRequest() sam sprawdza
+  // gCli/connected(), wiec dziala poprawnie w kazdym z tych stanow.
+  flushModeRequest();
 
   // MQTT wylaczony: oddaj stertę i nie udawaj bledu na ekranie statystyk.
   if (!s.hasMqtt()) {

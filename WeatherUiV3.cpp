@@ -31,6 +31,7 @@
 
 #include "WeatherUi.h"
 #include "ThemeV3.h"
+#include "Format.h"          // (v175) fmt1() — wspolna z panelem OLED
 #include "PlexText.h"
 #include "CoastMap.h"
 #include "MapDataRadar.h"   // gmapr:: granice (pozycja Gdyni na radarze)
@@ -152,11 +153,10 @@ bool airSampleFresh(const AirModel& a) {
 }
 
 // "%.1f" z polskim przecinkiem dziesietnym (mockupy: "3,2 kW", "22,4 st").
-void fmt1(char* b, size_t n, float v) {
-  snprintf(b, n, "%.1f", v);
-  for (char* p = b; *p; ++p)
-    if (*p == '.') { *p = ','; break; }
-}
+// (v175) DEFINICJA PRZENIESIONA DO Format.h — dolaczonego wyzej — bo od tego wydania
+// te sama regule potrzebuje TAKZE panel OLED (OledPanel.cpp), a to inny plik i inny
+// rdzen rysujacy. Tutaj zostaje sam odsylacz, zeby nikt nie szukal jej w tym pliku.
+// Wszystkie ~20 wywolan nizej celuje teraz w te jedna, wspolna funkcje.
 
 // Moc [kW] z DWOMA miejscami po przecinku dla malych wartosci (<10 kW), jednym dla
 // wiekszych. Wlasciciel: przy 0,2 kW nie widac, ze wartosc realnie sie zmienia (0,20->
