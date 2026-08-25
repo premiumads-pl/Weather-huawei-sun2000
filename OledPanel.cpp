@@ -32,7 +32,9 @@
 // sketches/) pokazala prawdziwy wynik. Pomiar RAM-u po przyrostowym budowaniu
 // potrafi wiec KLAMAC w obie strony.
 #include <driver/i2c_master.h>
+#include <esp_heap_caps.h>   // heap_caps_malloc — kopia obrazu dla WWW ma isc do PSRAM
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 
@@ -51,6 +53,10 @@ namespace {
 // 129 B to gPage — JEDNA strona obrazu zamiast pelnego kilobajta. Doliczajac
 // 9 B zamowienia trybu w MqttClient.cpp i 28 B sterownika I2C z IDF, caly panel
 // kosztuje 264 B statycznego RAM-u przy zapasie 1816 B do bariery.
+// (v176) Podglad i sterowanie z panelu WWW dolozylo do tego 9 B: wskaznik na kopie
+// obrazu (4 B — sama kopia siedzi w PSRAM), maska wirtualnych nacisniec (4 B)
+// i indeks potwierdzonego trybu (1 B). Kilobajt kopii NIE wchodzi do tego rachunku
+// i nie ma prawa wejsc — to jest cala idea tego rozwiazania.
 bool gPresent = false;
 uint8_t gAddr = 0;
 i2c_master_bus_handle_t gBus = nullptr;   // oba uchwyty siedza na STERCIE
@@ -64,6 +70,41 @@ i2c_master_dev_handle_t gDev = nullptr;
 uint8_t gPage[1 + 128];
 uint8_t gPageIdx = 8;    // ktora strona czeka na wyslanie; 8 = klatka gotowa, nic nie robimy
 uint32_t gI2cErr = 0;    // ile transakcji sie nie udalo (zerwany przewod, zly styk)
+
+// (v176) KOPIA CALEGO OBRAZU DLA PODGLADU WWW — 1024 B, ale W PSRAM, nie w .bss.
+// W statycznym RAM-ie zostaje po niej TEN WSKAZNIK, czyli 4 B: pelna klatka w .bss
+// zjadlaby 56% zapasu do bariery 76 000 B i jest dokladnie tym, czego ten panel od
+// poczatku unika (patrz punkt 1 w OledPanel.h). Uklad bajtow jest taki sam, jak
+// w pamieci kontrolera, wiec zapis to zwykle memcpy strony — bez przepakowywania.
+// nullptr = podgladu nie ma; panel dziala wtedy bez zmiany.
+uint8_t* gShadow = nullptr;
+
+// (v176) KOLEJKA WIRTUALNYCH NACISNIEC — maska ROL do obsluzenia (bit 0..3).
+// DWA ZADANIA, JEDNA SCIEZKA AKCJI: injectPress() wola zadanie serwera WWW, a
+// onKey() musi sie wykonac w zadaniu petli rysowania, bo dotyka calego stanu ekranu
+// (gScr, gCursor, gMsg, wysylka MQTT). Dlatego strona WWW tylko ZAPALA BIT, a step()
+// go zdejmuje i wykonuje TE SAMA funkcje, co puszczenie fizycznego przycisku.
+//
+// atomic, a nie samo volatile: "gInject |= bit" i "gInject &= ~m" to obie operacje
+// odczyt-modyfikacja-zapis, wiec przy dwoch zadaniach (i dwoch rdzeniach) zwykly
+// volatile potrafilby zgubic bit zapalony dokladnie miedzy odczytem a zapisem.
+// uint32_t, a nie uint8_t: 32-bitowe atomiki sa na Xtensa BEZ ZAMKA (instrukcja
+// S32C1I), wersja bajtowa szlaby przez funkcje biblioteczna. Koszt roznicy to 3 B.
+//
+// MASKA SKLEJA POWTORZENIA: dwa klikniecia TEJ SAMEJ roli, ktore trafia w jeden
+// obieg petli, zostana wykonane RAZ. Obieg trwa 33-50 ms, a klikniecia z przegladarki
+// ida przez HTTP i siec, wiec w to okno musialyby wpasc dwa zadania serwera naraz.
+// Cena pomylki jest przy tym asymetryczna i to ona rozstrzyga: zgubiony powtorzony
+// ruch kursora to jeden wiersz menu mniej (widoczne od razu, klikniesz jeszcze raz),
+// a bufor cykliczny kupilby te skrajnosc kosztem wiekszej ilosci stanu i drugiego
+// miejsca, w ktorym moze sie przepelnic.
+std::atomic<uint32_t> gInject{0};
+
+// Tryb POTWIERDZONY przez auto/stan, jako indeks (-1 = brak swiezych danych albo
+// napis spoza listy). Indeks, a nie kopia napisu: 1 B zamiast 8 B, a activeMode()
+// i tak oddaje literal z flasha przez autoModeMqtt(). To DOKLADNIE to samo zrodlo,
+// z ktorego bierze sie kropka na ekranie — panel i strona nie moga sie tu roznic.
+int8_t gActive = -1;
 int gRow0 = 0;           // pierwszy wiersz ekranu nalezacy do rysowanej strony (= 8 * gPageIdx)
 uint32_t gSig = 0;       // podpis tresci — zmiana podpisu jest JEDYNYM powodem przerysowania
 uint32_t gPagesSent = 0;
@@ -171,12 +212,23 @@ void cmd(uint8_t c) {
 // Wysyla gPage na wskazana strone kontrolera. JEDNA transakcja na 129 B: bajt
 // sterujacy siedzi juz w gPage[0], wiec nie ma tu ani kopiowania, ani dzielenia
 // pakietu na kawalki (sterownik IDF nie ma ograniczenia 128 B, ktore ma Wire).
+//
+// (v176) TU POWSTAJE TAKZE KOPIA DLA PODGLADU WWW i to jest jedyne miejsce, w ktorym
+// moze powstac: kopiujemy DOKLADNIE te bajty, ktore poszly na szklo, w chwili, gdy
+// tam poszly. TYLKO PO UDANEJ TRANSMISJI — gdy xfer() zawiodl (urwany przewod, zly
+// styk), na szkle zostala STARA tresc tej strony, wiec podglad tez ma zostac stary.
+// Kopiowanie mimo bledu pokazywaloby w przegladarce obraz, ktorego nikt nigdy nie
+// zobaczyl na module. Zrodlem jest gPage + 1, bo gPage[0] to bajt sterujacy 0x40
+// i do obrazu NIE nalezy.
 void sendPage(uint8_t page) {
   cmd(static_cast<uint8_t>(0xB0 | page));  // wybor strony
   cmd(0x00);                               // kolumna 0, mlodsze cztery bity
   cmd(0x10);                               // kolumna 0, starsze cztery bity
-  xfer(gPage, sizeof(gPage));
-  ++gPagesSent;
+  const bool ok = xfer(gPage, sizeof(gPage));
+  ++gPagesSent;   // licznik PROB, tak jak dotad — nieudane widac obok w gI2cErr
+  if (ok && gShadow != nullptr && page < 8) {
+    memcpy(gShadow + page * 128, gPage + 1, 128);
+  }
 }
 
 // ====================== PRYMITYWY RYSOWANIA (jedna strona) ===================
@@ -503,6 +555,29 @@ void pollButtons(uint32_t now, const AutoModel& a) {
   }
 }
 
+// (v176) ZDJECIE WIRTUALNYCH NACISNIEC Z KOLEJKI — patrz gInject u gory pliku.
+// Wykonujemy TE SAMA funkcje, co puszczenie fizycznego przycisku, wiec strona WWW
+// nie ma wlasnej sciezki akcji, ktora moglaby sie rozjechac z panelem.
+//
+// STANU PRZYCISKOW CELOWO NIE DOTYKAMY: gDown/gDownAt/gSwallow zostaja nietkniete,
+// bo to one licza PRZYTRZYMANIE. Dzieki temu klikniecie ze strony jest zawsze
+// KROTKIM nacisnieciem i puszczeniem — nie da sie nim wejsc w ekran TEST po 3 s
+// (a wejscie w niego z drugiego konca miasta nie mialoby sensu: ten ekran sluzy do
+// patrzenia na guziki, ktore ma sie pod palcem) i nie da sie nim zaklamac ekranu
+// testu, ktory pokazuje wylacznie stan fizycznych stykow.
+//
+// gLastKeyMs przesuwamy tak samo, jak przy zboczu fizycznym: klikniecie w przegladarce
+// ma trzymac menu otwarte przez cfg::OLED_MENU_IDLE_MS, a nie pozwalac mu zgasnac
+// pod palcami wlasciciela.
+void drainInject(uint32_t now, const AutoModel& a) {
+  const uint32_t m = gInject.exchange(0, std::memory_order_relaxed);
+  if (m == 0) return;
+  gLastKeyMs = now;
+  for (uint8_t i = 0; i < 4; ++i) {
+    if ((m & (1u << i)) != 0) onKey(i, now, a);
+  }
+}
+
 // ============================ UPLYW CZASU ====================================
 // PANEL NIE MOZE UDAWAC, ZE COS USTAWIL. Po zatwierdzeniu kropka zostaje na STARYM
 // trybie i czeka na `tryb` z <prefix>/auto/stan. Sa dokladnie trzy wyjscia z tego
@@ -615,6 +690,27 @@ void begin() {
 
   for (size_t i = 0; i < sizeof(kInit); ++i) cmd(pgm_read_byte(&kInit[i]));
 
+  // (v176) KOPIA OBRAZU DLA PODGLADU WWW — 1024 B W PSRAM, nie w statycznym RAM-ie.
+  // Plytka ma PSRAM wlaczony w FQBN, wiec jest skad brac; MALLOC_CAP_SPIRAM zabrania
+  // sterowniku zejsc po cichu do wewnetrznego RAM-u, czyli albo dostajemy pamiec
+  // stamtad, gdzie jej nie brakuje, albo nie dostajemy jej wcale.
+  //
+  // NIEUDANA ALOKACJA NIE JEST BLEDEM — panel ma dzialac dalej dokladnie tak samo,
+  // niedostepny jest wtedy TYLKO podglad w przegladarce. Dlatego nie ma tu ani
+  // return, ani gaszenia panelu: gShadow zostaje nullptr, sendPage() nic nie kopiuje,
+  // a shadow() oddaje nullptr i to strona decyduje, co z tym zrobic.
+  //
+  // ZERUJEMY OD RAZU: heap_caps_malloc oddaje pamiec NIEWYCZYSZCZONA, a strona WWW
+  // moze poprosic o podglad, zanim panel zlozy pierwsza pelna klatke (osiem obiegow
+  // petli). Bez tego pokazalaby wtedy smieci po poprzednim uzytkowniku PSRAM-u
+  // zamiast czerni, ktora w tej chwili naprawde jest na szkle.
+  gShadow = static_cast<uint8_t*>(heap_caps_malloc(1024, MALLOC_CAP_SPIRAM));
+  if (gShadow != nullptr) {
+    memset(gShadow, 0, 1024);
+  } else {
+    LOG("OLED: brak 1024 B w PSRAM na kopie obrazu — panel dziala, podgladu WWW nie ma\n");
+  }
+
   // Czyscimy WSZYSTKIE osiem stron, zanim wlasciciel cokolwiek zobaczy: pamiec
   // kontrolera po wlaczeniu zasilania jest przypadkowa, a pierwsza nasza klatka
   // pojdzie dopiero za kilka obiegow petli.
@@ -649,7 +745,19 @@ void step(const AutoModel& a, uint32_t now) {
                      (static_cast<int32_t>(now - a.atMs) <
                       static_cast<int32_t>(cfg::AUTO_STALE_MS));
 
+  // Tryb potwierdzony przez automatyke — liczony RAZ na obieg i zapamietany dla
+  // activeMode(), zeby strona WWW czytala dokladnie to samo, z czego bierze sie
+  // kropka na ekranie. Bez swiezych danych: -1, czyli "nie wiadomo", a nie ostatnia
+  // znana wartosc — panel nie ma prawa twierdzic, ze auto stoi w trybie, o ktorym
+  // milczy od 45 s (cfg::AUTO_STALE_MS).
+  gActive = fresh ? static_cast<int8_t>(autoModeIndex(a.mode)) : -1;
+
   pollButtons(now, a);
+  // PO przyciskach fizycznych, PRZED uplywem czasu: klikniecie ze strony ma trafic
+  // w ten sam obieg, w ktorym tick() sprawdza wygaszanie menu, wiec swieze
+  // gLastKeyMs juz sie liczy i menu nie gasnie w tej samej chwili, w ktorej ktos
+  // je otworzyl z przegladarki.
+  drainInject(now, a);
   tick(now, a, fresh);
 
   // Zmiana podpisu przerywa skladanie biezacej klatki i zaczyna od strony 0. Przez
@@ -680,6 +788,24 @@ uint32_t i2cErrors() { return gI2cErr; }
 uint32_t lastStepUs() { return gStepUs; }
 uint8_t buttonMask() { return gDown; }
 const char* sentMode() { return gSentMode; }
+
+// --- (v176) podglad i sterowanie z panelu WWW — patrz OledPanel.h --------------
+
+const uint8_t* shadow() { return gShadow; }
+
+uint8_t cursor() { return gCursor; }
+
+const char* activeMode() { return gActive >= 0 ? autoModeMqtt(gActive) : ""; }
+
+// TU SIE NIC NIE WYKONUJE — zapalamy bit i wracamy. Wola nas ZADANIE SERWERA WWW,
+// a caly stan panelu (gScr, gCursor, gMsg) nalezy do zadania petli rysowania;
+// wejscie w onKey() stad byloby wyscigiem o kazde z tych pol i o wysylke MQTT.
+// Odbior bitu i wykonanie akcji siedzi w drainInject(), wolanym ze step().
+void injectPress(uint8_t role) {
+  if (!gPresent) return;   // bez modulu nie ma czego sterowac
+  if (role > 3) return;    // rola spoza cfg::BTN_* — ignorujemy, zamiast zgadywac
+  gInject.fetch_or(1u << role, std::memory_order_relaxed);
+}
 
 const char* screenName() {
   switch (gScr) {

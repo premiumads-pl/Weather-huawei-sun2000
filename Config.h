@@ -94,13 +94,23 @@ constexpr int PIN_BTN_4 = 15;   // K4
 // Nadruk na listwie idzie K4 K3 K2 K1 OD LEWEJ, a same przyciski sa opisane
 // strzalkami i symbolami OD GORY — czyli nie wiadomo, ktory fizyczny guzik siedzi
 // na ktorym pinie, dopoki wlasciciel nie zobaczy ekranu TEST PRZYCISKOW. Do tego
-// czasu przyjmujemy kolejnosc naturalna. Poprawka po tescie to zmiana TYCH CZTERECH
+// czasu stala tu kolejnosc naturalna. Poprawka po tescie to zmiana TYCH CZTERECH
 // LICZB i nic wiecej — dlatego sa indeksami w tablicy pinow (0 = PIN_BTN_1), a nie
 // numerami GPIO: kod obslugi nigdzie indziej nie zna zwiazku "rola -> pin".
-constexpr uint8_t BTN_UP = 0;    // przewijanie w gore
-constexpr uint8_t BTN_DOWN = 1;  // przewijanie w dol
-constexpr uint8_t BTN_OK = 2;    // zatwierdz — wysyla tryb do Home Assistanta
-constexpr uint8_t BTN_BACK = 3;  // wyjscie bez zmiany
+//
+// (v176) TE LICZBY SA JUZ PO POMIARZE, nie sa zgadniete: ekran TEST PRZYCISKOW na
+// zywo 25.08.2026 plus zgloszenie wlasciciela ("strzalki dzialaja odwrotnie, gora
+// przewija w dol"). Przyczyna jest ta sama, co przy OLED_FLIP180 wyzej — modul jest
+// PRZYKRECONY DO GORY NOGAMI, wiec kolejnosc klawiszy z nadruku wypada u wlasciciela
+// ODWROTNIE: guzik lezacy pod palcem jako "w gore" siedzi na PIN_BTN_2, a para
+// zatwierdz/powrot zamienia sie miejscami. Stad 1/0/3/2 zamiast 0/1/2/3.
+// PRZY PRZYKRECENIU MODULU NA DRUGI SPOSOB te cztery liczby wracaja na 0/1/2/3
+// (dokladnie tak, jak OLED_FLIP180 wraca wtedy na false) — to kwestia MONTAZU,
+// a nie sprzetu, wiec nie "poprawiaj" ich z powrotem na kolejnosc naturalna.
+constexpr uint8_t BTN_UP = 1;    // przewijanie w gore  (K2, GPIO17)
+constexpr uint8_t BTN_DOWN = 0;  // przewijanie w dol   (K1, GPIO18)
+constexpr uint8_t BTN_OK = 3;    // zatwierdz — wysyla tryb do Home Assistanta (K4, GPIO15)
+constexpr uint8_t BTN_BACK = 2;  // wyjscie bez zmiany  (K3, GPIO16)
 
 // Debounce PRZEZ HOLDOFF, a nie przez probkowanie: panel jest odpytywany raz na
 // obieg petli rysowania (33-50 ms), czyli rzadziej niz trwaja drgania styku (~5 ms).

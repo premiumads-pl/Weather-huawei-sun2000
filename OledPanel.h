@@ -17,6 +17,10 @@
 //    Dlatego jedziemy w TRYBIE STRONICOWYM: bufor to JEDNA strona, 128 B, i osiem
 //    przebiegow sklada pelna klatke. Z tego samego powodu odpada U8g2 w trybie
 //    pelnego bufora i Adafruit_SSD1306 — obie alokuja ten kilobajt statycznie.
+//    (v176) WYJATEK, KTORY REGULY NIE LAMIE: kopia obrazu dla podgladu WWW ma pelne
+//    1024 B, ale siedzi w PSRAM (heap_caps_malloc, patrz shadow() nizej), wiec w
+//    statycznym RAM-ie zostaje po niej SAM WSKAZNIK — 4 B, a nie kilobajt. Panel
+//    dalej rysuje stronicowo; kopia tylko odklada te same bajty, ktore poszly na szklo.
 // 2. RYSOWANIE NIE MOZE ZATRZYMAC GLOWNEGO EKRANU. Cala klatka to 1 kB po I2C,
 //    czyli przy 400 kHz okolo 25 ms — POLOWA klatki ST7789. Dlatego step() robi
 //    najwyzej JEDNA strone na obieg petli (~3 ms) i TYLKO wtedy, gdy tresc sie
@@ -47,5 +51,31 @@ uint32_t i2cErrors();      // ile transakcji NIE doszlo (urwany przewod, zly sty
 uint32_t lastStepUs();     // ile trwal ostatni obieg step() [us]
 uint8_t buttonMask();      // bity 0..3 = K1..K4 wcisniete (po debounce)
 const char* sentMode();    // ostatnio WYSLANY tryb ("" = nic nie wysylano)
+
+// --- (v176) PODGLAD I STEROWANIE Z PANELU WWW -------------------------------
+// Strona ma pokazywac PIKSEL W PIKSEL to, co jest na szkle, i miec cztery klikalne
+// przyciski robiace dokladnie to samo, co te na module. Wszystkie cztery funkcje
+// wola ZADANIE SERWERA WWW, czyli INNE niz to, ktore rysuje panel — dlatego zadna
+// z nich nie dotyka stanu ekranu bezposrednio.
+
+// Kopia obrazu: 1024 B w PSRAM, uklad taki sam, jak w pamieci SSD1306 — osiem stron
+// po 128 B, bajt = kolumna, bit = wiersz w obrebie strony (bit 0 = gorny).
+// nullptr, gdy panelu nie ma albo gdy alokacja w PSRAM sie nie udala; to NIE jest
+// blad — panel dziala dalej, po prostu podgladu nie ma i strona ma to obsluzyc.
+// Kopia jest odswiezana STRONAMI, razem z wysylka na szklo, i tylko po UDANEJ
+// transmisji, wiec przy urwanym przewodzie pokazuje to samo, co zostalo na szkle.
+const uint8_t* shadow();
+
+// Wirtualne nacisniecie przycisku. `role` to ROLA (cfg::BTN_UP / BTN_DOWN / BTN_OK /
+// BTN_BACK), a NIE numer K na module — dzieki temu strona WWW nie musi wiedziec nic
+// o tym, jak modul jest przykrecony. Poza zakresem 0..3 i przy niewykrytym panelu
+// nie robi nic. Dziala jak KROTKIE nacisniecie i puszczenie: przytrzymania (wejscia
+// w ekran TEST po 3 s) nie da sie tedy wywolac.
+// Sama akcja NIE wykonuje sie tutaj — patrz komentarz przy gInject w OledPanel.cpp.
+void injectPress(uint8_t role);
+
+uint8_t cursor();          // podswietlony wiersz menu 0..3 (to NIE jest tryb aktywny)
+const char* activeMode();  // tryb POTWIERDZONY przez <prefix>/auto/stan, "" gdy brak
+                           // — to samo zrodlo, co kropka na ekranie, nigdy wlasna wysylka
 
 }  // namespace oled

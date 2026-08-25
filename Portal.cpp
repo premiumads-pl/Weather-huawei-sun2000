@@ -273,6 +273,21 @@ li:hover{border-color:var(--accent)}
   font-size:10px;letter-spacing:.05em;white-space:nowrap}
 .ptab td:first-child,.ptab th:first-child{text-align:left;font-family:var(--cond);color:var(--panel)}
 .ptab tr:last-child td{border-bottom:0}
+/* (v176) Sekcja "Panel OLED" — podglad DRUGIEGO wyswietlacza (128x64) i jego klawisze.
+   Szklo rysuje sie w <canvas> o NATYWNYCH 128 x 64 pikselach, a powieksza je dopiero
+   CSS — mnoznikiem CALKOWITYM (x3 = 384x192, na waskim ekranie x2 = 256x128, bo 384 px
+   nie miesci sie w tresci na telefonie). Mnoznik musi byc calkowity: przy 2,7x nawet
+   image-rendering:pixelated rozmazuje krawedzie, bo jeden piksel obrazu wypada na
+   niecalkowita liczbe pikselow ekranu. Klawisze stoja PO LEWEJ stronie szkla, bo
+   dokladnie tak siedza na module przykreconym do gory nogami. */
+.oledw{display:flex;align-items:flex-start;flex-wrap:wrap;gap:14px;margin-top:4px}
+.oledk{display:flex;flex-direction:column;flex:0 0 auto;gap:8px}
+.oledk button{width:136px;margin:0;padding:9px 10px;font-size:13px;font-family:var(--cond);
+  font-weight:600;letter-spacing:.02em;background:var(--card);color:var(--panel);border:1px solid var(--line)}
+.oledk button:disabled{opacity:.45;cursor:default}
+.oledg{flex:0 0 auto;background:#000;border:1px solid var(--line);border-radius:10px;padding:6px}
+.oledg canvas{display:block;width:384px;height:192px;image-rendering:pixelated}
+@media(max-width:520px){.oledg canvas{width:256px;height:128px}.oledk button{width:112px}}
 </style>
 <script>/* wczesny odczyt motywu — zanim narysuje sie strona, zeby nie mrugalo jasnym */
 try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.classList.add('dark')}catch(e){}</script>
@@ -293,6 +308,7 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
 <div class=layout>
 <nav id=nav>
  <div class="navitem on" data-sec=ekran>Ekran</div>
+ <div class=navitem data-sec=oled>Panel OLED</div>
  <div class=navitem data-sec=live>Na żywo</div>
  <div class=navitem data-sec=siec>Sieć</div>
  <div class=navitem data-sec=lokal>Lokalizacja</div>
@@ -396,6 +412,39 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
    <span class=sig id=sVi>—</span><button class=s onclick=goViAuth()>Odnów</button></span></div>
   <div class=intline><span class=il>MQTT</span><span class=sig id=sMqtt>—</span></div>
   <div class=hint>Pełne ustawienia tych integracji są w zakładce „Integracje”.</div>
+ </div>
+</div>
+</section>
+
+<!-- (v176) DRUGI WYSWIETLACZ. To nie jest kolejny widok glownego ekranu, tylko osobne
+     urzadzenie na tej samej plytce (OLED 128x64 po I2C + cztery przyciski), ktore sluzy
+     do WYBORU TRYBU LADOWANIA AUTA. Dlatego dostaje wlasna sekcje zaraz za "Ekranem",
+     a nie blok wewnatrz niego. Podglad i klawisze chodza przez /api/oled i
+     /api/oled/btn — patrz apiOled()/apiOledBtn() nizej w tym pliku. -->
+<section id=sec-oled>
+<button class=sechead data-sec=oled><span>Panel OLED</span><span class=hgrp><span class=chev>▸</span></span></button>
+<div class=secbody>
+ <div class=blk>
+  <h2>Panel OLED — wybór trybu ładowania <span class=live id=oledDot></span></h2>
+  <div class=oledw>
+   <div class=oledk id=oledKeys>
+    <button onclick="oledBtn('up')">▲ Góra</button>
+    <button onclick="oledBtn('down')">▼ Dół</button>
+    <button onclick="oledBtn('ok')">✓ Zatwierdź</button>
+    <button onclick="oledBtn('back')">↩ Wstecz</button>
+   </div>
+   <div class=oledg id=oledGlass><canvas id=oledCv width=128 height=64></canvas></div>
+   <div class=gbox id=oledNone style=display:none>Nie wykryto modułu OLED. To nie jest awaria —
+    urządzenie działa normalnie także bez niego. Panel szuka modułu <b>tylko raz, przy starcie</b>
+    (adres 0x3C, potem 0x3D), więc po podłączeniu go do złącza trzeba urządzenie zrestartować.</div>
+  </div>
+  <div class=sig id=oledStat style=margin-top:10px>—</div>
+  <div class=hint id=oledMode></div>
+  <div class=hint>Przyciski robią dokładnie to samo, co guziki na module: krótkie naciśnięcie
+   i puszczenie. Kolumna po lewej stronie szkła odwzorowuje ich <b>fizyczne rozmieszczenie</b> —
+   moduł wisi przykręcony do góry nogami, klawiszami po lewej. Podpisy mówią o <b>roli</b>
+   (góra / dół / zatwierdź / wstecz), a nie o nadruku na guziku: to, który guzik pełni którą rolę,
+   ustala jedno miejsce w firmwarze (<span class=b>cfg::BTN_*</span> w Config.h).</div>
  </div>
 </div>
 </section>
@@ -847,7 +896,9 @@ function showSection(s){
 }
 function toggleSection(s){
  const open=$('sec-'+s).classList.toggle('open');
- if(open)onShown(s); else liveSync();
+ // Zwiniecie sekcji tez musi zatrzymac interwaly — stad liveSync()/oledSync()
+ // takze w galezi "zamknieto".
+ if(open)onShown(s); else {liveSync();oledSync();}
 }
 function esc(t){return String(t==null?'':t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 // Lazy: ciezsze sekcje (Obecnosc, Zdrowie) laduja sie przy PIERWSZYM pokazaniu, nie na
@@ -855,6 +906,7 @@ function esc(t){return String(t==null?'':t).replace(/[&<>]/g,c=>({'&':'&amp;','<
 let obecLoaded=false,healthLoaded=false,klimatLoaded=false,air7Loaded=false;
 function onShown(s){
  liveSync();
+ oledSync();                                 // podglad panelu OLED chodzi tylko, gdy widac sekcje
  if(typeof shotDot==='function')shotDot();   // podglad wznawia/pauzuje z widocznoscia sekcji Ekran
  if(s==='obec'&&!obecLoaded){obecLoaded=true;obec();}
  if(s==='zdrowie'&&!healthLoaded){healthLoaded=true;health();}
@@ -1612,7 +1664,75 @@ function shotDot(){
  if($('live'))$('live').textContent=shotOn()?'● na żywo':(document.hidden?'‖ wstrzymane (karta w tle)':(($('autoshot')&&!$('autoshot').checked)?'‖ auto wyłączone':'‖ wstrzymane'));
 }
 document.addEventListener('visibilitychange',()=>{
- live=!document.hidden;shotDot();liveSync();});
+ live=!document.hidden;shotDot();liveSync();oledSync();});
+// --- (v176) PANEL OLED: podglad drugiego wyswietlacza + cztery klawisze ------------
+// OBRAZ. /api/oled oddaje pole "img": 1024 B kopii klatki w base64, w UKLADZIE
+// SSD1306, czyli STRONICOWYM — bajt o indeksie page*128+x trzyma OSIEM PIONOWYCH
+// pikseli kolumny x, gdzie bit b to wiersz page*8+b (bit 0 = najwyzszy). Nie jest to
+// wiec zwykla mapa bitowa wiersz po wierszu i nie da sie tego wrzucic do putImageData
+// bez przeplecenia. Rysujemy prostokatami 1x1 w canvasie o NATYWNYCH 128x64 pikselach,
+// a powiekszenie zalatwia CSS (mnoznik calkowity + image-rendering:pixelated).
+// Obrazu NIE obracamy: obrot o 180 stopni robi sam sterownik SSD1306
+// (cfg::OLED_FLIP180 — modul jest przykrecony do gory nogami), wiec kopia odpowiada
+// temu, co widac na szkle.
+// ODSWIEZANIE. Co ~0,7 s, ale TYLKO gdy sekcja jest na wierzchu (komputer: .active,
+// telefon: .open) i karta przegladarki widoczna — wzorem podgladu ekranu i sekcji
+// "Na zywo". Do tego straznik oledBusy: nastepne zapytanie NIE poleci, dopoki
+// poprzednie nie wroci, bo przy wolnej sieci zapytania nakladalyby sie na siebie
+// i urzadzenie dostawaloby ich kilka naraz.
+let oledTimer=null,oledBusy=false;
+function oledVisible(){const el=$('sec-oled');
+ return !!el&&!document.hidden&&(el.classList.contains('active')||el.classList.contains('open'));}
+function oledSync(){
+ const v=oledVisible();
+ if(v){if(!oledTimer){oledTick();oledTimer=setInterval(oledTick,700);}}
+ else if(oledTimer){clearInterval(oledTimer);oledTimer=null;}
+ if($('oledDot'))$('oledDot').textContent=v?'● odświeża co 0,7 s':'‖ wstrzymane';
+}
+function oledDraw(img){
+ const c=$('oledCv');if(!c)return;
+ const g=c.getContext('2d');
+ g.fillStyle='#04120C';g.fillRect(0,0,128,64);          // ciemne szklo, jak prawdziwy OLED
+ if(!img)return;                                        // brak kopii obrazu — samo tlo
+ let b;try{b=atob(img);}catch(e){return}
+ g.fillStyle='#79F0BE';                                 // zapalony piksel
+ for(let p=0;p<8;p++){
+  if((p+1)*128>b.length)break;
+  for(let x=0;x<128;x++){
+   const v=b.charCodeAt(p*128+x);
+   if(!v)continue;                                      // cala kolumna zgaszona
+   for(let bit=0;bit<8;bit++)if(v&(1<<bit))g.fillRect(x,p*8+bit,1,1);
+  }
+ }
+}
+async function oledTick(){
+ if(oledBusy)return;
+ oledBusy=true;
+ try{
+  const d=await(await fetch('/api/oled?'+Date.now())).json();
+  const has=!!d.present;
+  $('oledGlass').style.display=has?'':'none';
+  $('oledNone').style.display=has?'none':'';
+  document.querySelectorAll('#oledKeys button').forEach(b=>b.disabled=!has);
+  if(has)oledDraw(d.img);
+  // Jeden wiersz diagnostyczny: gdzie siedzi, co rysuje, ile transakcji przepadlo
+  // i ile trwal ostatni obieg. Rosnace "bledy I2C" to przewod albo styk, a nie
+  // logika panelu — dlatego stoja tuz obok adresu.
+  $('oledStat').textContent=has
+   ?('adres I²C 0x'+Number(d.addr||0).toString(16).toUpperCase()+' · ekran: '+(d.screen||'?')
+     +' · błędy I²C: '+(d.i2c_err||0)+' · ostatni obieg: '+(d.step_us||0)+' µs')
+   :'Moduł nie odpowiedział przy starcie — podgląd i klawisze są wyłączone.';
+  // Tryb POTWIERDZONY przez MQTT, nie ten klikniety: panel nigdy nie przesuwa kropki
+  // sam z siebie (patrz OledPanel.h), wiec strona tez tego nie robi.
+  $('oledMode').textContent=has?('Tryb potwierdzony: '+(d.active?d.active:'—')
+   +(d.sent?(' · ostatnio wysłany z panelu: '+d.sent):'')):'';
+ }catch(e){}
+ finally{oledBusy=false;}
+}
+async function oledBtn(r){
+ try{await fetch('/api/oled/btn?r='+r,{method:'POST'});}catch(e){}
+ oledTick();   // od razu pokaz skutek, nie czekaj do konca biezacego interwalu
+}
 // --- czujniki BLE ---
 // (v166) Jedno ramie drogi sygnalu: sila + wiek. Zwraca "nigdy", gdy z tej strony NIE
 // PRZYSZLA ANI JEDNA ramka — i to jest cala pointa, bo do v165 panel mowil tylko
@@ -2094,6 +2214,9 @@ document.querySelectorAll('.sechead').forEach(b=>b.onclick=()=>toggleSection(b.d
  applyDark(document.documentElement.classList.contains('dark'));
  if($('autoshot'))$('autoshot').onchange=shotDot;
  shotDot();
+ // Panel OLED: TYLKO ustawienie wskaznika. Sekcja jest przy starcie schowana, wiec
+ // oledSync() nie odpala tu zadnego zapytania — pierwsze poleci przy jej otwarciu.
+ oledSync();
  try{const r=await(await fetch('/api/view')).json();pin=r.pin;}catch(e){}
  tabs();highlightBl('auto');nextShot();await load();bles();viStat();meters();diagPills();
  setInterval(bles,20000);setInterval(viStat,30000);setInterval(diagPills,60000);
@@ -3903,6 +4026,123 @@ void apiTap() {
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
+// --- (v176) PANEL OLED W PRZEGLADARCE ---------------------------------------
+// DRUGI wyswietlacz (128x64, I2C, cztery przyciski — wybor trybu ladowania auta) wisi
+// w lazience razem z glownym ekranem. Ten endpoint sluzy do tego, zeby dalo sie go
+// OBEJRZEC I OBSLUZYC ze strony, bez podchodzenia do urzadzenia.
+//
+// DLACZEGO OSOBNY ENDPOINT, SKORO STAN JEST JUZ W /api/diag: bo /api/diag sklada
+// kilkadziesiat kilobajtow JSON-a z calego firmware'u i serializuje go PRETTY. Panel
+// odpytuje podglad co ~0,7 s — na takiej kadencji tamten endpoint bylby marnotrawstwem
+// czasu procesora i sterty. Tutaj leci tylko to, co rysuje podglad.
+//
+// OBRAZ IDZIE BASE64 I POWSTAJE NA STERCIE, NIE W .bss. Kopia klatki to 1024 B, czyli
+// 1368 znakow base64; statyczny bufor tej wielkosci zabralby prawie caly zapas do
+// bariery statycznego RAM-u (76 000 B, tools/release.sh — zajete juz ~74,4 kB).
+// String trzyma znaki na stercie, ktorej ta bariera nie dotyczy, i zyje tylko przez
+// czas obslugi jednego zadania.
+//
+// TYLKO ODCZYT, wiec GET jest wlasciwy — nic tu nie mutuje (mutacja stoi nizej,
+// w apiOledBtn(), i jest POST-em).
+void apiOled() {
+  JsonDocument d;
+  d["present"] = oled::present();     // false = modulu nie wykryto; to DOZWOLONY stan
+  d["addr"] = oled::address();        // 0 gdy zaden z dwoch adresow nie odpowiedzial
+  d["screen"] = oled::screenName();
+  d["cursor"] = oled::cursor();       // podswietlony wiersz menu — NIE tryb aktywny
+  d["active"] = oled::activeMode();   // "" = MQTT nie potwierdzil jeszcze zadnego trybu
+  d["sent"] = oled::sentMode();       // "" = panel niczego jeszcze nie wyslal
+  d["pages"] = oled::pagesSent();
+  d["i2c_err"] = oled::i2cErrors();   // rosnie = przewod/styk, a nie logika panelu
+  d["step_us"] = oled::lastStepUs();
+  d["buttons"] = oled::buttonMask();  // bity 0..3 = klawisze wcisniete FIZYCZNIE
+
+  // Pole "img" POMIJAMY, gdy kopii obrazu nie ma (brak modulu albo nieudana alokacja
+  // w PSRAM). To nie jest blad i nie udajemy, ze jest: strona traktuje brak pola tak
+  // samo jak null i rysuje samo ciemne szklo.
+  const uint8_t* img = oled::shadow();
+  if (img != nullptr) {
+    constexpr size_t kImgBytes = 1024;   // 128 x 64 / 8 — pelna klatka SSD1306
+    // Alfabet stoi w .rodata (flash) jako literal, nie w RAM-ie.
+    const char* const kB64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    // KLAMRA CELOWO: String z base64 ma sie zwolnic ZARAZ po przepisaniu do dokumentu,
+    // a nie dopiero na koncu funkcji. ArduinoJson kopiuje tresc do wlasnej puli, wiec
+    // bez tego zakresu ten sam kilobajt lezalby na stercie w trzech egzemplarzach
+    // naraz (tutaj, w puli dokumentu i w buforze wyjsciowym).
+    {
+      String b64;
+      b64.reserve(1372);   // 1368 znakow + zapas, zeby String nie rosl po kawalku
+      for (size_t i = 0; i < kImgBytes; i += 3) {
+        const uint32_t b0 = img[i];
+        const uint32_t b1 = (i + 1 < kImgBytes) ? img[i + 1] : 0;
+        const uint32_t b2 = (i + 2 < kImgBytes) ? img[i + 2] : 0;
+        const uint32_t v = (b0 << 16) | (b1 << 8) | b2;
+        b64 += kB64[(v >> 18) & 63];
+        b64 += kB64[(v >> 12) & 63];
+        // 1024 nie dzieli sie przez 3, wiec ostatnia grupa jest niepelna i konczy
+        // sie wypelniaczem "==" — bez tego atob() w przegladarce odrzuca caly ciag.
+        b64 += (i + 1 < kImgBytes) ? kB64[(v >> 6) & 63] : '=';
+        b64 += (i + 2 < kImgBytes) ? kB64[v & 63] : '=';
+      }
+      d["img"] = b64;
+    }
+  }
+
+  String out;
+  serializeJson(d, out);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", out);
+}
+
+// Wirtualne nacisniecie klawisza panelu OLED.
+// POST, nie GET — dokladnie z tego samego powodu, co /api/bl i /api/vi/set: to jest
+// MUTACJA. Zapytanie GET umie wywolac cudza strona otwarta w tej samej sieci
+// (<img src="http://<ip>/api/oled/btn?r=ok">) i przegladarka wysle je sama, bez pytania
+// o zgode. Na koncu takiego klikniecia stoi WYBOR TRYBU LADOWANIA AUTA wyslany do Home
+// Assistanta, wiec to jest ostatnia rzecz, ktora ma prawo odpalic sie przypadkiem.
+// Recznie: curl -X POST "http://<ip>/api/oled/btn?r=down"
+void apiOledBtn() {
+  // ROLE, NIE NUMERY KLAWISZY. Mapowanie "rola -> pin" siedzi w JEDNYM miejscu
+  // (cfg::BTN_* w Config.h) i wciaz moze sie zmienic po tescie przyciskow na sprzecie.
+  // Panel WWW nie ma prawa nic o nim wiedziec, wiec przekazujemy stale symboliczne —
+  // wpisana tu na sztywno liczba 0..3 rozjechalaby sie przy pierwszej takiej poprawce.
+  const String r = server.arg("r");
+  uint8_t role = 0;
+  const char* name = "";
+  if (r == "up") {
+    role = cfg::BTN_UP;
+    name = "up";
+  } else if (r == "down") {
+    role = cfg::BTN_DOWN;
+    name = "down";
+  } else if (r == "ok") {
+    role = cfg::BTN_OK;
+    name = "ok";
+  } else if (r == "back") {
+    role = cfg::BTN_BACK;
+    name = "back";
+  } else {
+    // 400, bo to blad ZAPYTANIA: literowka w nazwie roli nie ma udawac sukcesu.
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(400, "application/json",
+                "{\"ok\":false,\"msg\":\"nieznana rola — dozwolone: up, down, ok, back\"}");
+    return;
+  }
+  // Brak modulu to nie blad zapytania (adres i rola byly poprawne), tylko stan
+  // urzadzenia — 200 z ok:false, tak jak /api/bl przy braku obslugi podswietlenia.
+  if (!oled::present()) {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json",
+                "{\"ok\":false,\"msg\":\"panel OLED nie zostal wykryty\"}");
+    return;
+  }
+  oled::injectPress(role);
+  char buf[40];
+  snprintf(buf, sizeof(buf), "{\"ok\":true,\"r\":\"%s\"}", name);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", buf);
+}
+
 // Lista wykrytych czujnikow BLE. Klucza NIE zwracamy — tylko flage, ze jest.
 void apiBleList() {
   JsonDocument j;
@@ -4327,6 +4567,13 @@ void routes() {
   server.on("/api/theme", apiTheme);
   server.on("/api/view", apiView);
   server.on("/api/tap", HTTP_POST, apiTap);
+  // (v176) Panel OLED: GET = czysty ODCZYT stanu razem z kopia obrazu (podglad na
+  // stronie odpytuje go co ~0,7 s), POST = wirtualne nacisniecie klawisza.
+  // Podzial na metody jest tu z tego samego powodu, co przy /api/bl nizej: klikniecie
+  // MUTUJE stan i konczy sie wyslaniem trybu ladowania auta do Home Assistanta, wiec
+  // obca strona nie ma go odpalac przez <img src=".../api/oled/btn?r=ok">.
+  server.on("/api/oled", HTTP_GET, apiOled);
+  server.on("/api/oled/btn", HTTP_POST, apiOledBtn);
   server.on("/api/tuning", HTTP_POST, apiTuning);
   // POST, nie GET: MUTUJA podswietlenie, wiec obca strona nie odpali ich przez
   // <img src=".../api/bl?v=255"> (jak przy vi/set). Panel wola je metoda POST.
