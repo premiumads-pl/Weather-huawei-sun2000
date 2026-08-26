@@ -47,7 +47,8 @@ FONT_SOURCES = {
 
 # --- ROZMIARY I WAGI wg SPECYFIKACJI ------------------------------------------
 # (px, waga, nazwa, zestaw_znakow). Rozmiar pikselowy = wysokosc EM freetype.
-# Spec: 10 osie / 11 etykiety-wersaliki / 13 tekst / 20 wartosci / 24 zegar / 52 wyroznik.
+# Spec: 10 osie / 11 etykiety-wersaliki / 13 tekst / 16 tekst wiekszy (v185) /
+#       20 wartosci / 24 zegar / 52 wyroznik.
 #
 # Zestaw "FULL" = pelny CHARS (ASCII+polskie+specjalne). Zestawy okrojone dla
 # najwiekszych fontow to NIE oszczednosc na sile, tylko fakt: wyroznik 52 px pokazuje
@@ -62,6 +63,13 @@ FONTS = [
     (10, 500, "Plex10", "FULL"),      # osie wykresow, drobny tekst
     (11, 600, "Plex11", "FULL"),      # ETYKIETY WERSALIKAMI (PRAD, POWIETRZE...)
     (13, 500, "Plex13", "FULL"),      # tekst zdaniowy
+    # (v185) SZCZEBEL POSREDNI 13 -> 20, dodany dla opisu pogody na ekranie glownym.
+    # Kolumna kontekstu daje 104 px. W f20 "Słonecznie" ma 109 px, a "Pochmurno"
+    # 115 px — o wlos za duzo — wiec caly opis spadal az do f13 (59 / 64 px) i
+    # zostawialo w wierszu ponad 40 px pustki. W f16 te same slowa maja 78 i 82 px,
+    # czyli miesci sie DUZO wiekszy krój. Waga 500 taka sama jak f13 — to ten sam
+    # tekst zdaniowy, tylko wiekszy, wiec nie moze byc grubszy.
+    (16, 500, "Plex16", "FULL"),      # opis pogody / tekst zdaniowy o stopien wiekszy
     (20, 600, "Plex20", "FULL"),      # wartosci (3,2 kW / 21°) — pelny, bo bywaja jednostki literowe
     (24, 700, "Plex24", CLOCK_SET),   # zegar 14:32
     (52, 700, "Plex52", "FULL"),      # wielki wyroznik: liczby ORAZ slowa ("spi", tytuly zdarzen)
@@ -193,7 +201,7 @@ def main():
         summary.append((name, px, len(glyphs), len(bitmaps), ascent, size))
         print(f"{name}: {len(glyphs)} glifow, bitmapy {len(bitmaps)} B, ascent {ascent}, ~{size} B flash")
 
-    print(f"\nRAZEM ~{total} B ({total/1024:.1f} kB) flash na 6 fontow")
+    print(f"\nRAZEM ~{total} B ({total/1024:.1f} kB) flash na {len(FONTS)} fontow")
     return summary
 
 

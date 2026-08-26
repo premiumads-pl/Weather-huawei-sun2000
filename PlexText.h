@@ -2,13 +2,14 @@
 
 // Fonty motywu V3 "Pasmowy" — IBM Plex Sans Condensed (zastepnik: DejaVu Sans
 // Condensed, patrz tools/gen_fonts.py). Ten sam format i ta sama sciezka rysowania,
-// co PlText.h — tu tylko akcesory do szesciu rozmiarow. Nie duplikujemy logiki:
+// co PlText.h — tu tylko akcesory do siedmiu rozmiarow. Nie duplikujemy logiki:
 // drawString/stringWidth itd. bierzemy z pltxt::.
 
 #include "PlText.h"
 #include "Plex10.h"
 #include "Plex11.h"
 #include "Plex13.h"
+#include "Plex16.h"
 #include "Plex20.h"
 #include "Plex24.h"
 #include "Plex52.h"
@@ -18,6 +19,7 @@ namespace plex {
 inline pltxt::FontSet f10() { return {Plex10Bitmaps, Plex10Glyphs, Plex10Codepoints, Plex10Count, Plex10Ascent}; }
 inline pltxt::FontSet f11() { return {Plex11Bitmaps, Plex11Glyphs, Plex11Codepoints, Plex11Count, Plex11Ascent}; }
 inline pltxt::FontSet f13() { return {Plex13Bitmaps, Plex13Glyphs, Plex13Codepoints, Plex13Count, Plex13Ascent}; }
+inline pltxt::FontSet f16() { return {Plex16Bitmaps, Plex16Glyphs, Plex16Codepoints, Plex16Count, Plex16Ascent}; }
 inline pltxt::FontSet f20() { return {Plex20Bitmaps, Plex20Glyphs, Plex20Codepoints, Plex20Count, Plex20Ascent}; }
 inline pltxt::FontSet f24() { return {Plex24Bitmaps, Plex24Glyphs, Plex24Codepoints, Plex24Count, Plex24Ascent}; }
 inline pltxt::FontSet f52() { return {Plex52Bitmaps, Plex52Glyphs, Plex52Codepoints, Plex52Count, Plex52Ascent}; }

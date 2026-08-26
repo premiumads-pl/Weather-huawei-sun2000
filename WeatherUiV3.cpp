@@ -695,6 +695,143 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv,
   (void)gridW;
 }
 
+// ============================================= OPIS POGODY: DOBOR KROJU ========
+//
+// (v184) Do v183 opis szedl ZAWSZE w plex::f13(), przez co "Mgła" (26 px) gubila sie
+// w polu szerokim na 104 px, a "Częściowe zachmurzenie" ledwo wchodzilo na dwie linie.
+// Teraz bierzemy NAJWIEKSZY krój, ktory sie miesci — im krotszy opis, tym wieksze
+// litery.
+//
+// (v185) MIEDZY f20 A f13 BYLA PRZEPASC I WPADALY W NIA NAJCZESTSZE OPISY. Z limitem
+// 104 px w f20 nie mieszcza sie dokladnie trzy: "Słonecznie" (109 px), "Pochmurno"
+// (115 px) i "Bezchmurnie" (132 px) — a nastepnym krokiem bylo od razu f13, gdzie
+// maja 59 / 64 / 73 px, czyli 30-45 px niewykorzystanego wiersza. Doszedl wiec
+// stopien posredni plex::f16() (tools/gen_fonts.py; ~2,7 kB flash, 0 B RAM — tablice
+// siedza w PROGMEM): te same slowa maja w nim 78 / 82 / 95 px i mieszcza sie w calosci.
+// Drabinka to teraz f20 -> f16 (jedna linia) -> f16 (dwie linie) -> f13 (dwie linie).
+//
+// SKAD TE LICZBY:
+//  * 104 px = grid::CTX_W - 2*grid::MARGIN_CTX (120 - 2*8), czyli cala szerokosc
+//    ciemnej kolumny miedzy marginesami (x = 8..111).
+//  * baseline OSTATNIEJ linii = 200 — ta sama, ktorej uzywaja podpisy na ekranach PV
+//    i AUTO, czyli sprawdzona. Blok KOTWICZYMY DOLEM do 200, wiec przy kazdym kroju
+//    napis konczy sie w tym samym miejscu, a rosnie wylacznie w gore.
+//  * DESC_BOT = 205 to OSTATNI rysowany wiersz: sprite ekranu ma WeatherUi::VIEW_H =
+//    206, nizej napis zostalby sciety w polowie wysokosci (usterka z v183).
+//  * DESC_TOP = 170 to pierwszy wolny wiersz nad blokiem. PIONOWY BUDZET, ZMIERZONY
+//    glif po glifie (nie nominalny ascent — patrz descInk nizej):
+//      - wielka temperatura f52 na baseline 156 konczy tusz na y = 156; cyfry o
+//        okraglym dole (0 3 6 8 9) przelewaja sie 1 px pod linie pisma, "17°" konczy
+//        sie na 155,
+//      - wiersz "odczuwalna" / "sprzed" zszedl w v185 z f13 na plex::f11() i z
+//        baseline 174 na 168. Zajmuje wtedy y = 159..167, a w wariancie WARN
+//        ("sprzed 89 min" — ogonek 'p') y = 159..169. Zostaja 2 px odstepu od wielkiej
+//        temperatury i 1..3 px do opisu,
+//      - dwie linie f16 z odstepem 16 px zajmuja y = 171..199 ("Częściowe" 171..186,
+//        "zachmurzenie" 188..199), czyli zaczynaja sie dokladnie na pierwszym wolnym
+//        wierszu. NA STARYM UKLADZIE NIE MIALY SZANS: sam wiersz "sprzed 89 min" w f13
+//        na baseline 174 siegal y = 176, a dwie linie f16 potrzebuja gory na y = 171.
+//    Ten pas jest wykorzystany co do piksela, wiec KAZDA zmiana baseline 156 / 168 /
+//    200 albo kroju tych wierszy wymaga policzenia go od nowa.
+//
+// f24 wypadl z drabinki. Byl w niej w v184 i ZAWSZE odpadal na sprawdzeniu pokrycia:
+// Plex24Count == 14, tablica ma spacje, kropke, cyfry, dwukropek i stopien — ZERO
+// liter, to font od zegara. Sprawdzenie pokrycia ZOSTAJE (chroni kazdy krój przed
+// znakiem spoza jego tablicy), ale trzymanie w drabince kroju, ktory nie ma alfabetu,
+// bylo tylko myleniem czytelnika. f11/f10 sa mniejsze od f13, wiec nie sa krokiem
+// W GORE i w drabince ich nie ma.
+constexpr int DESC_MAXW = grid::CTX_W - 2 * grid::MARGIN_CTX;  // 104 px
+constexpr int DESC_BASE = 200;   // baseline ostatniej linii opisu
+constexpr int DESC_TOP  = 170;   // pierwszy wolny wiersz pod "odczuwalna" (f11, baseline 168)
+constexpr int DESC_BOT  = 205;   // ostatni wiersz sprite'a ekranu (WeatherUi::VIEW_H - 1)
+
+// pltxt::stringWidth PO CICHU pomija znaki spoza tablicy fontu, wiec sam pomiar
+// szerokosci NIE wystarcza do decyzji: w f24 "Mgła" zmierzylaby sie na 0 px (czyli
+// "miesci sie znakomicie"), a narysowalaby sie jako PUSTKA. Stad jawne pokrycie.
+bool descHasGlyphs(const pltxt::FontSet& f, const char* t) {
+  for (const char* p = t; *p;)
+    if (pltxt::glyphIndex(f, pltxt::decodeUtf8(p)) < 0) return false;
+  return true;
+}
+
+// (v185) FAKTYCZNY ZASIEG TUSZU TEGO napisu wzgledem linii bazowej: `rise` = ile
+// pikseli w gore, `drop` = ile w dol (ogonki ą ę g y; napis bez ogonkow ma drop = -1,
+// bo jego ostatni wiersz tuszu to baseline-1).
+// Do v184 pion sprawdzalo sie po NOMINALNYM FontSet::ascent, a to wysokosc
+// NAJWYZSZEGO glifu CALEGO zestawu — w f16 15 px ('Ś' z kreska), podczas gdy
+// "Częściowe" siega tylko 13 px. Te 2 px roznicy to dokladnie tyle, ile brakowalo
+// dwom liniom f16, wiec mierzymy NAPIS zamiast zakladac najgorszy znak w tablicy.
+void descInk(const pltxt::FontSet& f, const char* t, int& rise, int& drop) {
+  rise = 0;
+  drop = -1;
+  for (const char* p = t; *p;) {
+    const int idx = pltxt::glyphIndex(f, pltxt::decodeUtf8(p));
+    if (idx < 0) continue;
+    GFXglyph g;
+    memcpy_P(&g, &f.glyphs[idx], sizeof(GFXglyph));
+    if (g.width == 0 || g.height == 0) continue;   // spacja nie ma tuszu
+    const int top = g.yOffset;                      // ujemny: tyle nad linia bazowa
+    const int bot = g.yOffset + g.height - 1;
+    if (-top > rise) rise = -top;
+    if (bot > drop) drop = bot;
+  }
+}
+
+// Jedna linia w kroju `f` miesci sie, gdy ma komplet glifow, jest wezsza niz 104 px
+// i miesci sie tuszem w pasie DESC_TOP..DESC_BOT (gora: wiersz "odczuwalna", dol:
+// ostatni wiersz sprite'a).
+bool descLineFits(const pltxt::FontSet& f, const char* t, int baseline) {
+  if (!descHasGlyphs(f, t) || pltxt::stringWidth(f, t) > DESC_MAXW) return false;
+  int rise = 0, drop = -1;
+  descInk(f, t, rise, drop);
+  return baseline - rise >= DESC_TOP && baseline + drop <= DESC_BOT;
+}
+
+// Dwie linie: obie musza sie zmiescic KAZDA Z OSOBNA, a do tego dolny tusz gornej
+// linii nie moze wejsc w gorny tusz dolnej. To trzecie sprawdzenie nie jest teoria —
+// f13 z odstepem 13 px stawialo ogonek 'ę' z "Częściowe" i gore "zachmurzenie"
+// w TYM SAMYM wierszu y = 189.
+bool descTwoLinesFit(const pltxt::FontSet& f, const char* l1, const char* l2, int lineH) {
+  if (!descLineFits(f, l1, DESC_BASE - lineH) || !descLineFits(f, l2, DESC_BASE)) return false;
+  int rise1 = 0, drop1 = -1, rise2 = 0, drop2 = -1;
+  descInk(f, l1, rise1, drop1);
+  descInk(f, l2, rise2, drop2);
+  return (DESC_BASE - lineH) + drop1 < DESC_BASE - rise2;
+}
+
+// Zwraca krój opisu. `lineH` > 0 znaczy "lam na dwie linie z takim odstepem";
+// `lineH` == 0 znaczy "jedna linia".
+pltxt::FontSet pickDescFont(const char* one, const char* l1, const char* l2, int& lineH) {
+  const pltxt::FontSet cand[] = {plex::f20(), plex::f16(), plex::f13()};
+  // Odstep miedzy liniami = kratka fontu, z JEDNYM wyjatkiem: f13 dostaje 14 px
+  // zamiast 13, bo ogonek 'ę' siega 2 px pod linie pisma i przy 13 px trafial
+  // w pierwszy wiersz drugiej linii (patrz descTwoLinesFit).
+  const int height[] = {20, 16, 14};
+  const int N = 3;
+
+  // 1) JEDNA LINIA, od najwiekszego kroju.
+  for (int i = 0; i < N; ++i)
+    if (descLineFits(cand[i], one, DESC_BASE)) {
+      lineH = 0;
+      return cand[i];
+    }
+
+  // 2) DWIE LINIE po ostatniej spacji. f20 ZOSTAJE w petli, choc dzis zawsze odpada
+  //    (gora pierwszej linii wypadlaby na y = 164, a pas zaczyna sie na 170) — niech
+  //    decyduje POMIAR, a nie moje zalozenie o tym, co sie nie zmiesci.
+  if (l2[0])
+    for (int i = 0; i < N; ++i)
+      if (descTwoLinesFit(cand[i], l1, l2, height[i])) {
+        lineH = height[i];
+        return cand[i];
+      }
+
+  // 3) Nie weszlo nawet f13 w dwoch liniach — zostawiamy f13 i pozwalamy przyciac
+  //    ogon tak, jak dotad (robi to viewport sprite'a). Bez wymyslania wielokropka.
+  lineH = l2[0] ? height[N - 1] : 0;
+  return plex::f13();
+}
+
 // (v180) `cost` przechodzi TYLKO przez tu do mainPvModule — v3Main sam go nie czyta.
 // Wskaznik, a nie referencja, bo warstwa danych ma prawo go jeszcze nie podpiac
 // (nullptr) — dokladnie jak `air`/`auto` na pozostalych ekranach.
@@ -745,20 +882,33 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, const CostMod
     snprintf(big, sizeof(big), "%.0f°", c.tempC);
     plex::str(s, plex::f52(), big, grid::MARGIN_CTX, 156, wxMain);
 
-    // Ten sam wiersz (baseline 178) niesie DWIE rozne prawdy zaleznie od stanu:
-    // swieza prognoza -> odczuwalna; przeterminowana -> jej wiek. Szerokosci w f13
-    // policzone: "odczuwalna -12°" = 91 px, najdluzszy wariant wieku "sprzed 89 min"
-    // = 80 px; kolumna kontekstu daje 104 px (od MARGIN_CTX=8 do CTX_W-8=112).
+    // Ten sam wiersz niesie DWIE rozne prawdy zaleznie od stanu: swieza prognoza ->
+    // odczuwalna; przeterminowana -> jej wiek.
+    //
+    // (v185) f13 -> plex::f11() i baseline 174 -> 168. To NIE jest kosmetyka, tylko
+    // splata dlugu z v184: opis pogody pod spodem potrzebowal na dwie linie f16
+    // gornej krawedzi na y = 171, a ten wiersz w f13 na baseline 174 siegal
+    // (w wariancie "sprzed 89 min", przez ogonek 'p') az do y = 176. f11 jest o 2 px
+    // nizsze w ascendentach i o 1 px w ogonkach, wiec po przesunieciu o 6 px w gore
+    // konczy sie na y = 167 (WARN: 169) i zostawia opisowi caly potrzebny pas.
+    // Od gory nie koliduje: wielka temperatura f52 konczy tusz na y = 156 (cyfry
+    // 0/3/6/8/9 przelewaja sie 1 px pod linie pisma), a ten wiersz zaczyna sie na 159.
+    // Szerokosci w f11 policzone: "odczuwalna -12°" = 96 px, najdluzszy wariant wieku
+    // "sprzed 89 min" = 80 px; kolumna kontekstu daje 104 px (MARGIN_CTX=8..CTX_W-8).
+    // f11 jest w wadze 600 (patrz gen_fonts.py), wiec wiersz jest odrobine grubszy niz
+    // w f13 — przy col::ONDARK_DIM to wychodzi na plus, bo mniejsze litery na ciemnym
+    // tle w wadze 500 zaczynaly sie rozmywac.
     char feels[24];
     if (wxOld) {
       agoWords(feels, sizeof(feels), wxAgeS());
-      plex::str(s, plex::f13(), feels, grid::MARGIN_CTX, 174, col::WARN);
+      plex::str(s, plex::f11(), feels, grid::MARGIN_CTX, 168, col::WARN);
     } else {
       snprintf(feels, sizeof(feels), "odczuwalna %.0f°", c.feelsC);
-      plex::str(s, plex::f13(), feels, grid::MARGIN_CTX, 174, col::ONDARK_DIM);
+      plex::str(s, plex::f11(), feels, grid::MARGIN_CTX, 168, col::ONDARK_DIM);
     }
 
-    // Opis pogody — zawijany do dwoch linii, gdy nie miesci sie w kolumnie.
+    // Opis pogody — krój wg dlugosci (v184), zawijany do dwoch linii dopiero wtedy,
+    // gdy nie miesci sie w kolumnie w ZADNYM z dostepnych krojow.
     //
     // (v183) BASELINE DRUGIEJ LINII BYL POZA OBSZAREM RYSOWANIA. Stalo tu "druga linia
     // na y=208 (<240)" i to bylo prawda, DOPOKI ekran rysowalo sie na pelnej wysokosci
@@ -767,24 +917,31 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, const CostMod
     // wysokosci. Zglosil wlasciciel: "slowo zachmurzenie jest uciete".
     // Caly blok jedzie wiec w gore o tyle, zeby ostatnia linia siedziala na baseline
     // 200 — tej samej, ktorej uzywaja podpisy na ekranach PV i AUTO, czyli sprawdzonej
-    // (6 px zapasu na ogonki pod linia pisma). Odstep miedzy liniami zostaje 13 px,
-    // rowny wysokosci fontu f13.
+    // (6 px zapasu na ogonki pod linia pisma).
+    // (v184/v185) Krój ORAZ odstep miedzy liniami dobiera pickDescFont() — pelne
+    // uzasadnienie liczb 104 / 170..205 / 200 jest w komentarzu przy tej funkcji.
+    // Tu zostaje samo rysowanie.
     const char* desc = wxico::labelForCode(c.weatherCode, !c.isDay);
-    const int maxw = grid::CTX_W - 2 * grid::MARGIN_CTX;
-    if (plex::width(plex::f13(), desc) <= maxw) {
-      plex::str(s, plex::f13(), desc, grid::MARGIN_CTX, 190, wxMain);
+
+    // Lamanie po OSTATNIEJ spacji to ta sama regula, co od v182 — tylko liczymy je
+    // TERAZ ZAWSZE, bo dobor kroju musi znac oba czlony, zanim cokolwiek zdecyduje.
+    char l1[32] = {}, l2[32] = {};
+    const char* sp = strrchr(desc, ' ');
+    if (sp) {
+      const size_t k = static_cast<size_t>(sp - desc);
+      strncpy(l1, desc, k < sizeof(l1) ? k : sizeof(l1) - 1);
+      snprintf(l2, sizeof(l2), "%s", sp + 1);
     } else {
-      char l1[32] = {}, l2[32] = {};
-      const char* sp = strrchr(desc, ' ');
-      if (sp) {
-        const size_t k = static_cast<size_t>(sp - desc);
-        strncpy(l1, desc, k < sizeof(l1) ? k : sizeof(l1) - 1);
-        snprintf(l2, sizeof(l2), "%s", sp + 1);
-      } else {
-        snprintf(l1, sizeof(l1), "%s", desc);
-      }
-      plex::str(s, plex::f13(), l1, grid::MARGIN_CTX, 187, wxMain);
-      if (l2[0]) plex::str(s, plex::f13(), l2, grid::MARGIN_CTX, 200, wxMain);
+      snprintf(l1, sizeof(l1), "%s", desc);
+    }
+
+    int descLineH = 0;
+    const pltxt::FontSet descFont = pickDescFont(desc, l1, l2, descLineH);
+    if (descLineH == 0) {
+      plex::str(s, descFont, desc, grid::MARGIN_CTX, DESC_BASE, wxMain);
+    } else {
+      plex::str(s, descFont, l1, grid::MARGIN_CTX, DESC_BASE - descLineH, wxMain);
+      plex::str(s, descFont, l2, grid::MARGIN_CTX, DESC_BASE, wxMain);
     }
 
     // GLIF NA WIERZCHU (po liczbie): chmura ~y60..108 (nad temperatura, ktorej gora
