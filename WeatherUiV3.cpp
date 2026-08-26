@@ -417,7 +417,9 @@ void precipChart(TFT_eSPI& s, const WeatherModel& w, int x, int y, int wdt, int 
 void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv,
                   const CostModel* cost, int top) {
   const int lx = grid::DATA_L;
-  plex::str(s, plex::f11(), "PRĄD", lx, top, col::SECOND);
+  // Szerokosc naglowka LICZONA, a nie wpisana: tuz za nim staje plakietka taryfy
+  // (nizej), a "PRĄD" w f11 ma dzis 30 px — liczba, ktora zmienia sie razem z fontem.
+  const int hdrW = plex::str(s, plex::f11(), "PRĄD", lx, top, col::SECOND);
 
   // (v161) Te same trzy stany, co na ekranie PRAD (v3Pv) i z tego samego zrodla.
   // ZMIANA ZNACZENIA GALEZI "JUTRO": do v160 wchodzila przy KAZDYM nieudanym
@@ -453,6 +455,49 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv,
       plex::str(s, plex::f13(), "brak prognozy", lx, top + 40, col::MUTE);
     }
     return;
+  }
+
+  // (v182) PLAKIETKA TARYFY tuz za slowem PRĄD: zielone TANI albo bursztynowe DROGI.
+  // TA SAMA FORMA, co plakietka jakosci powietrza w v3MainBottom — zaokraglony
+  // prostokat wypelniony kolorem, tekst f11 w col::BG, padding 7 px z kazdej strony
+  // (szerokosc tw + 14), wysokosc 17 px, promien 5, gorna krawedz 11 px nad linia
+  // bazowa napisu. Przepisane co do piksela, a nie wymyslone od nowa: dwa rozne
+  // ksztalty pigulki na jednym ekranie czytalyby sie jak dwa rozne rodzaje
+  // informacji, a to jest ten sam rodzaj — jednoslowna klasyfikacja stanu.
+  // ZADNEGO NOWEGO KOLORU: OK i WARN sa juz w palecie i znacza w niej dokladnie to,
+  // co tutaj (zielony = dobrze, bursztyn = uwaga).
+  //
+  // PO GALEZI "JUTRO", A PRZED RESZTA — i to jest cala przyczyna, dla ktorej ten blok
+  // stoi tu, a nie zaraz przy naglowku wyzej: galaz "minimalnej instalacji" NADPISUJE
+  // slowo PRĄD slowem JUTRO, a "JUTRO [DROGI]" nie znaczy nic. Galaz "śpi - noc"
+  // plakietke DOSTAJE i to jest jej najwazniejsze wystapienie: falownik spi wlasnie
+  // wtedy, gdy zapada decyzja o nocnym ladowaniu auta.
+  //
+  // DWA STANY, oba jawnie (regula v158):
+  //   (a) tariff < 0 ("nie wiem", takze po odrzuceniu smiecia w MqttClient.cpp) ALBO
+  //       dane starsze niz cfg::COST_STALE_MS -> NIE RYSUJEMY NIC. To nie jest
+  //       ostroznosc na wyrost: wlasciciel podejmuje na podstawie tej plakietki
+  //       decyzje o ladowaniu auta, a strefa G12w przelacza sie w ciagu doby kilka
+  //       razy — plakietka sprzed pol godziny umie byc juz nieprawdziwa i kazalaby
+  //       wlaczyc ladowarke w szczycie. BRAK plakietki kaze sprawdzic; ZLA plakietka
+  //       kaze zrobic blad z pelnym przekonaniem. freshMs() lapie takze atMs == 0
+  //       ("nigdy nie przyszla zadna wiadomosc"), wiec osobny warunek jest zbedny.
+  //   (b) swieze -> plakietka w kolorze strefy.
+  //
+  // GEOMETRIA POLICZONA (f11, DATA_L = 127, DATA_R = 313): "PRĄD" konczy sie na
+  // x = 157, plakietka startuje 6 px dalej (x = 163). Szerszy wariant "DROGI" ma
+  // 37 px tekstu, czyli 51 px pigulki -> prawa krawedz x = 214. Najszerszy prawy
+  // napis tego wiersza to "dziś 100,0 kWh" = 84 px w f13, wyrownany do DATA_R, czyli
+  // lewa krawedz x = 229 (wariant z wiekiem "sprzed 999 dni" = 83 px konczy sie
+  // jeszcze dalej w prawo). ZOSTAJE 15 px odstepu w najciasniejszym ukladzie.
+  // Pionowo: 101..118, a separator modulu lezy na y = 92 — 9 px nad pigulka.
+  if (cost != nullptr && cost->tariff >= 0 && freshMs(cost->atMs, cfg::COST_STALE_MS)) {
+    const bool dear = cost->tariff == 1;
+    const char* tl = dear ? "DROGI" : "TANI";
+    const int tw = plex::width(plex::f11(), tl);
+    const int bx = lx + hdrW + 6;
+    s.fillRoundRect(bx, top - 11, tw + 14, 17, 5, dear ? col::WARN : col::OK);
+    plex::str(s, plex::f11(), tl, bx + 7, top, col::BG);
   }
 
   if (pv.asleep) {

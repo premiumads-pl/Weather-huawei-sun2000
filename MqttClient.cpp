@@ -75,6 +75,9 @@ namespace {
 // (231 B) > auto/stan (188 B) > dom/stan (46 B). Bufor wyznacza wiec dalej
 // discovery. Ladunek dom/stan ma byc ROZSZERZALNY (kolejne pola stanu domu), wiec
 // zapas wypada zapisac liczba: przy tym samym temacie miesci sie do ~470 B tresci.
+// (v182) Doszlo pole "t" — strefa taryfy ({"zl":4.8,"pv":13279,"t":1} = 28 B, pakiet
+// 64-66 B, ~13% bufora). Trzecie pole i trzeci raz bez ruszania bufora: to jest ta
+// sama liczba ~470 B zapasu, co linijke wyzej, i nadal nie zblizamy sie do niej.
 constexpr uint16_t kBufSize = 512;
 
 constexpr uint16_t kKeepAliveS = 60;      // PINGREQ co minute, nie co 15 s
@@ -124,6 +127,9 @@ SemaphoreHandle_t gAutoMx = xSemaphoreCreateMutex();
 // (v181) Struktura ma dzis 12 B (doszlo pvPln), a sekcja krytyczna zyskala ODCZYT
 // starej wartosci pvPln obok zapisu nowej (wiadomosc bez pola "pv" ma zostawic
 // poprzednia liczbe — patrz onMessage). Tym bardziej nierozdzielne.
+// (v182) Struktura ma dzis 13 B tresci w 16 B (doszlo `tariff`), a sekcja krytyczna
+// zyskala DRUGI przenoszony stan obok pvPln — z tego samego powodu i tym samym
+// wzorcem (wiadomosc bez pola "t" ma zostawic poprzednia strefe).
 CostModel gCostRx{};
 
 // (v175) ZAMOWIENIE Z PANELU OLED: tryb do wyslania na <prefix>/auto/tryb/set.
@@ -482,6 +488,29 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
       c.pvPln = static_cast<int32_t>(pv + 0.5f);
     }
 
+    // (v182) TRZECIE POLE TEGO LADUNKU: "t" — STREFA TARYFY G12w (1 = droga, 0 = tania).
+    // Ten sam wzorzec, co przy `zl` i `pv` wyzej, wlacznie z is<float>() zamiast
+    // is<int>(): powod jest identyczny (szablon Home Assistanta potrafi wypuscic 1.0
+    // zamiast 1 przy byle dzieleniu), a tu wazy podwojnie, bo pole jest DWUSTANOWE
+    // i cichy odpad warunku zostawilby -1 na zawsze — czyli plakietke, ktora nigdy
+    // sie nie pojawia, bez jednego sladu poza linijka w logu.
+    //
+    // STREFY NIE LICZYMY TUTAJ Z ZEGARA I TO JEST DECYZJA, NIE LENISTWO — pelne
+    // uzasadnienie stoi przy polu `tariff` w CostData.h (dzien tygodnia + swieta
+    // ustawowe, kalendarz Workday po stronie HA). Tu tylko przepisujemy gotowa liczbe.
+    const bool hasT = doc["t"].is<float>();
+    if (hasT) {
+      // Przyciecie do DWOCH legalnych stanow, nie do zakresu typu — jak przy `zl`/`pv`.
+      // Wszystko, co nie jest czystym 0 albo 1 (NaN, 2, -5, smiec po zlym szablonie),
+      // ma znaczyc "NIE WIEM" i zgasic plakietke, a NIE wybrac jednej ze stref na
+      // chybil-trafil. Zla plakietka jest gorsza niz jej brak: wlasciciel podejmuje
+      // na jej podstawie decyzje o ladowaniu auta.
+      const float t = doc["t"].as<float>();
+      if (t > 0.5f && t < 1.5f) c.tariff = 1;
+      else if (t > -0.5f && t < 0.5f) c.tariff = 0;
+      else c.tariff = -1;
+    }
+
     c.atMs = millis();
     if (c.atMs == 0) c.atMs = 1;   // 0 znaczy "nigdy" — patrz ten sam zabieg przy aucie
     if (gAutoMx != nullptr && xSemaphoreTake(gAutoMx, pdMS_TO_TICKS(20)) == pdTRUE) {
@@ -492,9 +521,17 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
       // — i to na 60 s, do nastepnej publikacji. Odczyt STAREJ wartosci siedzi POD
       // TYM SAMYM mutexem, co zapis nowej: gCostRx pisze ten watek, a czyta go
       // costSnapshot() z loop(), wiec para odczyt-zapis musi byc nierozdzielna.
+      // (v182) `tariff` idzie DOKLADNIE ta sama sciezka, co pvPln linijke wyzej:
+      // wiadomosc bez pola "t" ma zostawic poprzednia strefe, a nie zgasic plakietki.
+      // Roznica wobec pvPln jest tylko taka, ze tu "brak" ma juz swoja reprezentacje
+      // (-1) — i wlasnie dlatego przeniesienie jest KONIECZNE, a nie kosmetyczne:
+      // bez niego swiezy CostModel{} wnosilby -1 przy kazdej wiadomosci bez "t"
+      // i plakietka MIGALABY co 60 s miedzy kolorem a pustka.
       const int32_t keepPv = gCostRx.pvPln;
+      const int8_t keepT = gCostRx.tariff;
       gCostRx = c;
       if (!hasPv) gCostRx.pvPln = keepPv;
+      if (!hasT) gCostRx.tariff = keepT;
       xSemaphoreGive(gAutoMx);
     }
     // Nieudane wziecie mutexu gubi TE JEDNA wiadomosc; nastepna przyjdzie za 60 s,

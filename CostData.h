@@ -46,6 +46,29 @@ struct CostModel {
   // 4 B zamiast 2: uint16_t skonczylby sie na 65 535 zl, czyli — przy tempie ~334
   // zl/mies. — okolo roku 2039, a ta instalacja ma zyc dluzej niz to przepelnienie.
   int32_t pvPln = 0;
+
+  // (v182) TRZECIE pole ladunku "dom/stan": STREFA TARYFY G12w w tej chwili.
+  //   -1 = NIE WIEM (wartosc poczatkowa i jedyna, przy ktorej plakietki NIE MA)
+  //    0 = strefa TANIA
+  //    1 = strefa DROGA
+  //
+  // TARYFY NIE LICZYMY NA URZADZENIU I TO JEST DECYZJA, NIE LENISTWO. Godzine mamy
+  // (NTP), wiec pokusa "przeciez to jest jeden if na godzine" jest realna — i falszywa.
+  // Strefa G12w zalezy od TRZECH rzeczy naraz: godziny, DNIA TYGODNIA (soboty i
+  // niedziele sa w calosci tanie) oraz SWIAT USTAWOWYCH, ktore chodza po kalendarzu
+  // (Wielkanoc, Boze Cialo) i ktorych nie da sie zapisac tablica dat bez corocznej
+  // aktualizacji firmware'u tylko-OTA. Kalendarz swiat siedzi juz w Home Assistancie
+  // (integracja Workday, kraj PL) i jest tam UTRZYMYWANY. Wyswietlacz ma pokazac
+  // plakietke, a nie odtwarzac drugi, gorszy kalendarz — dokladnie ta sama zasada,
+  // ktora kazala liczyc `zl` po stronie HA (patrz naglowek tego pliku).
+  //
+  // int8_t, a nie bool: bool ma DWA stany, a my mamy TRZY i trzeci ("nie wiem") jest
+  // tym, na ktorym zalezy najbardziej. Zla plakietka jest GORSZA niz jej brak, bo
+  // wlasciciel podejmuje na jej podstawie decyzje o ladowaniu auta — brak informacji
+  // kaze sprawdzic, blednie zielona plakietka kaze wlaczyc ladowarke w szczycie.
+  // Bajt jest darmowy: bez niego struktura ma 12 B, z nim 13 B dopelnione do 16 B,
+  // czyli sizeof NIE ROSNIE ani o piksel RAM-u (patrz straznik nizej).
+  int8_t tariff = -1;
 };
 
 // Straznik budzetu, nie ozdobnik — ta sama rola, co static_assert przy AutoModel.
@@ -56,9 +79,26 @@ struct CostModel {
 // dokladnie JEDNO 4-bajtowe pole. Progu NIE PODNOSIMY razem z rozmiarem: straznik,
 // ktory ustepuje przy kazdym dolozeniu, nie pilnuje juz niczego. Trzecie pole ma sie
 // tu ZATRZYMAC i wymusic decyzje, a nie przejsc mimochodem.
+//
+// (v182) Trzecie pole PRZYSZLO i straznik zadzialal tak, jak mial: `tariff` weszlo
+// jako int8_t WLASNIE dlatego, ze prog kazal sie zastanowic nad rozmiarem, zanim
+// odruchowo wpisze sie `int`. Bilans: 4 + 4 + 4 + 1 = 13 B, dopelnione do 16 B przez
+// wyrownanie do 4 B najszerszego pola — sizeof NIE DRGNAL, a prog zostaje 16.
+// CO ZOSTALO: 3 BAJTY DOPELNIENIA, i tylko tyle. Kolejne pole zmiesci sie za darmo
+// WYLACZNIE gdy bedzie 1-bajtowe (int8_t/bool/enum : uint8_t); czwarte 4-bajtowe
+// przebije 16 B i ma sie tu ZATRZYMAC dokladnie jak to, przed chwila.
 static_assert(sizeof(CostModel) <= 16,
               "CostModel zyje w dwoch kopiach — powyzej 16 B zaczyna byc widoczny "
               "w budzecie statycznego RAM-u (bariera 76 000 B)");
+// (v182) Straznik na TYP, jak przy pvPln nizej: `tariff` MUSI byc ze znakiem, bo -1
+// ("nie wiem") jest jego wartoscia poczatkowa i jedynym stanem, przy ktorym plakietka
+// taryfy sie NIE RYSUJE. Na uint8_t -1 stalby sie 255, warunek `tariff < 0` bylby
+// zawsze falszywy i urzadzenie tuz po starcie — zanim przyjdzie pierwsza wiadomosc
+// MQTT — pokazywaloby plakietke strefy, ktorej nie zna. To jest dokladnie ten blad,
+// przed ktorym cala ta funkcja ma chronic.
+static_assert(static_cast<decltype(CostModel::tariff)>(-1) < 0,
+              "CostModel::tariff musi byc typem ZE ZNAKIEM (-1 = 'nie wiem' jest "
+              "stanem poczatkowym i wylacza rysowanie plakietki taryfy)");
 // (v181) Drugi straznik, tym razem na TYP, nie na rozmiar: pvPln MUSI byc ze znakiem.
 // Zamiana na uint32_t nie ruszylaby sizeof (wiec asercja wyzej by tego nie zlapala),
 // a wywrocilaby ekran ZWROT w dniu splaty instalacji — (PV_KOSZT_PLN - pvPln) < 0

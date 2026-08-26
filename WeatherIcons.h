@@ -2998,7 +2998,15 @@ inline const uint8_t* alphaFor(IconId id) {
 inline const char* labelForCode(int code) {
   switch (iconForCode(code)) {
     case SUN: return "Słonecznie";
-    case PARTLY: return "Częściowo";
+    // (v182) Bylo samo "Częściowo" — urwany przymiotnik bez rzeczownika. Wlasciciel
+    // zglosil, ze nie wie, czy chodzi o slonce, zachmurzenie czy deszcz, i mial racje:
+    // to slowo nie niesie zadnej informacji o pogodzie. Pelne brzmienie jest DOKLADNIE
+    // to samo, co descForCode(2) nizej, wiec obie funkcje przestaja sie rozjezdzac.
+    // MIESCI SIE BEZ DOPISYWANIA CZEGOKOLWIEK DO RYSOWANIA: v3Main lamie opis po
+    // ostatniej spacji na dwie linie (baseline 194 i 208), a w foncie plex::f13()
+    // "Częściowe" = 57 px i "zachmurzenie" = 78 px przy limicie 104 px
+    // (grid::CTX_W - 2*grid::MARGIN_CTX). Zapas na wezszym czlonie: 26 px.
+    case PARTLY: return "Częściowe zachmurzenie";
     case CLOUD: return "Pochmurno";
     case FOG: return "Mgła";
     case DRIZZLE: return "Mżawka";
@@ -3177,7 +3185,10 @@ inline const char* labelForCode(int code, bool night) {
   if (!night) return labelForCode(code);
   switch (iconForCode(code)) {
     case SUN: return "Bezchmurnie";
-    case PARTLY: return "Częściowo";
+    // (v182) To samo, co w wariancie dziennym wyzej — i to jest caly powod, dla ktorego
+    // obie funkcje zmienily sie RAZEM: rozne brzmienie dnia i nocy znaczyloby, ze opis
+    // pogody zmienia sens o zachodzie, a chmura nad glowa jest ta sama.
+    case PARTLY: return "Częściowe zachmurzenie";
     default: return labelForCode(code);
   }
 }
