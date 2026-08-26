@@ -10,28 +10,21 @@ namespace {
 constexpr uint8_t kPin = 7;          // GPIO7 = TOUCH7 (wolny: TFT ma 8-12 i 14)
 constexpr float kRise = 1.25f;       // dotkniecie = odczyt o 25% powyzej bazy
 
-// (v158) DWIE LICZBY, KTORE ZJADALY STUKNIECIA. Wlasciciel: "pojedyncze stukniecia
-// nie zawsze przelaczaja ekran". Zmierzone w kodzie v157, nie zgadniete:
+// (v185) GESTU PODWOJNEGO TU JUZ NIE MA. Zgloszenie wlasciciela brzmialo: "naciskam,
+// zeby przelaczac ekrany, i nie zawsze pojawia sie kolejny, czasami wraca do glownego".
+// Przyczyna siedziala dokladnie w tym pliku: przy debounce 120 ms i oknie 600 ms dwa
+// stukniecia w odstepie 120-600 ms skladaly sie w gest DOUBLE, a odbiorca (touchDoubleV3)
+// ustawial widok BEZWZGLEDNIE — na STATS albo na GLOWNY — czyli COFAL skutek pojedynczego
+// stukniecia. Przy stukaniu co ~0,3 s robilo to CO DRUGIE stukniecie i wygladalo jak
+// "ekran sie zacial". Sciezka pojedyncza byla przy tym sprawna (zmierzone: 10 stuknien
+// x 3 rozne odstepy, za kazdym razem dokladnie jeden ekran do przodu), wiec skasowany
+// zostal GEST, a nie debounce.
 //
-//   kHoldOffMs = 250, kDoubleMs = 550  =>  drugie stukniecie liczylo sie WYLACZNIE
-//   w oknie 250-550 ms od pierwszego, czyli w szczelinie szerokiej 300 ms.
-//
-// Typowe ludzkie podwojne stukniecie to 150-400 ms (domyslny prog dwukliku w macOS
-// i Windows to 500 ms). Wszystko ponizej 250 ms wpadalo w debounce i bylo kasowane
-// BEZ SLADU — a poniewaz kasowanie odbieralo tylko DRUGIE zbocze, gest konczyl sie
-// jako pojedyncze stukniecie. Czyli: szybki dwuklik dawal "nastepny ekran" zamiast
-// diagnostyki. Nowe 120 ms jest wciaz grubo powyzej drgan komparatora progu
-// (touchRead na S3 jest wygladzony sprzetowo; sasiednie odczyty roznia sie o
-// promile bazy), a wpuszcza caly zakres ludzki od 120 ms w gore.
-//
-// Okno na drugie stukniecie: 550 -> 600 ms. Powod NIE jest kosmetyczny — patrz
-// akapit o natychmiastowym SINGLE w poll(). Dopoki SINGLE czekalo na wygasniecie
-// okna, kazde poszerzenie okna wydluzalo REAKCJE na zwykle stukniecie; teraz okno
-// nie kosztuje juz nic i moze byc szczodre. 600 ms = 500 ms systemowego progu
-// dwukliku + 100 ms zapasu na to, ze poll() widzi zbocze dopiero w kolejnej klatce
-// (FRAME_IDLE_MS = 50 ms na statycznym ekranie).
+// kHoldOffMs ZOSTAJE 120 ms. On chroni przed DRGANIEM STYKU, a nie przed uzytkownikiem:
+// jest grubo powyzej drgan komparatora progu (touchRead na S3 jest wygladzony sprzetowo,
+// sasiednie odczyty roznia sie o promile bazy), a nie zjada zadnego ludzkiego tempa —
+// szybciej niz ~8 razy na sekunde palcem po elektrodzie sie nie stuka.
 constexpr uint32_t kHoldOffMs = 120;  // debounce — jedno dotkniecie to jedno zdarzenie
-constexpr uint32_t kDoubleMs = 600;   // okno na drugie dotkniecie (palec, nie mysz)
 constexpr float kDrift = 0.002f;     // jak szybko baza goni otoczenie (tylko gdy nie dotykamy)
 
 uint32_t gBase = 0;
@@ -41,8 +34,7 @@ uint32_t gLastEvent = 0;
 bool gReady = false;
 
 // Liczniki do /api/diag — jedyne zrodlo wiedzy o stuknieciach ODRZUCONYCH.
-uint32_t gTaps = 0;      // zbocza policzone jako gest (kazde daje SINGLE)
-uint32_t gDoubles = 0;   // z tego: zamkniete jako gest podwojny
+uint32_t gTaps = 0;      // zbocza przyjete jako stukniecie (kazde daje SINGLE)
 uint32_t gBounced = 0;   // zbocza odrzucone przez debounce (kHoldOffMs)
 
 }  // namespace
@@ -76,45 +68,25 @@ Tap poll() {
   const bool down = gRaw > thr;
   const uint32_t now = millis();
 
-  static bool pending = false;      // pierwsze stukniecie moze jeszcze dostac pare
-  static uint32_t pendingAt = 0;
-
   Tap out = Tap::NONE;
 
-  // (v158) SINGLE LECI NATYCHMIAST PO ZBOCZU. Do v157 pierwsze stukniecie NIE robilo
-  // nic az do wygasniecia okna (kDoubleMs), bo poll() zwracalo SINGLE dopiero w
-  // galezi "drugie nie przyszlo". Zmierzone opoznienie reakcji na zwykle stukniecie
-  // wynosilo wiec 550 ms + do jednej klatki (FRAME_IDLE_MS = 50 ms) ~ 0,6 s — i to
-  // JEST przyczyna zgloszenia "stukniecie nie zawsze przelacza ekran": ekran
-  // przelaczal sie zawsze, tylko po czasie dluzszym niz cierpliwosc reki, ktora
-  // w tym czasie stukala drugi raz (i trafiala albo w debounce, albo w DOUBLE).
-  // To ZUPELNIE INNY problem niz zbyt waskie okno i wymaga innej decyzji, wiec
-  // podjeta jest wprost: reagujemy od razu, a gest podwojny COFA skutek gestu
-  // pojedynczego. Cofniecie jest darmowe, bo touchDoubleV3() ustawia widok
-  // BEZWZGLEDNIE (VIEW_STATS albo VIEW_NOW), nie wzglednie — wiec nieistotne jest,
-  // na ktory ekran przeskoczylo wczesniej pojedyncze stukniecie. Alternatywa
-  // (czekanie na okno) juz byla i to jej wlasnie dotyczy zgloszenie.
+  // (v185) KAZDE PRZYJETE ZBOCZE DAJE SINGLE — nic tu juz nie czeka na "pare", nie ma
+  // stanu miedzy klatkami i nie ma czego przeterminowywac. SINGLE leci natychmiast po
+  // zboczu, wiec ekran przelacza sie w tej samej klatce, a RYTM STUKANIA NIE MA
+  // ZNACZENIA: dziesiec stuknien to dziesiec ekranow do przodu, czy padna co 0,2 s,
+  // czy co 2 s. To jest cala poprawka zgloszenia "czasami wraca do glownego" —
+  // przedtem drugie zbocze w oknie 600 ms zamienialo sie w gest cofajacy pierwszy.
   if (down && !gDown) {
     if (now - gLastEvent > kHoldOffMs) {
       gLastEvent = now;
       ++gTaps;
-      if (pending && now - pendingAt <= kDoubleMs) {
-        pending = false;
-        ++gDoubles;
-        out = Tap::DOUBLE;
-      } else {
-        pending = true;
-        pendingAt = now;
-        out = Tap::SINGLE;
-      }
+      out = Tap::SINGLE;
     } else {
       // Zbocze zjedzone przez debounce. Do v157 nie zostawialo po sobie NICZEGO —
       // ani w logu, ani w /api/diag — wiec "stukniecie nie zadzialalo" bylo
       // niemierzalne. Teraz jest liczba: touch.bounced w /api/diag.
       ++gBounced;
     }
-  } else if (pending && now - pendingAt > kDoubleMs) {
-    pending = false;   // okno minelo, gest zamkniety jako pojedynczy (juz zgloszony)
   }
   gDown = down;
 
@@ -134,9 +106,7 @@ bool pressedRaw() {
 }
 
 uint32_t taps() { return gTaps; }
-uint32_t doubles() { return gDoubles; }
 uint32_t bounced() { return gBounced; }
-uint32_t doubleWindowMs() { return kDoubleMs; }
 uint32_t holdOffMs() { return kHoldOffMs; }
 
 uint32_t raw() {

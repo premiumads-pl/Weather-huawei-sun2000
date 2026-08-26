@@ -2130,12 +2130,16 @@ void setup() {
 
   portal::setViewHandler([](int i) { ui.pinView(i); },
                          [](int& cur, int& pin) { ui.viewState(cur, pin); });
-  // Panel: przycisk dotyku dziala jak fizyczny pin GPIO7. Kierujemy go w te same
-  // metody co dotyk realny (touchTapV3/touchDoubleV3, spec 7a) i dokladamy
-  // noteRawTouch(), zeby kropka feedbacku pokazala sie tez w podgladzie na zywo.
-  portal::setTapHandler([](int n) {
+  // Panel: przycisk dotyku dziala jak fizyczny pin GPIO7. Kieruje w te sama metode co
+  // dotyk realny (touchTapV3) i doklada noteRawTouch(), zeby kropka feedbacku pokazala
+  // sie tez w podgladzie na zywo.
+  // (v185) PARAMETR `n` JEST IGNOROWANY. Do v184 `n >= 2` wolalo touchDoubleV3(), czyli
+  // gest, ktorego juz nie ma. Endpoint /api/tap zostaje z tym parametrem tylko po to,
+  // zeby starszy panel (albo skrypt wlasciciela) nie dostal 400 — kazde wywolanie jest
+  // teraz ZWYKLYM STUKNIECIEM, dokladnie jak jedno zbocze na elektrodzie.
+  portal::setTapHandler([](int) {
     ui.noteRawTouch();
-    if (n >= 2) ui.touchDoubleV3(); else ui.touchTapV3();
+    ui.touchTapV3();
   });
   // Podswietlenie: test sprzetu + podglad wysterowania (patrz Portal.h).
   portal::setBacklightHandler(
@@ -2520,24 +2524,17 @@ void loop() {
   }
 
   // --- dotyk GPIO7 ---
-  // Nawigacja V3 "Pasmowy" (spec 7a): 1x = nastepny ekran w petli 8 widokow,
-  // 2x = wejscie/wyjscie z diagnostyki, powrot na GLOWNY po 60 s ciszy (to ostatnie
-  // zalatwia render()). (v160) Zniknal stad wariant V1/V2 (restartHold/prevView)
-  // razem z tamtymi motywami — zostala jedna sciezka, bez rozgalezienia.
-  // (v158) SINGLE przychodzi NATYCHMIAST po zboczu, a dla gestu podwojnego leci
-  // SINGLE, a zaraz po nim DOUBLE (patrz Touch.cpp). Ten switch tego nie rozroznia i
-  // nie musi: touchDoubleV3() ustawia widok BEZWZGLEDNIE (STATS albo GLOWNY), wiec
-  // drugie zbocze poprawnie NADPISUJE skutek pierwszego. Dla gestu podwojnego stoja
-  // w dzienniku DWIE linie i tak ma byc — widac, ze urzadzenie uslyszalo oba stukniecia.
-  switch (touch::poll()) {
-    case touch::Tap::SINGLE:
-      ui.touchTapV3();    LOG("Dotyk V3: nastepny ekran");
-      break;
-    case touch::Tap::DOUBLE:
-      ui.touchDoubleV3(); LOG("Dotyk V3 x2: diagnostyka (nadpisuje krok 1x)");
-      break;
-    default:
-      break;
+  // Nawigacja V3 "Pasmowy" (spec 7a): KAZDE stukniecie = nastepny ekran w petli,
+  // powrot na GLOWNY po cfg::TOUCH_IDLE_HOME_MS ciszy (to zalatwia render()).
+  // (v160) Zniknal stad wariant V1/V2 (restartHold/prevView) razem z tamtymi motywami.
+  // (v185) Zniknal takze gest podwojny i cale rozgalezienie switcha: touch::poll()
+  // zwraca juz tylko NONE albo SINGLE, wiec zostaje jeden warunek. Diagnostyka
+  // (STATS/MEM) jest odtad dostepna wylacznie z panelu WWW ("Przypnij widok" ->
+  // "Ekrany diagnostyczne") — dotyk prowadzi TYLKO przez petle ekranow i nigdy juz
+  // nie skacze w bok, bo to wlasnie ten skok wygladal jak "wraca do glownego".
+  if (touch::poll() == touch::Tap::SINGLE) {
+    ui.touchTapV3();
+    LOG("Dotyk V3: nastepny ekran");
   }
   // Kropka feedbacku V3: zapala sie na CZAS TRZYMANIA palca na elektrodzie. Do v157
   // niosla takze role "cos sie dzieje, czekaj" — bo SINGLE szlo dopiero po 550 ms;

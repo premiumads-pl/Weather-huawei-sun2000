@@ -82,14 +82,13 @@ class WeatherUi {
   // --- NAWIGACJA DOTYKIEM V3 "Pasmowy" (spec 7a) ----------------------------
   // (v160) JEDYNA nawigacja dotykiem. Do v159 stal obok niej wariant V1/V2
   // (restartHold/prevView); zniknal razem z tamtymi motywami.
-  // 1x stukniecie: nastepny ekran w PETLI 8 widokow (GLOWNY->RADAR->5 DNI->PRAD->
-  // POKOJE->OGRZEWANIE->POWIETRZE->SAMOLOTY->GLOWNY), z pominieciem niedostepnych
-  // (viewSkipped). Bedac w diagnostyce (STATS/MEM) przelacza miedzy nimi.
+  // (v185) JEDYNY gest dotyku. Kazde stukniecie: nastepny ekran w PETLI widokow
+  // (GLOWNY->RADAR->5 DNI->PRAD->...->GLOWNY), z pominieciem niedostepnych
+  // (viewSkipped). Bedac w diagnostyce (STATS/MEM, przypietej z panelu) przelacza
+  // miedzy nimi. Gest podwojny (touchDoubleV3) zniknal — wchodzil w diagnostyke
+  // BEZWZGLEDNIE i przez to cofal skutek stukniecia poprzedzajacego; patrz Touch.cpp.
   void touchTapV3();
-  // 2x stukniecie: wejscie/wyjscie z diagnostyki. Z dowolnego widoku -> STATS
-  // (diag 1 "zrodla"); bedac w STATS/MEM -> GLOWNY.
-  void touchDoubleV3();
-  // Znacznik SUROWEGO dotyku (przed rozroznieniem 1x/2x) — do kropki feedbacku V3.
+  // Znacznik SUROWEGO dotyku (samo dotkniecie elektrody) — do kropki feedbacku V3.
   // Wolane z petli, gdy touch::pressedRaw(). Samo ustawia czas; kropke rysuje drawV3.
   void noteRawTouch() { rawTouchMs_ = millis(); }
 
@@ -249,25 +248,20 @@ class WeatherUi {
   int8_t pinned_ = -1;  // >=0: ekran zablokowany z panelu WWW
   uint8_t prevView_ = 0;
   // V3 "Pasmowy" (spec 7a): czas ostatniego STUKNIECIA (do powrotu na GLOWNY po
-  // 60 s ciszy) i ostatniego SUROWEGO dotyku (do kropki feedbacku). 0 = brak.
-  // Czytane WYLACZNIE przy theme==3 — V1/V2 ich nie dotykaja (patrz render()).
+  // cfg::TOUCH_IDLE_HOME_MS ciszy ORAZ do topniejacej kreski odliczania pod licznikiem
+  // "x z y" w drawV3) i ostatniego SUROWEGO dotyku (do kropki feedbacku). 0 = brak,
+  // czyli "odliczanie nie biegnie" — auto-rotacja czyta wlasnie to zero jako zgode
+  // na dalszy cykl, a kreska jako "nie ma czego rysowac".
   uint32_t lastTouchMs_ = 0;
   uint32_t rawTouchMs_ = 0;
   // TRYB NOCNY "dotyk budzi ekran" (runtime, NIE zmienia nightStartH/EndH/blNight): true, gdy
   // render() rysuje TERAZ przygaszony zegar nocny i czeka na wybudzenie. Ustawia je render()
-  // co klatke; czyta touchTapV3/touchDoubleV3 — pierwszy dotyk w nocy ma WYBUDZIC na Glowny
+  // co klatke; czyta touchTapV3 — pierwsza interakcja w nocy ma WYBUDZIC na Glowny
   // (jasnosc kNightWakeBl), a nie przeskoczyc ekranu. Patrz render()/isNightNow().
+  // (v185) TA FLAGA ZOSTAJE I NADAL WYSTARCZA: skoro kazde zbocze jest zwyklym
+  // stuknieciem, "pierwsza interakcja" to po prostu pierwszy SINGLE po zasnieciu,
+  // a nightAsleep_ sam sie kasuje w tej samej linii, w ktorej budzi ekran.
   bool nightAsleep_ = false;
-  // (v158) true, gdy OSTATNIE pojedyncze stukniecie posluzylo do WYBUDZENIA ekranu
-  // nocnego (a nie do nawigacji). Potrzebne, odkad touch::poll() zglasza SINGLE
-  // natychmiast: dla gestu podwojnego przychodzi teraz SINGLE, a zaraz po nim
-  // DOUBLE, wiec bez tej flagi podwojne stukniecie w nocy najpierw budzilo ekran,
-  // a potem od razu wchodzilo w diagnostyke — czyli lamalo ustalenie wlasciciela
-  // "pierwsza interakcja w nocy TYLKO wybudza". Kasowana przez touchDoubleV3()
-  // (ktore wtedy nic wiecej nie robi) i przez kolejne stukniecie juz wybudzonego
-  // ekranu. Sam bool wystarczy — DOUBLE moze przyjsc wylacznie w oknie kDoubleMs
-  // po tym SINGLE, wiec nie ma czego przeterminowywac czasem.
-  bool v3WokeByTap_ = false;
   uint32_t viewStart_ = 0;
   uint32_t enterStart_ = 0;
   uint32_t transStart_ = 0;

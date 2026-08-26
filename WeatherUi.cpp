@@ -108,6 +108,15 @@ constexpr int kV3LoopN = sizeof(kV3Loop) / sizeof(kV3Loop[0]);
 // kNightWakeBl = 130: jasny na tyle, by czytac w nocy z 2 m, ale nie razacy jak 255.
 constexpr uint8_t  kNightWakeBl = 130;      // jasnosc wybudzonego UI w nocy (nie blNight, nie 255)
 constexpr uint32_t kNightWakeMs = 60000UL;  // 60 s bez dotyku -> powrot do zegara nocnego
+// (v185) TA LICZBA ZOSTAJE 60 s I NIE JEST TYM SAMYM, CO cfg::TOUCH_IDLE_HOME_MS (30 s).
+// Do v184 obie wynosily 60 s i wygasaly rownoczesnie, wiec ich rozdzielenie warto opisac:
+//   - zerkniecie na zegar w nocy (jeden dotyk, zostajemy na GLOWNYM) — BEZ ZMIAN: powrot
+//     po bezczynnosci nie ma tu nic do roboty (warunek `view_ != VIEW_NOW`), wiec pelne
+//     60 s wybudzenia dziala jak dotad;
+//   - przegladanie ekranow w nocy — po 30 s ciszy widok wraca na GLOWNY, a powrot zeruje
+//     lastTouchMs_ (musi: inaczej auto-rotacja nigdy by nie wznowila), wiec zegar nocny
+//     wraca od razu, a nie po kolejnych 30 s. Swiadome: "nikt nie dotyka od 30 s" ma
+//     w nocy znaczyc to samo, co w dzien, a pierwsze stukniecie nadal TYLKO wybudza.
 
 float clampf(float v, float lo, float hi) {
   return v < lo ? lo : (v > hi ? hi : v);
@@ -735,8 +744,8 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
       }
     } else {
       // V3 "Pasmowy" (spec 7a): domyslnie BRAK auto-rotacji — nawigacja recznie
-      // dotykiem (touchTapV3/touchDoubleV3). Wlasciciel moze wlaczyc auto-rotacje w
-      // panelu (settings().autoRotate); wtedy widoki petli zmieniaja sie same co dwellS.
+      // dotykiem (touchTapV3). Wlasciciel moze wlaczyc auto-rotacje w panelu
+      // (settings().autoRotate); wtedy widoki petli zmieniaja sie same co dwellS.
       if (settings().autoRotate && pinned_ < 0 && lastTouchMs_ == 0) {
         // AUTO-ROTACJA: tylko gdy wlaczona, bez pinu z panelu i bez SWIEZEGO dotyku
         // (lastTouchMs_==0 znaczy "rotacja nie jest zapauzowana"). Co dwellS sekund
@@ -758,14 +767,26 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
           v3Sig_ = 0xFFFFFFFFu;
           // NIE ruszamy lastTouchMs_ — auto-rotacja to nie dotyk.
         }
-      } else if (view_ != cfg::VIEW_NOW && lastTouchMs_ != 0 &&
-                 nowMs - lastTouchMs_ >= 60000UL) {
-        // Powrot po 60 s ciszy: albo auto-rotacja wylaczona (dotyk to jedyna
-        // nawigacja), albo wlaczona, ale zapauzowana SWIEZYM dotykiem (lastTouchMs_!=0).
-        // Kazdy widok wraca do GLOWNEGO (VIEW_NOW). Liczymy od ostatniego STUKNIECIA —
-        // panel-pin bez dotyku (lastTouchMs_==0) NIE wraca, zeby pin z /api/view dalej
-        // dzialal (twarde ograniczenie 4). Po powrocie lastTouchMs_=0, wiec przy
-        // autoRotate=on cykl wznawia sie naturalnie od GLOWNEGO.
+      } else if (view_ != cfg::VIEW_NOW && pinned_ < 0 && lastTouchMs_ != 0 &&
+                 nowMs - lastTouchMs_ >= cfg::TOUCH_IDLE_HOME_MS) {
+        // Powrot po cfg::TOUCH_IDLE_HOME_MS ciszy (v185: 30 s, ustalenie wlasciciela;
+        // do v184 60 s wpisane tutaj liczba): albo auto-rotacja wylaczona (dotyk to
+        // jedyna nawigacja), albo wlaczona, ale zapauzowana SWIEZYM dotykiem
+        // (lastTouchMs_!=0). Kazdy widok wraca do GLOWNEGO (VIEW_NOW). Liczymy od
+        // ostatniego STUKNIECIA — panel-pin bez dotyku (lastTouchMs_==0) NIE wraca,
+        // zeby pin z /api/view dalej dzialal (twarde ograniczenie 4). Po powrocie
+        // lastTouchMs_=0, wiec przy autoRotate=on cykl wznawia sie naturalnie od GLOWNEGO.
+        //
+        // (v185) `pinned_ < 0` DOLOZONE, bo bez tego pin z panelu dalo sie WYRWAC:
+        // wystarczylo stuknac w plytke (lastTouchMs_ != 0, pinned_ = -1), a potem
+        // przypiac ekran z panelu — pinView() nie rusza lastTouchMs_, wiec stary
+        // znacznik dotyku dozywal tu i po 30 s zrywal swiezy pin. Pin ma byc silniejszy
+        // niz odliczanie: to jawna decyzja wlasciciela sprzed sekundy, a odliczanie
+        // to tylko domyslne "wroc, jak nikt nie patrzy".
+        //
+        // TO SAMO ODLICZANIE RYSUJE topniejaca kreske pod licznikiem "x z y"
+        // (drawV3 w WeatherUiV3.cpp) — trzy warunki nad nia (swiezy dotyk, brak pinu,
+        // nie jestesmy na GLOWNYM) sa DOKLADNIE te, ktore stoja w tym `else if`.
         prevView_ = view_;
         view_ = static_cast<uint8_t>(cfg::VIEW_NOW);
         viewStart_ = nowMs;
@@ -796,8 +817,8 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
   // w dzien, tyle ze na jasnosci ~130. Po kNightWakeMs bez dotyku blTarget_ zostaje blNight (z
   // automatu LDR w .ino) i zegar nocny wraca. Robimy to PRZED sygnatura nizej (mix(blTarget_)),
   // zeby przejscie spanie<->czuwanie ZAWSZE wymusilo przerysowanie (inaczej skip zjadlby klatke).
-  // nightAsleep_ = noc bez swiezego dotyku — czyta go touchTapV3/touchDoubleV3, zeby PIERWSZY
-  // dotyk budzil na Glowny, a nie przeskakiwal ekranu. Liczymy od lastTouchMs_ (STUKNIECIE, ta
+  // nightAsleep_ = noc bez swiezego dotyku — czyta go touchTapV3, zeby PIERWSZE stukniecie
+  // budzilo na Glowny, a nie przeskakiwalo ekranu. Liczymy od lastTouchMs_ (STUKNIECIE, ta
   // sama nawigacja co w dzien), wiec pin z panelu bez dotyku NIE wybudza (twarde ogr. 4).
   nightAsleep_ = false;
   if (isNightNow(blTarget_)) {
@@ -843,6 +864,18 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
     // render NARYSUJE ja przy zapaleniu i SKASUJE przy zgasnieciu (~600 ms) — inaczej
     // pominiecie przerysowania zostawiloby ja na ekranie. Rysuje ja drawV3 (WeatherUiV3).
     mix(rawTouchMs_ != 0 && nowMs - rawTouchMs_ < 600u ? 0xD07u : 0u);
+    // (v185) TOPNIEJACA KRESKA ODLICZANIA pod licznikiem "x z y" (drawV3). Bez tej
+    // linii pomijanie klatek zamroziloby ja na szerokosci z chwili ostatniej zmiany
+    // czegokolwiek innego — czyli kreska stalaby w miejscu przez cale 30 s i klamala
+    // dokladnie o tym, co ma pokazywac. Warunek jest TEN SAM, co przy jej rysowaniu
+    // i przy samym powrocie (patrz `else if` w rotacji wyzej): swiezy dotyk, brak pinu,
+    // nie GLOWNY. Kwantyzacja na 64 kroki: kreska jest najwyzej ~30 px szeroka, wiec
+    // 64 progi gwarantuja, ze zaden ubytek piksela nie przepadnie, a klatek dokladamy
+    // ~2 na sekunde zamiast 20.
+    if (lastTouchMs_ != 0 && pinned_ < 0 && view_ != cfg::VIEW_NOW) {
+      const uint32_t el = nowMs - lastTouchMs_;
+      mix(el >= cfg::TOUCH_IDLE_HOME_MS ? 64u : (el * 64u) / cfg::TOUCH_IDLE_HOME_MS);
+    }
     // Ekrany diagnostyczne pokazuja zywe liczby (heap/temp/fps) — odswiezaj co 2 s,
     // zeby sie aktualizowaly, ale nie 20x/s.
     if (view_ == cfg::VIEW_MEM || view_ == cfg::VIEW_MOTION || view_ == cfg::VIEW_STATS)
@@ -1334,17 +1367,19 @@ void WeatherUi::setViewV3(uint8_t v) {
 void WeatherUi::touchTapV3() {
   lastTouchMs_ = millis();
   // TRYB NOCNY: gdy TERAZ swieci przygaszony zegar nocny (nightAsleep_ ustawia render()),
-  // PIERWSZY dotyk ma tylko WYBUDZIC na Glowny — bez przeskakiwania na nastepny ekran.
+  // PIERWSZA interakcja ma tylko WYBUDZIC na Glowny — bez przeskakiwania na nastepny ekran.
   // Ustawione wyzej lastTouchMs_ sprawia, ze od tej klatki render() podbije jasnosc do
   // kNightWakeBl i narysuje pelny UI; kolejne dotkniecia (juz wybudzony, nightAsleep_==false)
   // nawiguja normalnie. Decyzja "pierwszy dotyk budzi, nie skacze" — wg ustalen wlasciciela.
+  // (v185) BEZ ZMIAN PO SKASOWANIU GESTU PODWOJNEGO, a wrecz prosciej: zniknela flaga
+  // v3WokeByTap_, ktora istniala WYLACZNIE po to, zeby DOUBLE lecacy zaraz za tym SINGLE
+  // nie wciagnal wybudzonego ekranu od razu w diagnostyke. Skoro DOUBLE nie ma, jedno
+  // zbocze = jedno wybudzenie i nie ma czego konsumowac w drugiej metodzie.
   if (nightAsleep_) {
     nightAsleep_ = false;
-    v3WokeByTap_ = true;   // gdyby zaraz przyszlo DOUBLE — ma tylko dokonczyc wybudzenie
     setViewV3(static_cast<uint8_t>(cfg::VIEW_NOW));
     return;
   }
-  v3WokeByTap_ = false;
   // W diagnostyce 1x przelacza STATS <-> MEM, nie rusza petli glownej (spec 7a).
   if (view_ == cfg::VIEW_STATS || view_ == cfg::VIEW_MEM) {
     setViewV3(view_ == cfg::VIEW_STATS ? cfg::VIEW_MEM : cfg::VIEW_STATS);
@@ -1368,29 +1403,13 @@ void WeatherUi::touchTapV3() {
   setViewV3(kV3Loop[idx]);
 }
 
-void WeatherUi::touchDoubleV3() {
-  lastTouchMs_ = millis();
-  // TRYB NOCNY: spojnie z touchTapV3 — pierwsza interakcja w nocy (takze podwojna) tylko
-  // WYBUDZA na Glowny, zamiast od razu wchodzic w diagnostyke. Kolejne gesty dzialaja normalnie.
-  if (nightAsleep_) {
-    nightAsleep_ = false;
-    setViewV3(static_cast<uint8_t>(cfg::VIEW_NOW));
-    return;
-  }
-  // (v158) Ten sam gest, drugie zbocze: SINGLE juz poszlo i to ONO wybudzilo ekran
-  // (v3WokeByTap_). Bez tego warunku podwojne stukniecie w nocy budzilo i w tej samej
-  // chwili wchodzilo w diagnostyke — a ustalenie brzmi "pierwsza interakcja w nocy
-  // tylko wybudza". Konsumujemy flage i wychodzimy: ekran zostaje na GLOWNYM.
-  if (v3WokeByTap_) {
-    v3WokeByTap_ = false;
-    return;
-  }
-  // 2x w diagnostyce wychodzi na GLOWNY; poza nia 2x wchodzi w diagnostyke (STATS).
-  if (view_ == cfg::VIEW_STATS || view_ == cfg::VIEW_MEM)
-    setViewV3(static_cast<uint8_t>(cfg::VIEW_NOW));
-  else
-    setViewV3(static_cast<uint8_t>(cfg::VIEW_STATS));
-}
+// (v185) TU STALA METODA touchDoubleV3(). Skasowana w calosci razem z gestem podwojnym
+// (Touch.cpp). Ustawiala widok BEZWZGLEDNIE — na VIEW_STATS albo VIEW_NOW — wiec dla
+// dwoch stuknien w odstepie 120-600 ms COFALA to, co przed chwila zrobil touchTapV3().
+// Wlasciciel widzial to jako "naciskam, zeby przelaczac ekrany, i nie zawsze pojawia sie
+// kolejny, czasami wraca do glownego". Diagnostyka (STATS/MEM) nie zniknela — wchodzi
+// sie w nia z panelu WWW, sekcja "Przypnij widok" -> "Ekrany diagnostyczne", a bedac
+// w niej pojedyncze stukniecie nadal przerzuca STATS <-> MEM (patrz touchTapV3 wyzej).
 
 // Pozycja biezacego widoku w PETLI V3 (kV3Loop) wsrod NIEPOMIJANYCH ekranow — zrodlo
 // dla paska postepu rysowanego w drawV3() (WeatherUiV3.cpp). Definicja tutaj, bo kV3Loop

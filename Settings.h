@@ -77,7 +77,8 @@ struct Settings {
   // Domyslnie WYLACZONA: brief V3 (spec 7a) mowi, ze ekrany NIE przelaczaja sie same
   // — przelacza je dotyk (touchTapV3). Gdy WLACZONA z panelu: widoki petli V3 zmieniaja
   // sie same co dwellS sekund (ten sam interwal "czas jednego ekranu"), a dotyk pauzuje
-  // rotacje (po 60 s bez dotyku wraca GLOWNY i cykl rusza dalej). V1/V2 tego pola NIE
+  // rotacje (po cfg::TOUCH_IDLE_HOME_MS = 30 s bez dotyku wraca GLOWNY i cykl rusza
+  // dalej; do v184 bylo 60 s wpisane liczba w WeatherUi.cpp). V1/V2 tego pola NIE
   // czytaja — ich rotacja leci zawsze (holdFor). Zapis: saveTuning(), klucz NVS "arot",
   // natychmiast (jak reszta tuningu). Bez clampu — bool.
   bool autoRotate = false;

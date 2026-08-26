@@ -3655,8 +3655,41 @@ void WeatherUi::drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const Weath
     // ani 0, ani 2 nigdy nie bylo. Dla przypietego wycofanego numeru licznika po
     // prostu nie ma, wiec nie ma tez czego kolorowac.
     const bool darkTop = (view == cfg::VIEW_RADAR) || (view == cfg::VIEW_NOW);
-    plex::str(spr, plex::f10(), pos, tv3::grid::MARGIN, 11,
-              darkTop ? tv3::col::ONDARK_DIM : tv3::col::MUTE);
+    const int posW = plex::str(spr, plex::f10(), pos, tv3::grid::MARGIN, 11,
+                               darkTop ? tv3::col::ONDARK_DIM : tv3::col::MUTE);
+
+    // (v185) TOPNIEJACA KRESKA ODLICZANIA — 1 px tuz pod licznikiem, szerokosc rowna
+    // szerokosci napisu "x z y" (posW z plex::str, NIE zgadnieta: przy f10 to 23 px dla
+    // kazdej kombinacji cyfr, ale liczymy ja, zeby kreska trzymala sie napisu takze po
+    // zmianie fontu). Pelna zaraz po stuknieciu, zerowa tuz przed powrotem na GLOWNY.
+    // Mowi to, czego licznik sam nie mowi: ZA CHWILE TO ZNIKNIE — wlasciciel widzi z 2 m,
+    // ile zostalo, bez patrzenia na zegarek.
+    //
+    // KIEDY JEJ NIE MA (te same trzy warunki, co przy powrocie w WeatherUi::render()):
+    //   lastTouchMs_ == 0  — nikt nie stukal albo wlasnie wrocilismy na GLOWNY; przy
+    //                        WLACZONEJ auto-rotacji to jest wlasnie stan "rotacja biegnie",
+    //                        a ona ma swoj wlasny wskaznik (wypelnienie segmentu paska),
+    //                        wiec druga kreska mowilaby o cudzym odliczaniu;
+    //   pinned_ >= 0       — ekran przypiety z panelu NIE wraca sam, wiec nie ma czego odliczac;
+    //   view == VIEW_NOW   — jestesmy u celu.
+    //
+    // GEOMETRIA: y = 11 to JEDYNY wolny wiersz miedzy licznikiem (glify f10, wiersze 4..10)
+    // a najwyzsza trescia ekranow petli (RADAR: f11, baseline 20 => wiersze 12..19). Stad
+    // 1 px, a nie 2 — patrz akapit o geometrii licznika wyzej. x = MARGIN, czyli kreska
+    // zaczyna sie dokladnie pod pierwsza cyfra i topnieje w prawo, tak jak czyta sie napis.
+    //
+    // KOLOR: tv3::col::LINE dla OBU rodzajow tla. MUTE (#5A5D54) bylby niewidoczny na ciemnej gorze
+    // GLOWNEGO i RADARU, a LINE (#BCBFB6) jest czytelny i na ciemnym, i na jasnym — przy
+    // czym na jasnym to dokladnie ten sam szary, co linie rozdzielajace naglowkow, wiec
+    // kreska czyta sie jak element ukladu, a nie jak alarm. Zadnego nowego koloru.
+    if (lastTouchMs_ != 0 && pinned_ < 0 && view != cfg::VIEW_NOW) {
+      const uint32_t el = nowMs - lastTouchMs_;
+      if (el < cfg::TOUCH_IDLE_HOME_MS) {
+        const int barW = static_cast<int>(
+            (static_cast<uint32_t>(posW) * (cfg::TOUCH_IDLE_HOME_MS - el)) / cfg::TOUCH_IDLE_HOME_MS);
+        if (barW > 0) spr.drawFastHLine(tv3::grid::MARGIN, 11, barW, tv3::col::LINE);
+      }
+    }
   }
 
   // KROPKA FEEDBACKU DOTYKU (spec 7a). Zapala sie, gdy elektroda czuje palec —

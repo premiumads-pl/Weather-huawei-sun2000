@@ -339,10 +339,16 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
    <button class=s style=margin:0 onclick="$('shot').src='/api/screen?'+Date.now()">Odśwież</button>
   </div>
   <div class=row style=margin-top:8px>
-   <button class=s style=margin:0 onclick=tap(1)>Dotyk 1× (odśwież)</button>
-   <button class=s style=margin:0 onclick=tap(2)>Dotyk 2× (poprzedni)</button>
+   <button class=s style=margin:0 onclick=tap(1)>Dotyk — następny ekran</button>
   </div>
-  <div class=hint>Działa jak dotknięcie płytki (pin GPIO7): 1× resetuje odliczanie, 2× cofa ekran.</div>
+  <!-- (v185) BYŁ TU DRUGI PRZYCISK "Dotyk 2× (poprzedni)". Zniknął razem z gestem
+       podwójnym w firmwarze: dwa stuknięcia w odstępie 120–600 ms wchodziły w
+       diagnostykę i przez to COFAŁY skutek stuknięcia poprzedniego. Endpoint
+       /api/tap nadal przyjmuje parametr n (żeby stara zakładka nie dostała błędu),
+       ale każda wartość znaczy teraz to samo: jedno zwykłe stuknięcie. -->
+  <div class=hint>Działa jak dotknięcie płytki (pin GPIO7): przechodzi na następny ekran
+   w pętli i zaczyna 30-sekundowe odliczanie powrotu na ekran główny. Ekrany diagnostyczne
+   są niżej, w „Przypnij widok”.</div>
  </div>
 
  <div class=blk>
@@ -392,7 +398,7 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
   <label>Czas jednego ekranu w rotacji [s] (3–60)</label>
   <input id=dwell type=number min=3 max=60 step=1>
   <label><input type=checkbox id=arot style="width:auto;margin-right:8px"> Automatyczna rotacja ekranów (motyw „Pasmowy")</label>
-  <div class=hint>Domyślnie wyłączona — ekrany przełącza dotyk. Po włączeniu widoki zmieniają się same co „czas jednego ekranu” (pole powyżej); dotyk pauzuje rotację, a po 60 s wraca ekran główny i cykl rusza dalej.</div>
+  <div class=hint>Domyślnie wyłączona — ekrany przełącza dotyk. Po włączeniu widoki zmieniają się same co „czas jednego ekranu” (pole powyżej); dotyk pauzuje rotację, a po 30 s bez stukania wraca ekran główny i cykl rusza dalej. Kreska pod licznikiem „x z y” w lewym górnym rogu pokazuje, ile z tych 30 s zostało.</div>
   <label>Jasność automatu LDR (0–255)</label>
   <div class=row>
    <div><label>Dzień</label><input id=blday type=number min=60 max=255 step=1></div>
@@ -3506,18 +3512,21 @@ void apiDiag() {
   // (v158) Do v157 nie bylo TU NICZEGO, a w logu widac bylo wylacznie stukniecia
   // UDANE ("Dotyk V3: nastepny ekran"). Zgloszenie "pojedyncze stukniecia nie zawsze
   // przelaczaja ekran" bylo wiec nieweryfikowalne: nie istnial ani jeden licznik,
-  // ktory rosl by przy stuknieciu zignorowanym. Teraz sa trzy:
-  //   taps    — zbocza przyjete jako gest (kazde daje SINGLE),
-  //   doubles — z tego zamkniete jako gest podwojny (w oknie kDoubleMs),
+  // ktory rosl by przy stuknieciu zignorowanym. Teraz sa dwa:
+  //   taps    — zbocza przyjete jako stukniecie (kazde daje SINGLE, czyli jeden ekran),
   //   bounced — zbocza ODRZUCONE przez debounce kHoldOffMs (120 ms).
-  // Rosnace `bounced` przy niezmiennym `taps` = elektroda drga albo palec odbija;
-  // rosnace `doubles` przy skargach na nawigacje = wlasciciel stuka szybciej, niz
-  // chcialby, zeby urzadzenie liczylo. Do wglad w /api/diag, nic nie zajmuje na ekranie.
+  // Rosnace `bounced` przy niezmiennym `taps` = elektroda drga albo palec odbija.
+  // Do wgladu w /api/diag, nic nie zajmuje na ekranie.
+  //
+  // (v185) ZNIKLY STAD `doubles` I `double_ms` — RAZEM z gestem podwojnym (Touch.cpp).
+  // Zostawienie ich jako zer byloby gorsze niz usuniecie: pole, ktore ZAWSZE zwraca 0,
+  // czyta sie jak "gest istnieje, tylko nigdy nie pada", czyli klamie o samym urzadzeniu.
+  // Odbiorca zmiany: panel WWW nie czytal tych dwoch pol w JS ani przed zmiana (sekcja
+  // "Zdrowie urzadzenia" bierze z /api/diag tylko reset/heap/radar/wifi), wiec po stronie
+  // przegladarki nie bylo czego kasowac — zmienil sie za to opis przyciskow dotyku wyzej.
   JsonObject tch = j["touch"].to<JsonObject>();
   tch["taps"] = touch::taps();
-  tch["doubles"] = touch::doubles();
   tch["bounced"] = touch::bounced();
-  tch["double_ms"] = touch::doubleWindowMs();   // okno na drugie stukniecie
   tch["holdoff_ms"] = touch::holdOffMs();       // debounce
   tch["raw"] = touch::raw();
   tch["baseline"] = touch::baseline();
@@ -4042,10 +4051,12 @@ void apiView() {
   server.send(200, "application/json", buf);
 }
 
-// Symulacja dotkniecia pinu GPIO7 z panelu: n=1 dziala jak pojedyncze stukniecie
-// (restart odliczania ekranu), n=2 jak podwojne (poprzedni ekran) — DOKLADNIE to,
-// co robi fizyczny dotyk w petli glownej. Sluzy do sprawdzenia zachowania dotyku
-// bez podchodzenia do urzadzenia.
+// Symulacja dotkniecia pinu GPIO7 z panelu — DOKLADNIE to, co robi fizyczny dotyk
+// w petli glownej: nastepny ekran w petli i restart odliczania powrotu. Sluzy do
+// sprawdzenia zachowania dotyku bez podchodzenia do urzadzenia.
+// (v185) PARAMETR `n` JEST JUZ BEZ ZNACZENIA. Do v184 n=2 wolalo gest podwojny
+// (wejscie w diagnostyke); gestu nie ma, a parametr zostaje przyjmowany tylko po to,
+// zeby stara zakladka z przyciskiem "Dotyk 2x" dostala normalne 200, a nie blad.
 void apiTap() {
   const int n = server.hasArg("n") ? server.arg("n").toInt() : 1;
   if (gTap != nullptr) gTap(n);

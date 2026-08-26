@@ -15,28 +15,26 @@ namespace touch {
 
 void begin();
 
-enum class Tap { NONE, SINGLE, DOUBLE };
+// (v185) DWA STANY, NIE TRZY. Gest podwojny zniknal w calosci — patrz uzasadnienie
+// w Touch.cpp. Kazde przyjete zbocze jest zwyklym stuknieciem, niezaleznie od tego,
+// jak szybko po poprzednim padlo.
+enum class Tap { NONE, SINGLE };
 
 // Wolane co klatke.
-//   SINGLE — jedno dotkniecie: V3 nastepny ekran, V1/V2 odliczanie od nowa
-//   DOUBLE — drugie dotkniecie w oknie kDoubleMs po pierwszym
-// (v158) SINGLE leci NATYCHMIAST po zboczu, bez czekania na okno podwojnego —
-// patrz dlugie uzasadnienie w Touch.cpp. DOUBLE przychodzi wiec ZAWSZE PO SINGLE
-// dla tego samego gestu; odbiorca ma to obsluzyc jako "cofnij pojedyncze i zrob
-// podwojne", a nie "wybierz jedno z dwoch".
+//   SINGLE — jedno dotkniecie: nastepny ekran w petli V3.
+// SINGLE leci NATYCHMIAST po zboczu: poll() nie trzyma zadnego stanu miedzy klatkami
+// i na nic nie czeka, wiec reakcja ekranu jest w tej samej klatce co dotkniecie.
 Tap poll();
 
-// Liczniki dla /api/diag (touch.*): ile zboczy elektrody policzylismy jako gest,
-// ile z nich zamknelo sie w gest podwojny i ile odrzucil debounce. To ostatnie
-// jest jedyna miara "stukniec, ktore nie przelaczyly ekranu" — do v157 nie bylo
-// czego zmierzyc, bo w logu widac tylko udane "Dotyk V3: nastepny ekran".
+// Liczniki dla /api/diag (touch.*): ile zboczy elektrody przyjelismy jako stukniecie
+// i ile odrzucil debounce. To drugie jest jedyna miara "stukniec, ktore nie przelaczyly
+// ekranu" — do v157 nie bylo czego zmierzyc, bo w logu widac tylko udane
+// "Dotyk V3: nastepny ekran".
 uint32_t taps();
-uint32_t doubles();
 uint32_t bounced();
-// Okno na drugie stukniecie i debounce, w ms. Wystawione, zeby /api/diag mogl podac
-// liczby, wzgledem ktorych liczniki wyzej cokolwiek znacza — i zeby nie trzeba bylo
-// ich powtarzac w Portal.cpp (jedno zrodlo: stale w Touch.cpp).
-uint32_t doubleWindowMs();
+// Debounce w ms. Wystawiony, zeby /api/diag mogl podac liczbe, wzgledem ktorej `bounced`
+// cokolwiek znaczy — i zeby nie trzeba bylo jej powtarzac w Portal.cpp (jedno zrodlo:
+// stala w Touch.cpp).
 uint32_t holdOffMs();
 
 // Surowy stan elektrody Z OSTATNIEGO poll(): true, gdy odczyt jest powyzej progu
