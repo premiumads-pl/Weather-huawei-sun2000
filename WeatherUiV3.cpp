@@ -33,6 +33,7 @@
 #include "ThemeV3.h"
 #include "Format.h"          // (v175) fmt1(), (v180) fmt2() — wspolne z panelem OLED
 #include "CostData.h"        // (v180) CostModel — koszt zakupu z sieci w module PRAD
+#include "PaybackHist.h"     // (v181) kPaybackHist — historia zwrotu z PV (ekran ZWROT)
 #include "PlexText.h"
 #include "CoastMap.h"
 #include "MapDataRadar.h"   // gmapr:: granice (pozycja Gdyni na radarze)
@@ -2019,6 +2020,300 @@ void v3AutoBottom(TFT_eSPI& tft, const AutoModel* ap) {
   }
 }
 
+// ============================================================ ZWROT Z PV =======
+// (v181) Jedyny ekran w tym projekcie, ktory patrzy WSTECZ O LATA, a nie na ostatnie
+// minuty: ile z kosztu instalacji fotowoltaicznej (cfg::PV_KOSZT_PLN) juz wrocilo
+// i kiedy wroci reszta. Zrodla sa DWA i celowo rozne co do natury:
+//   * kPaybackHist (PaybackHist.h) — 37 punktow miesiecznych we FLASHU, prawda
+//     historyczna, ktora nie zalezy od tego, czy MQTT dzis dziala,
+//   * CostModel::pvPln — biezaca skumulowana korzysc z <prefix>/dom/stan.
+// Dlatego ten ekran, w odroznieniu od AUTO, MA CO POKAZAC ZAWSZE: cisza brokera
+// zabiera mu wylacznie biezaca kwote, nie caly wykres (patrz viewSkipped).
+
+// Indeks punktu historii -> rok i miesiac (1..12). Punkt 0 to kPaybackHistMonth0
+// roku kPaybackHistYear0; indeksy WIEKSZE niz kPaybackHistN-1 sa legalne i opisuja
+// miesiace PROGNOZY — te sama arytmetyka liczy date pelnego zwrotu i podpisy osi X.
+void paybackYm(int idx, int& year, int& month) {
+  const int m0 = kPaybackHistMonth0 - 1 + idx;   // miesiace liczone od stycznia year0
+  year = kPaybackHistYear0 + m0 / 12;
+  month = m0 % 12 + 1;
+}
+
+// Tempo przyrostu korzysci [zl/mies.] z OKNA 12 OSTATNICH PUNKTOW historii.
+// Dlaczego okno, a nie srednia z calosci: pierwszy rok instalacji jest nietypowy
+// (rozruch w sierpniu, czyli pol sezonu), a ceny energii przez te trzy lata zmienily
+// sie wielokrotnie — srednia z 2023 r. prognozowalaby dzisiejszym tempem sprzed
+// dwoch taryf. Rowne 12 miesiecy to takze JEDYNE okno, ktore zawiera pelny cykl
+// roczny: krotsze braloby albo same zimy (tempo bliskie zeru), albo same lata.
+// Historia krotsza niz 13 punktow (dzis nierealna, ale straznik w PaybackHist.h
+// dopuszcza 2) siega po najstarszy punkt, jaki jest.
+int paybackRate() {
+  const int back = kPaybackHistN > 12 ? 12 : kPaybackHistN - 1;
+  const int32_t d = static_cast<int32_t>(kPaybackHist[kPaybackHistN - 1]) -
+                    static_cast<int32_t>(kPaybackHist[kPaybackHistN - 1 - back]);
+  return static_cast<int>(d / back);
+}
+
+// Sufit prognozy: 40 lat. Nie jest ozdoba — przy tempie 1 zl/mies. (mozliwym po
+// serii zimowych miesiecy w krotkiej historii) brakujace 20 tys. zl daloby 20 tysiecy
+// punktow na osi X szerokiej na 306 px, czyli wykres bez zadnej tresci i podpisy lat
+// zlepione w szara kreske. Prognoza dluzsza niz zycie paneli nie jest prognoza.
+constexpr int kPaybackMaxFcMonths = 480;
+
+// Ile miesiecy do osiagniecia cfg::PV_KOSZT_PLN przy tym tempie.
+// Zwraca 0 = juz splacone, -1 = prognozy NIE MA (tempo <= 0 albo poza sufitem).
+int paybackMonthsLeft(int32_t from, int rate) {
+  if (rate <= 0) return -1;
+  const int32_t miss = cfg::PV_KOSZT_PLN - from;
+  if (miss <= 0) return 0;
+  const int32_t n = (miss + rate - 1) / rate;   // w GORE: miesiac niepelny tez trwa
+  return n > kPaybackMaxFcMonths ? -1 : static_cast<int>(n);
+}
+
+// Polska odmiana "rok/lata/lat" wg liczby — ta sama funkcja co czujnikNoun nizej,
+// dla innego rzeczownika. Literaly z flasha, bez bufora w RAM.
+const char* rokNoun(int n) {
+  const int t = n % 100, u = n % 10;
+  if (n == 1) return "rok";
+  if (u >= 2 && u <= 4 && (t < 12 || t > 14)) return "lata";
+  return "lat";
+}
+
+void v3Payback(TFT_eSPI& s, const CostModel* cp) {
+  s.fillRect(0, 0, grid::W, 206, col::BG);
+
+  // --- SKAD BIERZE SIE GLOWNA LICZBA -------------------------------------------
+  // (b)/(c) MQTT cokolwiek przyslal -> liczy sie pvPln, bo jest nowsza niz ostatni
+  //         punkt historii (ten konczy sie na ostatnim ZAMKNIETYM miesiacu);
+  // (a)     nie przyszlo nic       -> ostatni punkt historii. Ekran zostaje pelny,
+  //         tylko przestaje twierdzic, ze pokazuje stan na TERAZ (patrz nizej).
+  const bool haveMqtt = (cp != nullptr && cp->atMs != 0);
+  const bool fresh = haveMqtt && freshMs(cp->atMs, cfg::PAYBACK_STALE_MS);
+  // STAN (c) z v158: dane sa, ale przeterminowane -> liczby zostaja, znika kolor.
+  // Brak MQTT (a) NIE jest przeterminowaniem: historia we flashu nie ma wieku, wiec
+  // wyszarzenie jej byloby klamstwem w druga strone.
+  const bool dim = haveMqtt && !fresh;
+  const int32_t histLast = static_cast<int32_t>(kPaybackHist[kPaybackHistN - 1]);
+  int32_t gain = haveMqtt ? cp->pvPln : histLast;
+  if (gain < 0) gain = 0;
+
+  if (haveMqtt) {
+    char ago[24];
+    agoWords(ago, sizeof(ago), okAgeS(cp->atMs));
+    lightHeader(s, "FOTOWOLTAIKA", ago, fresh ? Fresh::OK : Fresh::STALE);
+  } else {
+    lightHeader(s, "FOTOWOLTAIKA", "z historii", Fresh::UNKNOWN);
+  }
+
+  const uint16_t cMain = dim ? col::MUTE : col::PANEL;
+  const uint16_t cSec = dim ? col::MUTE : col::SECOND;
+
+  // --- WIELKI PROCENT ZWROTU (y=33..72) ----------------------------------------
+  // Geometria przepisana z ekranu AUTO, bo jest ta sama: "100" w f52 ma 99 px
+  // (x=7..106), znak "%" (f20, 18 px) konczy sie na x=129. Po prawej stronie
+  // najszerszy napis tego pasa to "brak danych do prognozy" (f13, 132 px,
+  // x=181..313) — 52 px luzu w wariancie skrajnym.
+  int pct = static_cast<int>((gain * 100) / cfg::PV_KOSZT_PLN);
+  if (pct < 0) pct = 0;
+  if (pct > 100) pct = 100;   // po splacie z nadwyzka pasek stoi na 100%, nie na 137%
+  char big[8];
+  snprintf(big, sizeof(big), "%d", pct);
+  const int bw = plex::str(s, plex::f52(), big, grid::MARGIN, 72, cMain);
+  plex::str(s, plex::f20(), "%", grid::MARGIN + bw + 5, 72, cSec);
+
+  // --- DATA PELNEGO ZWROTU (prawy gorny rog) -----------------------------------
+  // PROGNOZE LICZYMY OD OSTATNIEGO PUNKTU HISTORII, nie od biezacego pvPln — i to
+  // jest decyzja, nie przeoczenie. Tempo pochodzi z okna miesiecy ZAMKNIETYCH, wiec
+  // doklejenie do niego kwoty z polowy biezacego miesiaca mieszaloby dwie rozne
+  // jednostki czasu i przesuwaloby date o kilka tygodni w tam i z powrotem w ciagu
+  // kazdego miesiaca. Krzywa prognozy nizej wychodzi z TEGO SAMEGO punktu.
+  const int rate = paybackRate();
+  const int left = paybackMonthsLeft(histLast, rate);
+  plex::strRight(s, plex::f11(), "PEŁNY ZWROT", grid::DATA_R, 52, col::MUTE);
+  if (left > 0) {
+    int fy = 0, fm = 0;
+    paybackYm(kPaybackHistN - 1 + left, fy, fm);
+    char dbuf[16];
+    snprintf(dbuf, sizeof(dbuf), "%d.%d", fm, fy);
+    plex::strRight(s, plex::f20(), dbuf, grid::DATA_R, 72, cMain);
+  } else if (left == 0) {
+    plex::strRight(s, plex::f20(), "osiągnięty", grid::DATA_R, 72, cMain);
+  } else {
+    // Tempo <= 0 (historia stoi w miejscu) albo prognoza dluzsza niz sufit. Zadnej
+    // daty NIE ZMYSLAMY i zadnej linii przerywanej nizej nie rysujemy.
+    plex::strRight(s, plex::f13(), "brak danych do prognozy", grid::DATA_R, 72, col::MUTE);
+  }
+
+  // --- PASEK POSTEPU (x=7..312, y=82..90) --------------------------------------
+  // tv3::bar, czyli prostokat o OSTRYCH rogach — konwencja paskow proporcji tego
+  // motywu (bilans na PRADZIE). Zaokraglony pasek AUTO jest wyjatkiem uzasadnionym
+  // tym, ze przedstawia fizyczna bateria; tutaj nie ma zadnego przedmiotu.
+  bar(s, grid::MARGIN, 82, grid::DATA_R - grid::MARGIN, 9,
+      static_cast<float>(gain) / static_cast<float>(cfg::PV_KOSZT_PLN),
+      dim ? col::MUTE : col::OK, col::LINE);
+
+  // --- DWIE MALE LICZBY (y=104) ------------------------------------------------
+  if (haveMqtt) {
+    char gb[16], l[40];
+    groupNum(gb, sizeof(gb), static_cast<uint32_t>(gain));
+    snprintf(l, sizeof(l), "wróciło %s zł", gb);
+    plex::str(s, plex::f13(), l, grid::MARGIN, 104, cSec);
+    const int32_t rest = cfg::PV_KOSZT_PLN - gain;
+    if (rest > 0) {
+      char rb[16];
+      groupNum(rb, sizeof(rb), static_cast<uint32_t>(rest));
+      snprintf(l, sizeof(l), "zostało %s zł", rb);
+    } else {
+      snprintf(l, sizeof(l), "instalacja spłacona");
+    }
+    plex::strRight(s, plex::f13(), l, grid::DATA_R, 104, cSec);
+  } else {
+    // STAN (a): procent i wykres stoja, ale BIEZACEJ KWOTY NIE PODAJEMY. Ostatni
+    // punkt historii jest z konca poprzedniego miesiaca — napisanie go tutaj jako
+    // "wróciło X zl" twierdziloby, ze to stan na dzis, a to jest dokladnie to jedno
+    // zdanie, ktorego bez MQTT wypowiedziec nie mozemy. Zamiast liczby: skad procent.
+    int hy = 0, hm = 0;
+    paybackYm(kPaybackHistN - 1, hy, hm);
+    char l[48];
+    snprintf(l, sizeof(l), "bez danych bieżących · historia do %d.%d", hm, hy);
+    plex::str(s, plex::f13(), l, grid::MARGIN, 104, col::MUTE);
+  }
+
+  s.drawFastHLine(grid::MARGIN, 112, grid::W - 2 * grid::MARGIN, col::LINE);
+
+  // --- WYKRES (y=124..188, opisy osi X na y=199) -------------------------------
+  // OS Y JEST STALA I ZACZYNA SIE OD ZERA: 0 zl u dolu, cfg::PV_KOSZT_PLN u gory.
+  // Nie skalujemy jej do danych, jak robi to wykres pokoi — tam pytanie brzmi "jak
+  // bardzo sie roznia", tutaj "jak daleko do celu", a przy osi dopasowanej do maksimum
+  // krzywa zawsze dobijalaby do gornej krawedzi i ekran twierdzilby, ze jestesmy
+  // u konca. Gorna krawedz JEST celem — dlatego linia odniesienia lezy dokladnie na
+  // niej i jest podpisana kwota.
+  constexpr int pX0 = grid::MARGIN;    // 7
+  constexpr int pX1 = grid::DATA_R;    // 313
+  constexpr int pY0 = 124;             // poziom cfg::PV_KOSZT_PLN
+  constexpr int pY1 = 188;             // poziom 0 zl (etykiety lat na 199, wciaz < 206)
+  const int fcN = (left > 0) ? left : 0;
+  const int total = kPaybackHistN + fcN;   // punktow na osi X (>= 2, patrz PaybackHist.h)
+  auto xOf = [&](int i) {
+    return pX0 + (i * (pX1 - pX0)) / (total - 1);
+  };
+  auto yOf = [&](int32_t v) {
+    if (v <= 0) return pY1;
+    if (v >= cfg::PV_KOSZT_PLN) return pY0;
+    return pY1 - static_cast<int>((v * (pY1 - pY0)) / cfg::PV_KOSZT_PLN);
+  };
+
+  // Linia kosztu (cel) + jej kwota, oraz linia zera. Obie col::LINE — to CHROME,
+  // nie dane; kolorem mowi wylacznie krzywa.
+  s.drawFastHLine(pX0, pY0, pX1 - pX0, col::LINE);
+  s.drawFastHLine(pX0, pY1, pX1 - pX0, col::LINE);
+  {
+    char cb[16], cl[24];
+    groupNum(cb, sizeof(cb), static_cast<uint32_t>(cfg::PV_KOSZT_PLN));
+    snprintf(cl, sizeof(cl), "%s zł", cb);
+    plex::strRight(s, plex::f10(), cl, pX1, pY0 - 3, col::MUTE);
+  }
+
+  // OS X: pionowa kreska na kazdym STYCZNIU + podpis roku. Podpis wypada, gdy nie ma
+  // dla niego miejsca obok poprzedniego — przy prognozie na 8 lat wychodzi 8 stycznii
+  // na 306 px (38 px na rok, "2031" w f10 ma 22 px), czyli mieszcza sie wszystkie,
+  // ale przy dluzszej prognozie krata zostaje, a zlepiajace sie liczby znikaja.
+  {
+    int lastRight = -100;
+    for (int i = 0; i < total; ++i) {
+      int yy = 0, mm = 0;
+      paybackYm(i, yy, mm);
+      if (mm != 1) continue;
+      const int x = xOf(i);
+      s.drawFastVLine(x, pY0, pY1 - pY0, col::LINE);
+      char yb[8];
+      snprintf(yb, sizeof(yb), "%d", yy);
+      const int w = plex::width(plex::f10(), yb);
+      if (x - w / 2 >= lastRight + 6 && x + w / 2 <= pX1) {
+        plex::strCenter(s, plex::f10(), yb, x, pY1 + 11, col::MUTE);
+        lastRight = x + w / 2;
+      }
+    }
+  }
+
+  // KRZYWA HISTORII: linia ciagla, col::OK, grubosc 2 px (drugi przebieg o +1 w y) —
+  // ta sama decyzja, co przy liniach pokoi: 1 px na zaparowanym ST7789 z 2 m ginie.
+  // Zielen jest tu tym samym zielonym, co "oddane do sieci" na PRADZIE, i to jest
+  // zgodne z kontraktem kolorow z v167: te pieniadze POCHODZA z produkcji PV.
+  const uint16_t cCurve = dim ? col::MUTE : col::OK;
+  int px = -1, py = -1;
+  for (int i = 0; i < kPaybackHistN; ++i) {
+    const int x = xOf(i), y = yOf(static_cast<int32_t>(kPaybackHist[i]));
+    if (px >= 0) {
+      s.drawLine(px, py, x, y, cCurve);
+      s.drawLine(px, py + 1, x, y + 1, cCurve);
+    }
+    px = x;
+    py = y;
+  }
+
+  // PROGNOZA: linia PRZERYWANA, col::MUTE i grubosc 1 px — dwie rozne roznice wobec
+  // krzywej historii, bo jedna by nie wystarczyla. Kreskowanie mowi "to nie zdarzylo
+  // sie jeszcze", a odebranie zieleni i grubosci mowi to samo drugi raz, dla kogos,
+  // kto patrzy z drugiego konca pokoju i przerw nie rozroznia. Zielona linia na tym
+  // ekranie ma znaczyc PIENIADZE, KTORE JUZ WROCILY — ani zlotowki wiecej.
+  // Wzor kreski: 2 miesiace rysowane, 2 pominiete (~6 px / 6 px przy 100 punktach).
+  if (fcN > 0) {
+    int32_t v = histLast;
+    int qx = px, qy = py;
+    for (int k = 1; k <= fcN; ++k) {
+      v += rate;
+      if (v > cfg::PV_KOSZT_PLN) v = cfg::PV_KOSZT_PLN;
+      const int x = xOf(kPaybackHistN - 1 + k), y = yOf(v);
+      if (((k - 1) / 2) % 2 == 0) s.drawLine(qx, qy, x, y, col::MUTE);
+      qx = x;
+      qy = y;
+    }
+  }
+}
+
+// Dolny pas ZWROT: tempo po lewej + dwie linijki kontekstu po prawej. Konwencja jak
+// w v3AutoBottom/v3HomeBottom — wlasne tlo, cienka linia u gory pasa, rysowane WPROST
+// na TFT (pas 206..239 lezy poza sprite'em).
+// ZADNA z tych linii NIE POWTARZA liczby z gory ekranu: tempo jest jedyna wielkoscia,
+// z ktorej cala prognoza sie bierze, a ktorej nigdzie wyzej nie widac, a czas "jeszcze
+// 5 lat 3 mies." to ta sama informacja co data, ale wyrazona jako DLUGOSC — z dwoch
+// metrow "11.2031" nie mowi nic o tym, czy to blisko.
+void v3PaybackBottom(TFT_eSPI& tft, const CostModel* cp) {
+  (void)cp;   // pas dolny zyje wylacznie z historii — patrz komentarz nizej
+  tft.fillRect(0, 206, grid::W, 34, col::BG);
+  tft.drawFastHLine(grid::MARGIN, 210, grid::W - 2 * grid::MARGIN, col::LINE);
+
+  // CELOWO BEZ cp: tempo i czas do zwrotu licza sie WYLACZNIE z kPaybackHist, wiec ten
+  // pas wyglada tak samo przy zywym MQTT i przy jego ciszy. Gdyby czytal pvPln,
+  // musialby tez umiec stan (a) i (c) — a nie mialby czym: historia nie ma wieku.
+  const int rate = paybackRate();
+  const int32_t histLast = static_cast<int32_t>(kPaybackHist[kPaybackHistN - 1]);
+  const int left = paybackMonthsLeft(histLast, rate);
+
+  plex::str(tft, plex::f11(), "TEMPO", grid::MARGIN, 222, col::MUTE);
+  char t[24];
+  if (rate > 0) snprintf(t, sizeof(t), "+%d zł/mies.", rate);
+  else snprintf(t, sizeof(t), "bez przyrostu");
+  plex::str(tft, plex::f13(), t, grid::MARGIN, 236, rate > 0 ? col::OK : col::MUTE);
+
+  // Szerokosci: "ze średniej 12 miesięcy" 137 px (x=176..313), "jeszcze 5 lat 3 mies."
+  // 129 px (x=184..313). Kolumna tempa konczy sie na ~x=95, wiec ponad 80 px luzu.
+  plex::strRight(tft, plex::f13(), "ze średniej 12 miesięcy", grid::DATA_R, 222, col::MUTE);
+  char l2[40];
+  if (left < 0) {
+    snprintf(l2, sizeof(l2), "prognoza niedostępna");
+  } else if (left == 0) {
+    snprintf(l2, sizeof(l2), "instalacja spłacona");
+  } else {
+    const int ly = left / 12, lm = left % 12;
+    if (ly > 0 && lm > 0) snprintf(l2, sizeof(l2), "jeszcze %d %s %d mies.", ly, rokNoun(ly), lm);
+    else if (ly > 0) snprintf(l2, sizeof(l2), "jeszcze %d %s", ly, rokNoun(ly));
+    else snprintf(l2, sizeof(l2), "jeszcze %d mies.", lm);
+  }
+  plex::strRight(tft, plex::f13(), l2, grid::DATA_R, 236, col::MUTE);
+}
+
 // ============================================================ POKOJE ===========
 // Wykres temperatur wielu pokoi na WSPOLNEJ, OPISANEJ osi Y (°C) i osi X (ruchome
 // okno 24 h). Zastapil dawna liste wierszy ze sparkline w tle: wlasciciel odrzucil
@@ -3043,6 +3338,9 @@ void WeatherUi::drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const Weath
     case cfg::VIEW_AIR:
       v3Air(spr, air_);
       break;
+    case cfg::VIEW_PAYBACK:
+      v3Payback(spr, cost_);   // (v181) zwrot z instalacji PV: historia + prognoza
+      break;
     case cfg::VIEW_AUTO:
       v3Auto(spr, auto_);
       break;
@@ -3191,6 +3489,9 @@ void WeatherUi::drawV3Bottom(TFT_eSPI& tft, uint8_t view, const WeatherModel& w,
       break;
     case cfg::VIEW_AIR:
       v3AirBottom(tft, air_);
+      break;
+    case cfg::VIEW_PAYBACK:
+      v3PaybackBottom(tft, cost_);   // (v181) tempo zl/mies. + czas do pelnego zwrotu
       break;
     case cfg::VIEW_AUTO:
       v3AutoBottom(tft, auto_);   // kafelek trybu + stan kabla + udzial slonca

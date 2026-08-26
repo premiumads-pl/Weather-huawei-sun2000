@@ -61,7 +61,7 @@ endpoints stand in for a serial console (all also reachable from the
 | `GET /api/log` | in-RAM ring buffer of the last ~120 log lines |
 | `GET /api/diag` | JSON snapshot: heap (current/min-ever/largest free block), Wi-Fi RSSI, per-subsystem last-success age and last error, OTA status |
 | `GET /api/view` | reads current view: `{"cur":X,"pin":Y}` (read-only) |
-| `POST /api/view?i=N` | pins screen `N` (`0`–`13`, see `cfg::VIEW_*` in `Config.h` — that header is the only source of truth for these numbers); `i=-1` returns to auto-rotation (mutating — POST since v154, so a foreign `<img>` tag can't switch the screen). **v174: `i=12` is now the CAR screen and stats moved to `i=13`** — a new screen must go in before `VIEW_STATS`, which a `static_assert` keeps last. |
+| `POST /api/view?i=N` | pins screen `N` (`0`–`14`, see `cfg::VIEW_*` in `Config.h` — that header is the only source of truth for these numbers); `i=-1` returns to auto-rotation (mutating — POST since v154, so a foreign `<img>` tag can't switch the screen). **v181: `i=12` is now the PAYBACK screen (solar return on investment), the car moved to `i=13` and stats to `i=14`** — a new screen must go in before `VIEW_STATS`, which a `static_assert` keeps last. |
 | `GET /api/screen` | current screen as a 320×240 24-bit BMP (~1 s to fetch) |
 | `POST /api/reboot` | restarts without touching saved configuration |
 

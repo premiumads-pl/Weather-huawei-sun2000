@@ -824,16 +824,19 @@ const $=i=>document.getElementById(i);
 // bo te numery wychodza na zewnatrz przez /api/view.
 // Ekrany diagnostyczne to osobna, mniejsza grupa pigulek.
 // (v174) UWAGA NA PIERWSZA POZYCJE: 'Auto' z indeksem -1 to NIE jest ekran AUTO
-// (dane Tesli, cfg::VIEW_AUTO = 12), tylko przycisk "rotacja AUTOmatyczna" —
+// (dane Tesli, cfg::VIEW_AUTO = 13 od v181), tylko przycisk "rotacja AUTOmatyczna" —
 // -1 zdejmuje przypiecie. Ekran samochodu nazywa sie nizej 'Samochód', zeby te dwie
 // rzeczy nie mialy na jednym pasku tej samej etykiety.
-const VIEWS=[['Auto',-1],['Główny',1],['Radar',3],['5 dni',4],['Prąd',7],['Samochód',12],['Pokoje',5],['Ogrzewanie',6],['Powietrze',9],['Samoloty',8]];
+// (v181) ZWROT wszedl na 12, wiec SAMOCHOD przesunal sie na 13 (Config.h). Kolejnosc
+// pigulek idzie za petla rotacji: Prad -> Zwrot -> Samochod.
+const VIEWS=[['Auto',-1],['Główny',1],['Radar',3],['5 dni',4],['Prąd',7],['Zwrot',12],['Samochód',13],['Pokoje',5],['Ogrzewanie',6],['Powietrze',9],['Samoloty',8]];
 // Kolejnosc jak numeracja na wyswietlaczu: para dotykowa Statystyki(1/2, VIEW_STATS=13)
 // -> Pamiec(2/2, VIEW_MEM=10), a potem osobny Ruch(VIEW_MOTION=11).
 // (v174) STATYSTYKI PRZESUNIETE Z 12 NA 13, bo AUTO weszlo przed nimi (cfg::VIEW_AUTO,
 // patrz Config.h — static_assert wymaga, zeby STATS byl ostatni). Numer 12 od tego
 // wydania znaczy SAMOCHOD.
-const VDIAG=[['Statystyki',13],['Pamięć',10],['Ruch',11]];
+// (v181) STATYSTYKI PRZESUNIETE Z 13 NA 14 — patrz wyzej, ZWROT wszedl przed AUTO.
+const VDIAG=[['Statystyki',14],['Pamięć',10],['Ruch',11]];
 let live=true,pin=-1;
 
 function bset(cls,txt){document.querySelectorAll('.'+cls).forEach(e=>e.textContent=txt);}

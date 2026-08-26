@@ -50,7 +50,7 @@ GIF_FRAME_MS = 2500
 # Ekrany RETRO (0) i GODZINY (2) zostaly skasowane, ale pozostalych widokow CELOWO
 # nie przenumerowano — sloty 0 i 2 sa w Config.h zarezerwowane, bo numer widoku
 # wychodzi na zewnatrz przez /api/view. Dziury w numeracji ponizej sa wiec POPRAWNE
-# i maja takie zostac; lista ma 12 pozycji (v174: doszlo AUTO), a VIEW_COUNT wynosi 14.
+# i maja takie zostac; lista ma 13 pozycji (v181: doszedl ZWROT), a VIEW_COUNT wynosi 15.
 # Gdyby ktos mimo to przypial i=0 albo i=2, urzadzenie narysuje ekran GLOWNY
 # (galaz `default:` w drawV3) — czyli zrzut byby duplikatem "now", nie czernia.
 #
@@ -73,8 +73,11 @@ VIEWS = [
     # (v174) AUTO weszlo PRZED STATYSTYKAMI (Config.h: static_assert wymaga, zeby
     # VIEW_STATS byl ostatni), wiec STATYSTYKI przesunely sie z 12 na 13. Kto ma
     # zapisane "i=12" poza tym repozytorium, dostanie teraz ekran samochodu.
-    (12, "auto", "Samochod", "Car"),
-    (13, "stats", "Statystyki", "Stats"),
+    # (v181) TO SAMO RAZ JESZCZE: ZWROT (fotowoltaika, ile kosztu instalacji juz
+    # wrocilo) wszedl na 12, wiec AUTO jest dzis 13, a STATYSTYKI 14.
+    (12, "payback", "Zwrot", "Payback"),
+    (13, "auto", "Samochod", "Car"),
+    (14, "stats", "Statystyki", "Stats"),
 ]
 
 # Slug z VIEWS -> nazwa stalej cfg::VIEW_* w Config.h. Sluzy WYLACZNIE weryfikacji
@@ -90,6 +93,7 @@ SLUG_TO_CONST = {
     "air": "AIR",
     "mem": "MEM",
     "motion": "MOTION",
+    "payback": "PAYBACK",
     "auto": "AUTO",
     "stats": "STATS",
 }

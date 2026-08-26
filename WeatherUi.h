@@ -131,11 +131,16 @@ class WeatherUi {
 
   // Czy ekran `i` jest pomijany w rotacji (radar bez opadu, "w domu" bez czujnikow,
   // piec bez autoryzacji, powietrze bez danych z obu stacji, AUTO bez swiezej
-  // wiadomosci MQTT) — JEDYNE miejsce z tymi pieciu warunkami, zeby definicja
-  // "pomijany" nie rozjechala sie miedzy rotacja, nawigacja dotykiem i paskiem
-  // postepu V3. Statyczna celowo — v3ProgressPos() liczy z niej pozycje "x z y"
-  // bez potrzeby stanu instancji, dlatego oba modele wchodza argumentem.
-  static bool viewSkipped(int i, const struct AirModel* air, const struct AutoModel* au);
+  // wiadomosci MQTT, ZWROT bez danych I bez historii) — JEDYNE miejsce z tymi szescioma
+  // warunkami, zeby definicja "pomijany" nie rozjechala sie miedzy rotacja, nawigacja
+  // dotykiem i paskiem postepu V3. Statyczna celowo — v3ProgressPos() liczy z niej
+  // pozycje "x z y" bez potrzeby stanu instancji, dlatego modele wchodza argumentem.
+  // (v181) `cost` doszedl razem z ekranem ZWROT. Domyslnego nullptr NIE MA i nie bedzie:
+  // wolajacy ma podac model swiadomie — pominiety argument znaczylby po cichu "ten ekran
+  // nie ma danych", czyli dokladnie ten rodzaj bledu, ktory static_assert w Config.h
+  // i straznik w capture_screens.py maja w tym projekcie wylapywac.
+  static bool viewSkipped(int i, const struct AirModel* air, const struct AutoModel* au,
+                          const struct CostModel* cost);
 
   void raiseAlert(const Alert& a, uint32_t nowMs);
   void setBacklightTarget(uint8_t v) {

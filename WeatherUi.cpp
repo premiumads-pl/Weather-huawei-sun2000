@@ -10,6 +10,8 @@
 #include "BleGateway.h"
 #include "Colors.h"
 #include "Config.h"
+#include "CostData.h"        // (v181) CostModel — viewSkipped() dla ekranu ZWROT
+#include "PaybackHist.h"     // (v181) kPaybackHistN — j.w. (historia we flashu)
 #include "Moon.h"
 #include "GasMeter.h"
 #include "Viessmann.h"
@@ -84,9 +86,18 @@ constexpr int CH = cfg::CONTENT_H;                  // 172
 // ("SKĄD PRĄD DZISIAJ", te same dwa kolory). Postawienie ich obok siebie pozwala
 // przeczytac jedno przez drugie; miedzy POWIETRZEM a SAMOLOTAMI byloby to samo
 // pasmo bez zadnego kontekstu.
+//
+// (v181) ZWROT wchodzi MIEDZY PRAD a AUTO — a nie na koniec petli, mimo ze jest
+// najnowszy. Ten sam typ uzasadnienia, co przy AUTO wyzej: PRAD mowi, ile instalacja
+// zrobila DZISIAJ, ZWROT — ile zrobila OD POCZATKU i ile jeszcze zostalo. To jest ta
+// sama instalacja w dwoch skalach czasu i postawione obok siebie czytaja sie jako
+// jedno zdanie ("dzis 12 kWh; lacznie 39% kosztu"). Para PRAD->AUTO, ktora v174
+// ustawilo dla wspolnego podzialu "z PV / z sieci", zostaje nietknieta w tym sensie,
+// ze AUTO nadal stoi zaraz za blokiem energetycznym — tyle ze blok ma teraz dwa
+// ekrany zamiast jednego.
 constexpr uint8_t kV3Loop[] = {
-    cfg::VIEW_NOW, cfg::VIEW_RADAR, cfg::VIEW_DAYS, cfg::VIEW_PV, cfg::VIEW_AUTO,
-    cfg::VIEW_HOME, cfg::VIEW_BOILER, cfg::VIEW_AIR, cfg::VIEW_FLIGHTS};
+    cfg::VIEW_NOW, cfg::VIEW_RADAR, cfg::VIEW_DAYS, cfg::VIEW_PV, cfg::VIEW_PAYBACK,
+    cfg::VIEW_AUTO, cfg::VIEW_HOME, cfg::VIEW_BOILER, cfg::VIEW_AIR, cfg::VIEW_FLIGHTS};
 constexpr int kV3LoopN = sizeof(kV3Loop) / sizeof(kV3Loop[0]);
 
 // TRYB NOCNY "dotyk budzi ekran" (ustalenia wlasciciela). W oknie nocnym (isNightNow: ciemno
@@ -425,7 +436,7 @@ void WeatherUi::drawColorTest() {
 // cfg::VIEW_COUNT, zeby indeksowanie dowolnym cfg::VIEW_* dalej bylo w zakresie.
 const char* const kViewNames[cfg::VIEW_COUNT] = {
     "—", "TERAZ", "—", "RADAR", "5 DNI", "W DOMU", "PIEC", "FOTOWOLTAIKA",
-    "SAMOLOTY", "POWIETRZE", "PAMIĘĆ", "RUCH", "AUTO", "STATYSTYKI"};
+    "SAMOLOTY", "POWIETRZE", "PAMIĘĆ", "RUCH", "ZWROT", "AUTO", "STATYSTYKI"};
 
 // Zdrowie calego systemu w jednej liczbie: 0 = OK, 1 = uwaga, 2 = awaria.
 //
@@ -499,7 +510,8 @@ int systemHealth(bool wifiOk) {
 // co do v118 stalo wprost w pasku postepu; wydzielenie nie zmienia zadnego z nich,
 // tylko daje im jedno miejsce zamiast dwoch.
 
-bool WeatherUi::viewSkipped(int i, const AirModel* air, const AutoModel* au) {
+bool WeatherUi::viewSkipped(int i, const AirModel* air, const AutoModel* au,
+                            const CostModel* cost) {
   // (v162) ZNIKLO STAD jawne pomijanie slotow 0 (RETRO) i 2 (GODZINY). Nie dlatego,
   // ze przestalo byc potrzebne — dlatego, ze BYLO NIEOSIAGALNE. Wszystkie cztery
   // wywolania viewSkipped() (prevViewV3, render, nextViewV3, v3ProgressPos) podaja
@@ -521,7 +533,25 @@ bool WeatherUi::viewSkipped(int i, const AirModel* air, const AutoModel* au) {
          (i == cfg::VIEW_AUTO &&
           (!au || au->atMs == 0 ||
            static_cast<int32_t>(millis() - au->atMs) >=
-               static_cast<int32_t>(cfg::AUTO_STALE_MS)));
+               static_cast<int32_t>(cfg::AUTO_STALE_MS))) ||
+         // (v181) ZWROT wypada z rotacji dopiero, gdy nie ma ANI danych z MQTT, ANI
+         // historii — czyli, przy dzisiejszym PaybackHist.h, NIGDY. I tak ma byc:
+         // ten ekran rozni sie od AUTO tym, ze jego glowna tresc (krzywa dojscia do
+         // kosztu instalacji) siedzi we FLASHU i nie zalezy od brokera. Cisza MQTT
+         // zabiera mu wylacznie biezaca kwote, a nie powod istnienia — wyrzucanie go
+         // za to z petli ukrywaloby wykres, ktory jest kompletny.
+         //
+         // WARUNEK ZOSTAJE MIMO TO NAPISANY W CALOSCI, zamiast `false` z komentarzem:
+         // jest JEDYNYM miejscem, w ktorym stoi regula "kiedy ten ekran nie ma nic do
+         // powiedzenia", a kPaybackHistN jest stala, ktora ktos moze kiedys wyzerowac
+         // (pusta tablica po przeniesieniu historii do NVS). Kompilator zwinie to do
+         // niczego, dopoki historia jest niepusta, wiec nie kosztuje ani cyklu.
+         // NIE MA TU PROGU WIEKU (cfg::PAYBACK_STALE_MS), w odroznieniu od AUTO:
+         // stara kwota na tym ekranie nadal jest prawdziwa — "39% po trzech latach"
+         // nie przestaje byc prawda przez to, ze wiadomosc ma cztery minuty. Prog
+         // sluzy tu wylacznie wyszarzeniu liczb (stan (c) z v158), a nie ukrywaniu.
+         (i == cfg::VIEW_PAYBACK && kPaybackHistN == 0 &&
+          (!cost || cost->atMs == 0));
 }
 
 // Czyścimy CAŁY obszar rysowania (0..205), a nie tylko treść (34..205).
@@ -617,7 +647,7 @@ bool WeatherUi::needsFlights(uint32_t nowMs) const {
   uint8_t prev = cfg::VIEW_FLIGHTS;
   for (int step = 0; step < kV3LoopN; ++step) {
     idx = (idx + kV3LoopN - 1) % kV3LoopN;   // krok WSTECZ po petli
-    if (!viewSkipped(kV3Loop[idx], air_, auto_)) { prev = kV3Loop[idx]; break; }
+    if (!viewSkipped(kV3Loop[idx], air_, auto_, cost_)) { prev = kV3Loop[idx]; break; }
   }
   if (view_ == prev && !transitioning_ && !alertActive_) {
     const uint32_t hold = holdFor(view_);
@@ -719,7 +749,7 @@ bool WeatherUi::render(const WeatherModel& w, const PvModel& pv, const PvHistory
             if (kV3Loop[i] == view_) { idx = i; break; }
           for (int step = 0; step < kV3LoopN; ++step) {
             idx = (idx + 1) % kV3LoopN;
-            if (!viewSkipped(kV3Loop[idx], air_, auto_)) break;
+            if (!viewSkipped(kV3Loop[idx], air_, auto_, cost_)) break;
           }
           prevView_ = view_;
           view_ = kV3Loop[idx];
@@ -1333,7 +1363,7 @@ void WeatherUi::touchTapV3() {
   // pomijany).
   for (int step = 0; step < kV3LoopN; ++step) {
     idx = (idx + 1) % kV3LoopN;
-    if (!viewSkipped(kV3Loop[idx], air_, auto_)) break;
+    if (!viewSkipped(kV3Loop[idx], air_, auto_, cost_)) break;
   }
   setViewV3(kV3Loop[idx]);
 }
@@ -1374,7 +1404,7 @@ bool WeatherUi::v3ProgressPos(int& cur, int& total) const {
   cur = -1;
   total = 0;
   for (int i = 0; i < kV3LoopN; ++i) {
-    if (viewSkipped(kV3Loop[i], air_, auto_)) continue;
+    if (viewSkipped(kV3Loop[i], air_, auto_, cost_)) continue;
     if (kV3Loop[i] == view_) cur = total;
     ++total;
   }

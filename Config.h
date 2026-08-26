@@ -402,8 +402,28 @@ constexpr uint32_t COST_STALE_MS = 3UL * 60UL * 1000UL;
 //   zadaniem jest rozdzielenie stanu (b) od (c): swieza kwota vs ostatnia znana
 //   kwota podpisana wiekiem. Stan (a) — "nigdy nic nie przyszlo" — rozstrzyga samo
 //   CostModel::atMs == 0 i wtedy linii NIE MA W OGOLE.
+constexpr uint32_t PAYBACK_STALE_MS = COST_STALE_MS;
+// ^ (v181) SWIEZOSC EKRANU ZWROT. To NIE jest nowy prog, tylko NAZWA na ten sam:
+//   skumulowana korzysc z PV (CostModel::pvPln) przychodzi TYM SAMYM tematem
+//   <prefix>/dom/stan, w TEJ SAMEJ wiadomosci i z ta sama kadencja 60 s, co koszt
+//   zakupu. Dwie liczby z jednego ladunku nie moga miec dwoch roznych wiekow, wiec
+//   wpisanie tu wlasnej liczby byloby bledem, ktory ujawnilby sie dopiero przy
+//   zmianie kadencji w Home Assistancie (jeden ekran zszarzalby, drugi nie).
+//   Alias, a nie kopia wartosci: zmiana COST_STALE_MS ma z definicji przeniesc sie
+//   tutaj. Istnieje po to, zeby ekran ZWROT nie powolywal sie na stala o nazwie
+//   "koszt", gdy pokazuje ZYSK — nazwa ma mowic, o czym jest ekran.
 
-constexpr int VIEW_COUNT = 14;  // [0 wycofany] / TERAZ / [2 wycofany] / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / POWIETRZE / PAMIEC / RUCH / AUTO / STATYSTYKI
+// (v181) KOSZT INSTALACJI FOTOWOLTAICZNEJ [PLN] — mianownik procentu zwrotu i gorna
+// granica osi Y na ekranie ZWROT. To kwota PO DOFINANSOWANIACH (Moj Prad + odliczenie
+// od podatku); faktura opiewala realnie na ~40 000 zl. Liczba USTALONA Z WLASCICIELEM
+// 26.08.2026 i to ona jest tu zrodlem prawdy — nie faktura, bo ekran ma odpowiadac na
+// pytanie "kiedy wroci to, co REALNIE wyszlo z domu", a nie "co bylo na papierze".
+// int32_t, nie uint: rownania zwrotu odejmuja (koszt - korzysc) i wynik ma prawo byc
+// UJEMNY (instalacja splacona z nadwyzka) — na typie bez znaku przekrecilby sie w
+// gigantyczna liczbe dodatnia i pasek postepu pokazalby 0% w dniu splaty.
+constexpr int32_t PV_KOSZT_PLN = 34000;
+
+constexpr int VIEW_COUNT = 15;  // [0 wycofany] / TERAZ / [2 wycofany] / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / POWIETRZE / PAMIEC / RUCH / ZWROT / AUTO / STATYSTYKI
 // Zrodlem prawdy dla numeru widoku jest WYLACZNIE ta stala (cfg::VIEW_*) — dawniej
 // switch w drawView() mial gole "case 0:" / "case 1:" i przezyl niezauwazony przez
 // kilka wersji. Kazde nowe uzycie numeru widoku ma isc przez cfg::VIEW_*, nigdy
@@ -467,8 +487,22 @@ constexpr int VIEW_MOTION = 11; // RUCH: PIR (rytm doby) + LDR (jasnosc) + wydaj
 // zaktualizowano razem z ta zmiana: panel WWW (VDIAG w Portal.cpp), tools/
 // capture_screens.py (VIEWS + SLUG_TO_CONST, ma wlasny straznik zgodnosci z tym
 // plikiem) i kViewNames w WeatherUi.cpp.
-constexpr int VIEW_AUTO = 12;   // AUTO: stan Tesli z MQTT — pomijany, gdy brak swiezej wiadomosci
-constexpr int VIEW_STATS = 13;  // ekran serwisowy — MUSI zostac VIEW_COUNT-1 (patrz wyzej)
+// (v181) ZWROT (fotowoltaika: ile z instalacji juz wrocilo) wchodzi na 12, a AUTO
+// i STATYSTYKI przesuwaja sie o +1 (13 i 14). To CZWARTA taka operacja w tym
+// projekcie (v111 MEM/RUCH, v117 AIR, v174 AUTO) i idzie dokladnie tym samym torem
+// z tego samego powodu: static_assert nizej wymaga VIEW_STATS == VIEW_COUNT - 1,
+// wiec nowy ekran NIE MOZE wejsc na koncu listy.
+// CENA JEST TA SAMA, CO ZA KAZDYM RAZEM I ZOSTALA ZAPLACONA SWIADOMIE: /api/view?i=12
+// od tego wydania pokazuje ZWROT, a nie AUTO, a i=13 — AUTO, a nie STATYSTYKI. Kto ma
+// zapisane "12" poza repozytorium (zakladka, rest_command w Home Assistancie), zobaczy
+// CUDZY ekran. Miejsca W REPOZYTORIUM, ktore znaja numery, zaktualizowano razem z ta
+// zmiana: panel WWW (VIEWS + VDIAG w Portal.cpp), tools/capture_screens.py (VIEWS +
+// SLUG_TO_CONST, ma wlasny straznik zgodnosci z tym plikiem) i kViewNames w
+// WeatherUi.cpp. Petla rotacji (kV3Loop) stawia ZWROT ZARAZ ZA PRADEM — patrz
+// uzasadnienie tresciowe przy tej tablicy w WeatherUi.cpp.
+constexpr int VIEW_PAYBACK = 12;  // ZWROT: ile z kosztu instalacji PV juz wrocilo (historia + prognoza)
+constexpr int VIEW_AUTO = 13;   // AUTO: stan Tesli z MQTT — pomijany, gdy brak swiezej wiadomosci
+constexpr int VIEW_STATS = 14;  // ekran serwisowy — MUSI zostac VIEW_COUNT-1 (patrz wyzej)
 
 // (v162) TEN WARUNEK MIESZKA TERAZ TUTAJ, NIE W FUNKCJI. Do v159 stal w
 // WeatherUi.cpp::drawView() — i zniknal razem z ta funkcja przy usuwaniu motywow

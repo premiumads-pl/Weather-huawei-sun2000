@@ -69,6 +69,8 @@ namespace {
 //   + 2 B dlugosci tematu + 32 B tematu (23 znaki prefiksu + "/dom/stan")
 //   + 10 B ladunku ({"zl":4.8}; wariant z groszami {"zl":9999.99} ma 15 B)
 //   = 46 B, czyli 9% bufora — NAJMNIEJSZY ze wszystkich pakietow tego modulu.
+// (v181) Doszlo pole "pv" ({"zl":4.8,"pv":13279} = 22 B, wariant skrajny z szescioma
+// cyframi 24 B), czyli pakiet ma dzis 58-60 B — nadal najmniejszy i nadal ~12% bufora.
 // Pelna kolejnosc po tej zmianie: retained config encji (430 B) > stan grupy pv
 // (231 B) > auto/stan (188 B) > dom/stan (46 B). Bufor wyznacza wiec dalej
 // discovery. Ladunek dom/stan ma byc ROZSZERZALNY (kolejne pola stanu domu), wiec
@@ -119,6 +121,9 @@ SemaphoreHandle_t gAutoMx = xSemaphoreCreateMutex();
 // takze gModeReq. 8 B to nie jest zapis atomowy (`atMs` i `zl` to dwa slowa), wiec
 // blokada jest tu obowiazkowa, a nie kosmetyczna: bez niej ekran umialby pokazac
 // swieza kwote z wiekiem sprzed trzech minut albo odwrotnie.
+// (v181) Struktura ma dzis 12 B (doszlo pvPln), a sekcja krytyczna zyskala ODCZYT
+// starej wartosci pvPln obok zapisu nowej (wiadomosc bez pola "pv" ma zostawic
+// poprzednia liczbe — patrz onMessage). Tym bardziej nierozdzielne.
 CostModel gCostRx{};
 
 // (v175) ZAMOWIENIE Z PANELU OLED: tryb do wyslania na <prefix>/auto/tryb/set.
@@ -454,10 +459,42 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
     if (!(zl > 0.f)) zl = 0.f;            // lapie takze NaN — porownanie z NaN jest falszywe
     else if (zl > 999.99f) zl = 999.99f;
     c.zl = zl;
+
+    // (v181) DRUGIE POLE TEGO LADUNKU: "pv" — skumulowana korzysc z fotowoltaiki
+    // w PELNYCH ZLOTYCH (ekran ZWROT). Ten sam wzorzec, co przy `zl` wyzej, z JEDNA
+    // roznica, ktora jest cala tresc komentarza przy `hasPv` nizej.
+    //
+    // is<float>(), a NIE is<int>(), mimo ze pole jest calkowite: is<int>() w
+    // ArduinoJson odpowiada na pytanie "jak to zapisano", a nie "czy to liczba" —
+    // gdyby Home Assistant kiedykolwiek wypuscil 13279.0 zamiast 13279 (a szablony
+    // HA robia to przy byle dzieleniu), warunek by odpadl i ekran ZWROT zamarlby
+    // na ostatniej znanej kwocie bez zadnego sladu w logu poza jedna linijka.
+    // is<float>() przyjmuje OBA zapisy; do int32 schodzimy sami, z zaokragleniem.
+    const bool hasPv = doc["pv"].is<float>();
+    if (hasPv) {
+      // Przyciecie do zakresu SENSOWNEGO, nie do zakresu typu — jak przy `zl`.
+      // Dol: ujemna skumulowana korzysc nie istnieje (licznik tylko rosnie).
+      // Gora: 999 999 zl to szerokosc napisu "wróciło 999 999 zł" na ekranie ZWROT;
+      // realny sufit to ~34 000 zl (pelny zwrot) i jeszcze dlugie lata po nim.
+      float pv = doc["pv"].as<float>();
+      if (!(pv > 0.f)) pv = 0.f;          // lapie takze NaN
+      else if (pv > 999999.f) pv = 999999.f;
+      c.pvPln = static_cast<int32_t>(pv + 0.5f);
+    }
+
     c.atMs = millis();
     if (c.atMs == 0) c.atMs = 1;   // 0 znaczy "nigdy" — patrz ten sam zabieg przy aucie
     if (gAutoMx != nullptr && xSemaphoreTake(gAutoMx, pdMS_TO_TICKS(20)) == pdTRUE) {
+      // BRAK POLA "pv" NIE KASUJE POPRZEDNIEJ WARTOSCI. Ladunek jest z zalozenia
+      // rozszerzalny i NIEKOMPLETNY (patrz naglowek CostData.h): wiadomosc bez "pv"
+      // jest legalna i znaczy "nie mam nowej liczby", a nie "korzysc spadla do zera".
+      // Bez tego przeniesienia jedna taka wiadomosc zbilaby ekran ZWROT do 0% i 0 zl
+      // — i to na 60 s, do nastepnej publikacji. Odczyt STAREJ wartosci siedzi POD
+      // TYM SAMYM mutexem, co zapis nowej: gCostRx pisze ten watek, a czyta go
+      // costSnapshot() z loop(), wiec para odczyt-zapis musi byc nierozdzielna.
+      const int32_t keepPv = gCostRx.pvPln;
       gCostRx = c;
+      if (!hasPv) gCostRx.pvPln = keepPv;
       xSemaphoreGive(gAutoMx);
     }
     // Nieudane wziecie mutexu gubi TE JEDNA wiadomosc; nastepna przyjdzie za 60 s,
