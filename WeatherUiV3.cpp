@@ -752,18 +752,27 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, const CostMod
     char feels[24];
     if (wxOld) {
       agoWords(feels, sizeof(feels), wxAgeS());
-      plex::str(s, plex::f13(), feels, grid::MARGIN_CTX, 178, col::WARN);
+      plex::str(s, plex::f13(), feels, grid::MARGIN_CTX, 174, col::WARN);
     } else {
       snprintf(feels, sizeof(feels), "odczuwalna %.0f°", c.feelsC);
-      plex::str(s, plex::f13(), feels, grid::MARGIN_CTX, 178, col::ONDARK_DIM);
+      plex::str(s, plex::f13(), feels, grid::MARGIN_CTX, 174, col::ONDARK_DIM);
     }
 
-    // Opis pogody - zawijany do dwoch linii, gdy nie miesci sie w kolumnie. Nawet dluzszy
-    // ("Częściowe zachmurzenie") miesci sie: druga linia na y=208 (<240).
+    // Opis pogody — zawijany do dwoch linii, gdy nie miesci sie w kolumnie.
+    //
+    // (v183) BASELINE DRUGIEJ LINII BYL POZA OBSZAREM RYSOWANIA. Stalo tu "druga linia
+    // na y=208 (<240)" i to bylo prawda, DOPOKI ekran rysowalo sie na pelnej wysokosci
+    // 240 px. Po podziale na sprite (y=0..205, WeatherUi::VIEW_H) i dolny pas rysowany
+    // osobno, y=208 wypada JUZ POZA sprite'em — drugie slowo bylo scinane w polowie
+    // wysokosci. Zglosil wlasciciel: "slowo zachmurzenie jest uciete".
+    // Caly blok jedzie wiec w gore o tyle, zeby ostatnia linia siedziala na baseline
+    // 200 — tej samej, ktorej uzywaja podpisy na ekranach PV i AUTO, czyli sprawdzonej
+    // (6 px zapasu na ogonki pod linia pisma). Odstep miedzy liniami zostaje 13 px,
+    // rowny wysokosci fontu f13.
     const char* desc = wxico::labelForCode(c.weatherCode, !c.isDay);
     const int maxw = grid::CTX_W - 2 * grid::MARGIN_CTX;
     if (plex::width(plex::f13(), desc) <= maxw) {
-      plex::str(s, plex::f13(), desc, grid::MARGIN_CTX, 196, wxMain);
+      plex::str(s, plex::f13(), desc, grid::MARGIN_CTX, 190, wxMain);
     } else {
       char l1[32] = {}, l2[32] = {};
       const char* sp = strrchr(desc, ' ');
@@ -774,8 +783,8 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, const CostMod
       } else {
         snprintf(l1, sizeof(l1), "%s", desc);
       }
-      plex::str(s, plex::f13(), l1, grid::MARGIN_CTX, 194, wxMain);
-      if (l2[0]) plex::str(s, plex::f13(), l2, grid::MARGIN_CTX, 208, wxMain);
+      plex::str(s, plex::f13(), l1, grid::MARGIN_CTX, 187, wxMain);
+      if (l2[0]) plex::str(s, plex::f13(), l2, grid::MARGIN_CTX, 200, wxMain);
     }
 
     // GLIF NA WIERZCHU (po liczbie): chmura ~y60..108 (nad temperatura, ktorej gora
