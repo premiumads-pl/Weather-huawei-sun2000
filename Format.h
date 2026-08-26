@@ -22,3 +22,21 @@ inline void fmt1(char* b, size_t n, float v) {
   for (char* p = b; *p; ++p)
     if (*p == '.') { *p = ','; break; }
 }
+
+// (v180) DWA miejsca po przecinku — grosze. Osobna funkcja OBOK fmt1(), a nie
+// parametr `digits`: obie sa jednolinijkowe i inline, wiec parametr nic by nie
+// oszczedzil, a kazde wywolanie musialoby wtedy powtarzac liczbe miejsc i mogloby
+// ja przekrecic. Powod istnienia tej funkcji jest ten sam, co przeniesienia fmt1 tutaj
+// w v175: pierwszym odbiorca jest wiersz "zakup dziś X zł" w module PRAD
+// (WeatherUiV3.cpp), a wlasne "%.2f" + podmiana kropki w pliku ekranu byloby
+// DRUGA kopia tej samej reguly — dokladnie tym, co v175 stad usunelo.
+//
+// KWOTY ZAWSZE Z GROSZAMI, nawet gdy koncza sie zerem ("4,80 zł", nie "4,8 zł"):
+// tak wyglada cena na paragonie i w rachunku, wiec "4,8" czytaloby sie jak liczba
+// techniczna, a nie jak pieniadze. Szerokosc napisu i tak jest policzona pod wariant
+// najdluzszy, wiec staly jeden znak wiecej nic nie kosztuje.
+inline void fmt2(char* b, size_t n, float v) {
+  snprintf(b, n, "%.2f", v);
+  for (char* p = b; *p; ++p)
+    if (*p == '.') { *p = ','; break; }
+}

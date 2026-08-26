@@ -62,6 +62,17 @@ namespace {
 // sieci" sa krotsze od "Produkcja całkowita" dokladnie o tyle, o ile dluzsze sa
 // klucze pv_grid_in / pv_grid_out. Najgrubsze pakiety i tak robi discovery BLE,
 // gdzie nazwa encji sklada sie z nazwy pokoju wpisanej przez uzytkownika.
+//
+// (v180) DRUGI TEMAT PRZYCHODZACY — <prefix>/dom/stan — i znowu bufora nie ruszamy.
+// Rachunek ten sam, co przy auto/stan, przy maksymalnym prefiksie (23 znaki):
+//     1 B naglowka stalego + 1 B dlugosci zmiennej (ladunek < 128 B, wiec JEDEN)
+//   + 2 B dlugosci tematu + 32 B tematu (23 znaki prefiksu + "/dom/stan")
+//   + 10 B ladunku ({"zl":4.8}; wariant z groszami {"zl":9999.99} ma 15 B)
+//   = 46 B, czyli 9% bufora — NAJMNIEJSZY ze wszystkich pakietow tego modulu.
+// Pelna kolejnosc po tej zmianie: retained config encji (430 B) > stan grupy pv
+// (231 B) > auto/stan (188 B) > dom/stan (46 B). Bufor wyznacza wiec dalej
+// discovery. Ladunek dom/stan ma byc ROZSZERZALNY (kolejne pola stanu domu), wiec
+// zapas wypada zapisac liczba: przy tym samym temacie miesci sie do ~470 B tresci.
 constexpr uint16_t kBufSize = 512;
 
 constexpr uint16_t kKeepAliveS = 60;      // PINGREQ co minute, nie co 15 s
@@ -77,7 +88,8 @@ PubSubClient* gCli = nullptr;
 
 char gDevId[16] = {};   // pg_a1b2c3 — node_id, client id, prefiks unique_id
 char gAvail[36] = {};   // <prefix>/status (LWT)
-char gAutoTopic[40] = {};   // (v174) <prefix>/auto/stan — jedyna nasza subskrypcja
+char gAutoTopic[40] = {};   // (v174) <prefix>/auto/stan — pierwsza nasza subskrypcja
+char gCostTopic[40] = {};   // (v180) <prefix>/dom/stan — druga (koszt energii z sieci)
 
 // (v174) Ostatni odebrany stan auta + jego wlasny mutex.
 //
@@ -93,6 +105,21 @@ char gAutoTopic[40] = {};   // (v174) <prefix>/auto/stan — jedyna nasza subskr
 // z innej, czyli bledem nie do powiazania z przyczyna.
 AutoModel gAutoRx{};
 SemaphoreHandle_t gAutoMx = xSemaphoreCreateMutex();
+
+// (v180) Ostatni odebrany stan domu (<prefix>/dom/stan) — POD TYM SAMYM gAutoMx.
+//
+// TEN SAM MUTEX, A NIE DRUGI, i to jest decyzja policzona, a nie oszczednosc na
+// czuja. Ukladu watkow nie zmieniamy ani o krok: pisze onMessage() (netTask, rdzen 0),
+// czyta costSnapshot() z petli rysujacej (rdzen 1) — czyli DOKLADNIE ta sama para,
+// co przy gAutoRx. Obie sekcje krytyczne to przepisanie struktury (44 B i 8 B) bez
+// ani jednego wywolania, ktore moze uspic zadanie, wiec jedna blokada nie tworzy
+// tu zwloki: dwie wiadomosci nigdy nie sa parsowane rownolegle, bo obie przychodza
+// z tego samego gCli->loop(). Osobny gCostMx kosztowalby uchwyt w statyku i ~80 B
+// sterty za zerowy zysk — ten sam rachunek, ktory w v175 kazal wpuscic pod gAutoMx
+// takze gModeReq. 8 B to nie jest zapis atomowy (`atMs` i `zl` to dwa slowa), wiec
+// blokada jest tu obowiazkowa, a nie kosmetyczna: bez niej ekran umialby pokazac
+// swieza kwote z wiekiem sprzed trzech minut albo odwrotnie.
+CostModel gCostRx{};
 
 // (v175) ZAMOWIENIE Z PANELU OLED: tryb do wyslania na <prefix>/auto/tryb/set.
 // Sklada je petla rysowania (rdzen 1), wysyla netTask (rdzen 0) — pelne uzasadnienie
@@ -381,16 +408,62 @@ void copyStr(char* dst, size_t cap, const char* src) {
 // danych do modelu ekranowego zajmuje sie petla rysujaca przez autoSnapshot().
 // To ta sama sciezka, ktora chodza dane z BleGateway i Viessmanna.
 void onMessage(char* topic, uint8_t* payload, unsigned int len) {
-  // Subskrybujemy DOKLADNIE jeden temat i bez znakow wieloznacznych, ale broker
+  // Subskrybujemy DWA tematy (v180) i oba bez znakow wieloznacznych, ale broker
   // potrafi dostarczyc zalegly pakiet z poprzedniej sesji (inny prefiks po zmianie
-  // ustawien), wiec temat sprawdzamy zamiast zakladac.
-  if (topic == nullptr || strcmp(topic, gAutoTopic) != 0) return;
+  // ustawien), wiec temat sprawdzamy zamiast zakladac. Rozgalezienie stoi TUTAJ,
+  // a nie w dwoch callbackach: PubSubClient ma jeden wskaznik na funkcje, wiec
+  // "drugi callback" i tak musialby byc tym samym `if` — tylko schowanym.
+  if (topic == nullptr) return;
+  const bool isAuto = strcmp(topic, gAutoTopic) == 0;
+  const bool isCost = !isAuto && strcmp(topic, gCostTopic) == 0;
+  if (!isAuto && !isCost) return;
 
   // LADUNEK NIE JEST ZAKONCZONY ZEREM — PubSubClient oddaje wskaznik w srodek
   // swojego bufora razem z dlugoscia. Dlatego deserializeJson dostaje jawna
   // dlugosc, a nie sam wskaznik; przepisywanie do wlasnego bufora tylko po to,
   // zeby dokleic NUL, byloby 200 B stosu bez powodu.
   if (len == 0) return;
+
+  // (v180) STAN DOMU — <prefix>/dom/stan. Osobny, krotki tor: ladunek jest maly,
+  // pol ma dzis jedno, a caly parser miesci sie przed rozbudowanym torem auta nizej.
+  if (isCost) {
+    JsonDocument doc;
+    if (deserializeJson(doc, payload, static_cast<size_t>(len))) {
+      // Popsuta wiadomosc NIE KASUJE poprzedniej — ta sama zasada, co przy auto/stan
+      // i przy gPv/gVi w netTasku od v161: ekran ma pokazac ostatnia znana kwote
+      // i jej wiek, a nie pustke.
+      LOG("MQTT: /dom/stan — zly JSON (%u B)\n", len);
+      return;
+    }
+    // is<float>() zamiast golego przypisania — ta sama pulapka, co przy `soc` nizej:
+    // ArduinoJson po cichu oddaje 0 dla pola, ktorego NIE MA, a "0,00 zł" to zdanie
+    // "dzis nic nie kupilismy", czyli konkretne klamstwo, a nie brak danych. Ladunek
+    // ma byc ROZSZERZALNY, wiec sprawdzamy WYLACZNIE `zl` i nie wymagamy kompletu:
+    // wiadomosc z nowymi polami, ktorych ta wersja nie zna, ma dalej dzialac.
+    if (!doc["zl"].is<float>()) {
+      LOG("MQTT: /dom/stan — brak pola zl, pomijam\n");
+      return;
+    }
+    CostModel c{};
+    // Przyciecie do zakresu SENSOWNEGO, nie do zakresu typu — ta sama zasada, co przy
+    // soc/limit/km nizej. Ujemny koszt zakupu nie istnieje (to jest energia POBRANA),
+    // a gorna granica bierze sie z szerokosci napisu: linia w module PRAD jest
+    // policzona do "999,99 zł" i przy wiekszej liczbie zaczelaby wchodzic w kolumne
+    // kontekstu. Realny sufit doby to ~700 zl (20 kW non stop po stawce szczytowej).
+    float zl = doc["zl"].as<float>();
+    if (!(zl > 0.f)) zl = 0.f;            // lapie takze NaN — porownanie z NaN jest falszywe
+    else if (zl > 999.99f) zl = 999.99f;
+    c.zl = zl;
+    c.atMs = millis();
+    if (c.atMs == 0) c.atMs = 1;   // 0 znaczy "nigdy" — patrz ten sam zabieg przy aucie
+    if (gAutoMx != nullptr && xSemaphoreTake(gAutoMx, pdMS_TO_TICKS(20)) == pdTRUE) {
+      gCostRx = c;
+      xSemaphoreGive(gAutoMx);
+    }
+    // Nieudane wziecie mutexu gubi TE JEDNA wiadomosc; nastepna przyjdzie za 60 s,
+    // a prog cfg::COST_STALE_MS (3 min) jest wlasnie na to z zapasem.
+    return;
+  }
 
   JsonDocument doc;
   if (deserializeJson(doc, payload, static_cast<size_t>(len))) {
@@ -497,13 +570,29 @@ void flushModeRequest() {
   }
 }
 
-// Subskrypcja tematu auta. Wolana po KAZDYM udanym polaczeniu, bo broker nie
-// pamieta subskrypcji zerwanej sesji (laczymy sie z cleanSession — PubSubClient
-// nie umie inaczej), wiec po kazdym zerwaniu trzeba ja zlozyc od nowa.
-void subscribeAuto() {
+// Subskrypcje tematow PRZYCHODZACYCH. Wolana po KAZDYM udanym polaczeniu, bo broker
+// nie pamieta subskrypcji zerwanej sesji (laczymy sie z cleanSession — PubSubClient
+// nie umie inaczej), wiec po kazdym zerwaniu trzeba je zlozyc od nowa.
+//
+// (v180) Byla to `subscribeAuto()` z jednym tematem. Nazwa i tresc urosly o drugi
+// (<prefix>/dom/stan), ale MECHANIZM zostal JEDEN: jedna funkcja, jedno miejsce
+// wywolania, ta sama chwila w cyklu polaczenia. Druga funkcja wolana obok byla by
+// drugim miejscem, ktore trzeba pamietac po kazdej zmianie w tryConnect() — a to
+// dokladnie ten rodzaj rozjazdu, ktory ten plik juz raz kosztowal (patrz "38/22"
+// przy sendDiscovery).
+//
+// Temat skladamy TU, a nie raz przy starcie: prefiks moze sie zmienic z panelu WWW,
+// a configChanged() zrywa polaczenie — czyli po zmianie ustawien i tak przechodzimy
+// tedy. Bufory maja 40 B, a najdluzszy temat to 23 znaki prefiksu + "/auto/stan",
+// czyli 33 B z zerem; snprintf i tak by przycial.
+void subscribeTopics() {
   snprintf(gAutoTopic, sizeof(gAutoTopic), "%s/auto/stan", settings().mqttPrefix);
   if (!gCli->subscribe(gAutoTopic)) {
     LOG("MQTT: nie udalo sie zasubskrybowac %s\n", gAutoTopic);
+  }
+  snprintf(gCostTopic, sizeof(gCostTopic), "%s/dom/stan", settings().mqttPrefix);
+  if (!gCli->subscribe(gCostTopic)) {
+    LOG("MQTT: nie udalo sie zasubskrybowac %s\n", gCostTopic);
   }
 }
 
@@ -604,7 +693,11 @@ bool tryConnect() {
   // z vTaskDelay miedzy nimi, czyli trwa grubo ponad sekunde — a przez ten czas
   // ekran AUTO nie mialby jeszcze skad wziac danych, choc broker ma je gotowe jako
   // retained i odda w tej samej milisekundzie, w ktorej dostanie SUBSCRIBE.
-  subscribeAuto();
+  // (v180) Dotyczy tak samo drugiego tematu (<prefix>/dom/stan), choc TAM retained
+  // NIE MA: automatyka publikuje koszt bez flagi, wiec po polaczeniu i tak czekamy
+  // do minuty na pierwsza wiadomosc. Tym bardziej nie ma powodu dokladac do tego
+  // czekania jeszcze sekundy discovery.
+  subscribeTopics();
   sendDiscovery();
   gNextDevAt = 0;  // od razu wyslij telemetrie urzadzenia
   return true;
@@ -700,6 +793,19 @@ bool autoSnapshot(AutoModel& out) {
   if (xSemaphoreTake(gAutoMx, pdMS_TO_TICKS(5)) != pdTRUE) return false;
   const bool have = gAutoRx.atMs != 0;
   if (have) out = gAutoRx;
+  xSemaphoreGive(gAutoMx);
+  return have;
+}
+
+// (v180) Migawka stanu domu (koszt zakupu z sieci) — pelny opis przy deklaracji
+// w MqttClient.h. Linia w linie to samo, co autoSnapshot() wyzej, z tym samym
+// mutexem i tym samym krotkim timeoutem: wola to petla rysujaca, a nieudane wziecie
+// zostawia klatke przy poprzednich danych zamiast zacinac ekran.
+bool costSnapshot(CostModel& out) {
+  if (gAutoMx == nullptr) return false;
+  if (xSemaphoreTake(gAutoMx, pdMS_TO_TICKS(5)) != pdTRUE) return false;
+  const bool have = gCostRx.atMs != 0;
+  if (have) out = gCostRx;
   xSemaphoreGive(gAutoMx);
   return have;
 }

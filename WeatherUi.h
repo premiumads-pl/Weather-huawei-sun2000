@@ -109,6 +109,11 @@ class WeatherUi {
   // render()/drawV3(). Powod bez zmian: jeden ekran nie jest wart przewleczenia
   // czwartego modelu przez cztery sygnatury.
   void setAuto(const struct AutoModel* a) { auto_ = a; }
+  // (v180) Koszt energii kupionej z sieci od polnocy — TA SAMA sciezka, co setAuto()
+  // wyzej, i z tego samego powodu. Odbiorca jest JEDEN wiersz w module PRAD na ekranie
+  // glownym (mainPvModule), wiec dokladanie piatego modelu do sygnatur render() /
+  // paintFrame() / drawView() / drawV3 byloby czterema zmianami za jedna linie tekstu.
+  void setCost(const struct CostModel* c) { cost_ = c; }
 
   // v126: modele POSREDNIE — gotowe wiersze/liczby dla dwoch ekranow, ktore do
   // v125 same siegaly po singletony w trakcie rysowania (patrz RoomData.h i
@@ -230,6 +235,7 @@ class WeatherUi {
   const struct BurnerHistory* burner_ = nullptr;
   const struct AirModel* air_ = nullptr;
   const struct AutoModel* auto_ = nullptr;   // (v174) stan Tesli z MQTT (ekran AUTO)
+  const struct CostModel* cost_ = nullptr;   // (v180) koszt zakupu z sieci (modul PRAD)
   // Gotowe modele dla W DOMU i RADAR (v126). nullptr = warstwa danych jeszcze ich
   // nie podpiela; rysowanie uzywa wtedy pustej struktury, czyli zachowuje sie tak,
   // jakby nie bylo czujnikow / klatek.

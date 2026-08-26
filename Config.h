@@ -388,6 +388,20 @@ constexpr uint32_t AUTO_STALE_MS = 45UL * 1000UL;
 //   dotyczy zrodel odpytywanych przez netTask i tutaj nie obowiazuje). Milczenie
 //   dluzsze niz 45 s znaczy wiec dokladnie jedno: broker albo Home Assistant nie
 //   dostarczaja, i nie ma czego przeczekiwac.
+constexpr uint32_t COST_STALE_MS = 3UL * 60UL * 1000UL;
+// ^ (v180) KOSZT ENERGII KUPIONEJ Z SIECI (<prefix>/dom/stan, CostData.h). Kadencja
+//   60 s: tyle wynosi okres, z jakim publikuje ja automatyka "Dom -> MQTT na
+//   wyswietlacz" w Home Assistancie. Regula z v158 zastosowana wprost, dokladnie jak
+//   przy AUTO_STALE_MS wyzej (tam 2,5 x 15 s = 37,5 s -> 45 s): 2,5 x 60 s = 150 s ->
+//   zaokraglone w gore do 3 min, czyli TRZY pominiete publikacje z rzedu. Wychodzi
+//   ta sama liczba, co MQTT_STALE_MS przy tej samej kadencji 60 s — i tak ma byc,
+//   bo regula jest jedna, a nie jedna na stala.
+//
+//   TA STALA NIE POMIJA ZADNEGO EKRANU, w odroznieniu od AUTO_STALE_MS. Koszt jest
+//   JEDNA LINIA w module PRAD na ekranie glownym (mainPvModule), wiec jej jedynym
+//   zadaniem jest rozdzielenie stanu (b) od (c): swieza kwota vs ostatnia znana
+//   kwota podpisana wiekiem. Stan (a) — "nigdy nic nie przyszlo" — rozstrzyga samo
+//   CostModel::atMs == 0 i wtedy linii NIE MA W OGOLE.
 
 constexpr int VIEW_COUNT = 14;  // [0 wycofany] / TERAZ / [2 wycofany] / RADAR / 5 DNI / W DOMU / PIEC / PV / SAMOLOTY / POWIETRZE / PAMIEC / RUCH / AUTO / STATYSTYKI
 // Zrodlem prawdy dla numeru widoku jest WYLACZNIE ta stala (cfg::VIEW_*) — dawniej

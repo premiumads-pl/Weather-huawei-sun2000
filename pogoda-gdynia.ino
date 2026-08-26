@@ -647,6 +647,11 @@ AirModel uiAir{};   // kopia dla rdzenia rysujacego — patrz ui.setAir() w setu
 // przez kopie — mqttha::autoSnapshot(). Drugi globalny bufor pod gLock byloby
 // trzecia kopia tych samych 44 B i nie kupowalby nic.
 AutoModel uiAuto{};
+// (v180) Koszt energii kupionej z sieci od polnocy (<prefix>/dom/stan). DOKLADNIE ta
+// sama sciezka, co uiAuto powyzej, i z tego samego powodu: model zyje w MqttClient.cpp,
+// pisze go callback PubSubClienta, wychodzi stamtad wylacznie kopia przez
+// mqttha::costSnapshot(). Zadnego "gCost" pod gLock nie ma i nie ma byc.
+CostModel uiCost{};
 
 // --- MODELE POSREDNIE dla warstwy rysowania (v126) ---------------------------
 // Wszystko powyzej to MIGAWKI modeli, ktore wypelnia warstwa sieciowa. Dwa ekrany
@@ -2081,6 +2086,10 @@ void setup() {
   // historia. Do pierwszej wiadomosci MQTT uiAuto.atMs == 0, wiec ekran AUTO jest
   // pomijany w rotacji (viewSkipped) i nie miga pustka.
   ui.setAuto(&uiAuto);
+  // (v180) Koszt zakupu z sieci — tak samo bez NVS. Do pierwszej wiadomosci MQTT
+  // uiCost.atMs == 0, wiec wiersz "zakup dziś ... zł" w module PRAD w ogole nie
+  // powstaje (mainPvModule) — pusty wiersz zamiast "0,00 zł" z niczego.
+  ui.setCost(&uiCost);
   // Modele posrednie (v126): wskaznik podpinamy raz, zawartosc odswieza loop().
   // Bez tego rysowanie zobaczy pusta strukture — czyli "brak czujnikow" i
   // "pobieram mape opadow" — a nie czarny ekran ani wskaznik w nicosc.
@@ -2606,6 +2615,10 @@ void loop() {
   // uiAuto nietkniete — ostatni znany stan zostaje, a o jego wieku rozstrzyga
   // uiAuto.atMs (viewSkipped i naglowek ekranu).
   mqttha::autoSnapshot(uiAuto);
+  // (v180) Koszt zakupu z sieci — ta sama sciezka i ta sama chwila, co linia wyzej.
+  // Nieudana migawka ZOSTAWIA uiCost nietkniete: ostatnia znana kwota zostaje,
+  // a o jej wieku rozstrzyga uiCost.atMs (mainPvModule, prog cfg::COST_STALE_MS).
+  mqttha::costSnapshot(uiCost);
 
   // --- modele posrednie dla dwoch ekranow, ktore ich nie mialy (v126) ---
   // POZA gLock swiadomie: zrodlem nie jest zadne g*, tylko ble:: i radarmap::,

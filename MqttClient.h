@@ -9,13 +9,15 @@
 //   * bufor musi pomiescic nasz najwiekszy pakiet WYCHODZACY (retained config
 //     encji, 430 B razem z naglowkiem) — i on wyznacza rozmiar. (v174) Doszedl
 //     JEDEN temat przychodzacy (<prefix>/auto/stan, ~190 B razem z naglowkiem),
-//     wiec bufora NIE trzeba bylo ruszac; rachunek stoi przy kBufSize nizej,
+//     a (v180) DRUGI (<prefix>/dom/stan, 45 B razem z naglowkiem), wiec bufora
+//     NIE trzeba bylo ruszac; oba rachunki stoja przy kBufSize nizej,
 //   * wszystko chodzi z netTaska; loop() (rysowanie) nie dotyka MQTT.
 //
 // Brak brokera nie moze wywrocic urzadzenia: proby laczenia maja krotkie
 // timeouty i wykladniczy backoff (5 s -> 5 min), a bledy ladują w diag().
 
 #include "AutoData.h"
+#include "CostData.h"
 #include "PvData.h"
 #include "WeatherData.h"
 
@@ -34,6 +36,23 @@ namespace mqttha {
 // Zwraca false, gdy MQTT jest wylaczony albo nie przyszla jeszcze ani jedna
 // wiadomosc — wtedy `out` zostaje NIETKNIETE.
 bool autoSnapshot(AutoModel& out);
+
+// (v180) Kopiuje ostatni odebrany stan domu (<prefix>/dom/stan) do `out` — dzis
+// jedno pole: koszt energii kupionej z sieci od polnocy (CostData.h).
+//
+// TA SAMA SCIEZKA I TEN SAM MUTEX, co autoSnapshot() wyzej, i to jest decyzja, a nie
+// przeoczenie. CostModel ma 8 B, wiec odczyt "przy okazji" tez NIE jest atomowy:
+// `atMs` i `zl` to dwa slowa, a pisze je callback PubSubClienta (netTask, rdzen 0),
+// gdy czyta petla rysujaca (rdzen 1). Zlapanie nowego `zl` przy starym `atMs`
+// (albo odwrotnie) daloby swieza kwote podpisana wiekiem sprzed trzech minut —
+// blad, ktorego nie da sie potem powiazac z przyczyna. Drugiego mutexu NIE
+// zakladamy: sekcja krytyczna to przepisanie 8 B pod ta sama blokada, ktora i tak
+// juz jest brana w tym samym callbacku — dokladnie ten sam rachunek, co przy
+// gModeReq w v175 (drugi mutex = koszt bez zysku, a zostalo 1544 B statyku).
+//
+// Zwraca false, gdy MQTT jest wylaczony albo nie przyszla jeszcze ani jedna
+// wiadomosc — wtedy `out` zostaje NIETKNIETE.
+bool costSnapshot(CostModel& out);
 
 // (v175) WYSYLKA TRYBU LADOWANIA — <prefix>/auto/tryb/set, ladunek to DOKLADNIE
 // jedna z wartosci "OFF" / "PV" / "PV+MIN" / "MAX" (patrz autoModeMqtt w AutoData.h).

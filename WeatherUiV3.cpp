@@ -31,7 +31,8 @@
 
 #include "WeatherUi.h"
 #include "ThemeV3.h"
-#include "Format.h"          // (v175) fmt1() — wspolna z panelem OLED
+#include "Format.h"          // (v175) fmt1(), (v180) fmt2() — wspolne z panelem OLED
+#include "CostData.h"        // (v180) CostModel — koszt zakupu z sieci w module PRAD
 #include "PlexText.h"
 #include "CoastMap.h"
 #include "MapDataRadar.h"   // gmapr:: granice (pozycja Gdyni na radarze)
@@ -410,7 +411,10 @@ void precipChart(TFT_eSPI& s, const WeatherModel& w, int x, int y, int wdt, int 
 }
 
 // Modul PRAD na ekranie glownym (stany: produkcja / pobor / spi / lokalny).
-void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top) {
+// (v180) `cost` moze byc nullptr (warstwa danych jeszcze nic nie podpiela) — wtedy
+// wiersz z kosztem po prostu nie powstaje, tak samo jak przy braku wiadomosci MQTT.
+void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv,
+                  const CostModel* cost, int top) {
   const int lx = grid::DATA_L;
   plex::str(s, plex::f11(), "PRĄD", lx, top, col::SECOND);
 
@@ -588,11 +592,67 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, int top
   plex::str(s, plex::f11(), sb, barX, top + 66, pvOld ? col::MUTE : col::SELF);
   plex::strRight(s, plex::f11(), sc, grid::DATA_R, top + 66,
                  pvOld ? col::MUTE : (exporting ? col::OK : col::GRID));
+
+  // --- (v180) DZISIEJSZY KOSZT ZAKUPU Z SIECI ----------------------------------
+  // Druga linia POD podpisem "z sieci"/"→sieć", baseline top+82 (y=194), prawa
+  // krawedz DATA_R — czyli w tej samej kolumnie, co liczba, ktora opisuje.
+  // Zmierzone w tablicy Plex11 (nie przymierzone): najszerszy wariant swiezy
+  // "zakup dziś 999,99 zł" ma 118 px, czyli zaczyna sie na x=195. Wariant nieswiezy
+  // to dwa przebiegi: "sprzed 365 dni" (84 px) + 4 px przerwy + "zakup 999,99 zł"
+  // (92 px) = 180 px, czyli x=133. Kolumna danych zaczyna sie na 127 (grid::DATA_L),
+  // a ciemna kolumna kontekstu konczy na 119 — zostaje 6 px do marginesu i 14 px do
+  // ciemnego tla, wiec nawet wariant skrajny nie dotyka ani jednego, ani drugiego
+  // (a realna kwota dobowa to jedna-dwie cyfry, nie trzy). W pionie:
+  // linia wyzej siega y=179, ta zajmuje 185..195, moduleSep stoi na y=203.
+  // Segment "z PV" po lewej jest LINIE WYZEJ (top+66), wiec na tej wysokosci nie ma
+  // sasiada — kolizji poziomej nie ma z czym miec.
+  //
+  // KOLOR: col::MUTE, i to jest decyzja, a nie brak pomyslu. Linia WYZEJ niesie juz
+  // kolor z kontraktu bilansu (czerwony col::GRID = dobieramy z sieci, zielony
+  // col::OK = oddajemy) i to ONA jest komunikatem chwili. Dzienna suma zlotowek jest
+  // KONTEKSTEM do tamtej liczby, a nie drugim alarmem: gdyby dostala ten sam czerwony,
+  // blok czytalby sie jak dwa ostrzezenia zamiast jednego, a oko nie mialoby po czym
+  // poznac, ktore z nich jest o TERAZ. Zadnego nowego koloru do palety nie dokladamy.
+  //
+  // TRZY STANY, wszystkie jawnie (regula v158, jak wszedzie indziej):
+  //   (a) atMs == 0  -> NIE RYSUJEMY NIC. Pusty wiersz jest uczciwszy niz
+  //                     "zakup dziś 0,00 zł", ktore twierdziloby, ze dzis nie
+  //                     kupilismy ani kilowatogodziny — a to jest zdanie o domu,
+  //                     nie o naszym braku danych.
+  //   (b) swieze     -> "zakup dziś 4,80 zł".
+  //   (c) stare      -> kwota ZOSTAJE (to wciaz jedyne, co wiemy), ale slowo "dziś"
+  //                     ustepuje miejsca WIEKOWI. Ten sam zabieg, co w naglowku tego
+  //                     modulu kilkadziesiat linii wyzej (v161: "dziś X kWh" ustepuje
+  //                     "sprzed 14 min") i na OGRZEWANIU — wiek wchodzi w miejsce
+  //                     mniej pilnej tresci, zaden nowy element sie nie pojawia.
+  //                     I nie jest to kosmetyka: po polnocy bez lacznosci "dziś"
+  //                     bylo by wprost falszywe, bo Home Assistant wlasnie wyzerowal
+  //                     licznik, a my mamy kwote z wczoraj. Sam wiek dostaje col::WARN
+  //                     — ten sam kolor "nieswieze", co przy PV i piecu.
+  if (cost != nullptr && cost->atMs != 0) {
+    char zl[12];
+    fmt2(zl, sizeof(zl), cost->zl);
+    char line[32];
+    if (freshMs(cost->atMs, cfg::COST_STALE_MS)) {
+      snprintf(line, sizeof(line), "zakup dziś %s zł", zl);
+      plex::strRight(s, plex::f11(), line, grid::DATA_R, top + 82, col::MUTE);
+    } else {
+      char ago[24];
+      agoWords(ago, sizeof(ago), okAgeS(cost->atMs));
+      const int aw = plex::strRight(s, plex::f11(), ago, grid::DATA_R, top + 82, col::WARN);
+      snprintf(line, sizeof(line), "zakup %s zł", zl);
+      plex::strRight(s, plex::f11(), line, grid::DATA_R - aw - 4, top + 82, col::MUTE);
+    }
+  }
+
   (void)producing;
   (void)gridW;
 }
 
-void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
+// (v180) `cost` przechodzi TYLKO przez tu do mainPvModule — v3Main sam go nie czyta.
+// Wskaznik, a nie referencja, bo warstwa danych ma prawo go jeszcze nie podpiac
+// (nullptr) — dokladnie jak `air`/`auto` na pozostalych ekranach.
+void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, const CostModel* cost) {
   sceneBg(s);
 
   // --- kolumna kontekstu (ciemna) ---
@@ -732,7 +792,7 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv) {
   moduleSep(s, 92);
 
   // --- kolumna danych: PRAD (albo JUTRO) ---
-  mainPvModule(s, w, pv, 112);
+  mainPvModule(s, w, pv, cost, 112);
 
   moduleSep(s, 203);
 }
@@ -3009,7 +3069,7 @@ void WeatherUi::drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const Weath
       // dwukolumnowego ukladu. To JEDYNA zmiana w tej galezi — dzien rysuje v3Main
       // jak dotad, pozostale ekrany rotacji bez zmian.
       if (isNightNow(blTarget_)) v3MainNight(spr, w);
-      else v3Main(spr, w, pv);
+      else v3Main(spr, w, pv, cost_);   // (v180) koszt zakupu z sieci — modul PRAD
       break;
   }
 
