@@ -148,6 +148,18 @@ constexpr int kIdleValY = 50;    // wartosci, f11
 constexpr int kIdleTextY = 62;   // zdanie o tym, co sie dzieje, f10
 constexpr int kIdleCol2X = 68;   // lewa krawedz kolumny BATERIA
 
+// (v186) Ikona auta — PRAWY GORNY ROG ekranu spoczynkowego, x 107..125, y 2..10.
+// Miejsce jest wolne i to jest sprawdzone, a nie zalozone: jedyna tresc na tej
+// wysokosci to "TRYB" w f10 przy lewym marginesie (kMarginX = 3, szerokosc napisu
+// 26 px, czyli koniec na x=29) — zostaje 77 px przerwy. Pierwsza rzecza siegajaca
+// w prawo jest dopiero pozioma kreska na kIdleRuleY = 28, osiemnascie wierszy nizej.
+constexpr int kCarX0 = 107;      // lewa krawedz nadwozia
+constexpr int kCarX1 = 125;      // prawa krawedz nadwozia (2 px do krawedzi ekranu)
+constexpr int kCarBodyY0 = 5;    // gorna krawedz nadwozia
+constexpr int kCarBodyY1 = 8;    // dolna krawedz nadwozia
+constexpr int kCarRoofY = 2;     // szczyt dachu
+constexpr int kCarWheelY = 10;   // dol kol
+
 // Menu i test — cztery wiersze po 13 px, pierwszy zaczyna sie na y=12.
 // Ostatni konczy sie dokladnie na y=63, czyli wypelnia ekran co do piksela.
 constexpr int kRow0Y = 12;
@@ -347,8 +359,77 @@ const char* sceneLine(const AutoModel& a, bool fresh) {
   return "stan nieznany";
 }
 
+// (v186) IKONA AUTA — PRAWY GORNY ROG EKRANU SPOCZYNKOWEGO.
+//
+// CO MOWI: czy klucz BLE ma TERAZ zywe polaczenie z autem, czyli czy wybor trybu
+// zrobiony na tym panelu ma przez co pojsc. Sylwetka WYPELNIONA = polaczenie jest
+// i polecenie zadziala; sam OBRYS = klucz nie siega auta i polecenie NIE przejdzie.
+//
+// OBA STANY SA WIDOCZNE I TO JEST CALY POMYSL. Chowanie ikony przy braku polaczenia
+// bylo pierwszym odruchem i jest bledem: znikajacy element czyta sie jak usterka
+// wyswietlacza, a nie jak informacja. Wlasciciel ma rozroznic WYPELNIONA od PUSTEJ,
+// a nie "jest" od "nie ma" — tylko pierwsza para mowi cokolwiek o aucie.
+//
+// TRZECI STAN — BRAK SWIEZYCH DANYCH — ROZSTRZYGA WYWOLUJACY, nie ta funkcja: przy
+// !fresh drawIdle w ogole tu nie wchodzi i ikony nie ma na ekranie wcale. Wtedy nie
+// wiemy NIC, a pusty obrys twierdzilby "sprawdzilem, polaczenia nie ma" — czyli
+// klamalby o wiedzy, ktorej nie mamy. To ta sama konwencja, co kreski w kolumnach
+// MOC i BATERIA oraz "brak danych z auta" w dolnym wierszu.
+//
+// PRYMITYWY, NIE BITMAPA. Tablica na te sylwetke to ~24 B stalych plus kod blittera,
+// a kilkanascie hline() nie kosztuje ANI BAJTA pamieci — ta sama zasada rzadzi calym
+// tym plikiem (patrz kInit i celowy brak WeatherIcons.h po stronie MQTT).
+//
+// SYLWETKA, PIKSEL PO PIKSELU (x rosnie w prawo, y w dol):
+//   y= 2        ########             dach
+//   y= 3       ##########
+//   y= 4      ############
+//   y= 5  ###################        nadwozie
+//   y= 6  ###################
+//   y= 7  ###################
+//   y= 8  ###################
+//   y= 9     ###      ###            kola
+//   y=10     ###      ###
+// Przy 19x9 px UPROSZCZENIE WYGRYWA Z DETALEM: szyby, klamki czy nadkola zlewaja sie
+// z dwoch metrow w szara plame, a nadwozie + dach + dwa kola czyta sie jako samochod
+// od razu. Ikona lezy w calosci w pasie y=0..15, czyli na stronach 0 i 1 kontrolera —
+// px() sam odrzuca to, co nie nalezy do skladanej wlasnie strony, wiec funkcja moze
+// byc wolana przy kazdej z osmiu i nie trzeba jej nigdzie warunkowac.
+void drawCarIcon(bool link) {
+  // 1) PELNA SYLWETKA — rysowana ZAWSZE, w obu stanach.
+  hline(112, 119, kCarRoofY, true);                          // dach
+  hline(111, 120, kCarRoofY + 1, true);
+  hline(110, 121, kCarRoofY + 2, true);
+  fillRect(kCarX0, kCarBodyY0, kCarX1, kCarBodyY1, true);    // nadwozie
+  fillRect(110, kCarBodyY1 + 1, 112, kCarWheelY, true);      // kolo przednie
+  fillRect(120, kCarBodyY1 + 1, 122, kCarWheelY, true);      // kolo tylne
+
+  if (link) return;   // polaczenie jest — zostaje sylwetka wypelniona
+
+  // 2) BRAK POLACZENIA: gasimy WNETRZE, zostaje obrys grubosci 1 px.
+  //
+  // WYCINANIE WNETRZA Z GOTOWEJ SYLWETKI, a nie rysowanie obrysu osobno — dzieki
+  // temu obie wersje maja DOKLADNIE ten sam ksztalt zewnetrzny i nie da sie ich
+  // rozjechac przy nastepnej poprawce ukladu. Ponizsze wiersze to dokladnie te
+  // piksele, ktore maja wszystkich czterech sasiadow wewnatrz sylwetki.
+  hline(112, 119, kCarRoofY + 1, false);
+  hline(111, 120, kCarRoofY + 2, false);
+  hline(110, 121, kCarBodyY0, false);          // pod dachem; maska i bagaznik zostaja
+  hline(kCarX0 + 1, kCarX1 - 1, kCarBodyY0 + 1, false);
+  hline(kCarX0 + 1, kCarX1 - 1, kCarBodyY0 + 2, false);
+  hline(110, 112, kCarBodyY1, false);          // nad kolami; reszta spodu zostaje
+  hline(120, 122, kCarBodyY1, false);
+  px(111, kCarBodyY1 + 1, false);              // srodki kol
+  px(121, kCarBodyY1 + 1, false);
+}
+
 void drawIdle(const AutoModel& a, bool fresh) {
   str(plex::f10(), "TRYB", kMarginX, kIdleTagY, true);
+
+  // Ikona auta stoi w rogu, ktorego nie zajmuje ani "TRYB" (konczy sie na x=29),
+  // ani nic ponizej — pelne uzasadnienie miejsca przy kCarX0. Rysujemy ja WYLACZNIE
+  // przy swiezych danych; bez nich nie ma czego pokazac i nie udajemy, ze mamy.
+  if (fresh) drawCarIcon(a.bleLink);
 
   const int act = fresh ? autoModeIndex(a.mode) : -1;
   str(plex::f13(), fresh ? autoModeLabel(act) : "brak danych", kMarginX, kIdleModeY, true);
@@ -467,6 +548,12 @@ uint32_t signature(const AutoModel& a, bool fresh) {
   if (fresh) {
     mix(a.soc);
     mix(a.cable ? 1u : 0u);
+    // (v186) bleLink MUSI tu byc, inaczej ikona auta zamarza. Podpis jest JEDYNYM
+    // powodem przerysowania (patrz opis nad ta funkcja), wiec pole, ktore widac na
+    // ekranie, a ktorego nie ma w podpisie, zmienia sie na szkle dopiero przy
+    // najblizszej zmianie czegos innego — czyli objawia sie jako "ikona pokazuje
+    // nieprawde przez kilka minut", a nie jako brak rysowania.
+    mix(a.bleLink ? 1u : 0u);
     // Rzutowanie przez int32_t, bo moc bywa UJEMNA (oddawanie z auta): konwersja
     // ujemnego float-a wprost na uint32_t jest zachowaniem niezdefiniowanym.
     mix(static_cast<uint32_t>(static_cast<int32_t>(a.kw * 10.f)));

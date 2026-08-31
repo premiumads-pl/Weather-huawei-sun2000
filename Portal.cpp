@@ -3506,6 +3506,24 @@ void apiDiag() {
     ol["buttons"] = oled::buttonMask();
     ol["sent_mode"] = oled::sentMode();             // "" = nic jeszcze nie wyslano
     ol["req_state"] = mqttha::autoModeReqState();   // 0 nic / 1 czeka / 2 poszlo / 3 blad
+
+    // (v186) STAN IKONY AUTA — czyli to, co widac w prawym gornym rogu ekranu
+    // spoczynkowego, DO ODCZYTANIA BEZ PATRZENIA NA SZKLO. Panel rysuje sylwetke
+    // wypelniona przy true, a sam obrys przy false (OledPanel.cpp, drawCarIcon).
+    //
+    // ZRODLEM JEST TA SAMA MIGAWKA, z ktorej rysuje panel — mqttha::autoSnapshot(),
+    // pod tym samym mutexem — a nie osobny licznik po stronie OLED-a. Drugi licznik
+    // musialby byc utrzymywany rownolegle i to on pierwszy rozjechalby sie z ekranem.
+    //
+    // JEDNO POLE NA DWIE PRZYCZYNY FALSZU i to jest swiadome uproszczenie: false
+    // znaczy albo "klucz nie siega auta", albo "nie ma jeszcze zadnej wiadomosci
+    // z auto/stan" (autoSnapshot oddaje wtedy false i zostawia model nietkniety).
+    // Rozroznia je sasiednia sekcja "mqtt" i pole `screen` wyzej; osobna trojwartosc
+    // w JSON-ie kosztowalaby wiecej zamieszania niz przynosi. Uwaga przy czytaniu:
+    // przy danych STARSZYCH niz cfg::AUTO_STALE_MS ikony na ekranie NIE MA WCALE,
+    // a to pole dalej pokazuje ostatnia znana wartosc.
+    AutoModel am{};
+    ol["ble"] = mqttha::autoSnapshot(am) && am.bleLink;
   }
 
   // --- DOTYK GPIO7: ile gestow policzylismy i ile ODRZUCILISMY ---

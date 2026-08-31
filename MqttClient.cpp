@@ -574,6 +574,20 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
   a.sunKwh = doc["sl"] | 0.f;
   a.gridKwh = doc["si"] | 0.f;
   a.cable = (doc["kabel"] | 0) != 0;
+  // (v186) `ble` — czy klucz BLE ma ZYWE polaczenie z autem. Ten sam wzorzec, co
+  // `kabel` wyzej: brak pola daje 0, czyli false. To POLE NIEOBOWIAZKOWE i celowo
+  // NIE dolaczylo do sprawdzenia kompletu soc/tryb/stan kilka linijek wyzej —
+  // starsza automatyka, ktora go jeszcze nie wysyla, ma dalej dostarczac ekran AUTO,
+  // a nie zostac odrzucona w calosci przez jedna nowa nazwe.
+  //
+  // DLACZEGO HOME ASSISTANT LICZY TO Z SYGNALU, A NIE ZE STATUSU — bo tylko sygnal
+  // nie klamie. Zrodlem jest `sensor.garaz_tesla_klucz_ble_sygnal_ble`, a NIE
+  // `binary_sensor ... status` i NIE przelacznik `Polaczenie BLE`: tamte dwa stoja
+  // na `on` takze wtedy, gdy auta nie ma w zasiegu (sprawdzone 26.08: oba `on`,
+  // sygnal `unknown`, auto na podjezdzie). Sile sygnalu da sie odczytac wylacznie
+  // przy zywej sesji BLE — i wlasnie dlatego to ona rozstrzyga, czy polecenie
+  // ladowania z panelu ma przez co pojsc. Pelny opis stoi przy polu w AutoData.h.
+  a.bleLink = (doc["ble"] | 0) != 0;
   copyStr(a.mode, sizeof(a.mode), doc["tryb"]);
   copyStr(a.state, sizeof(a.state), doc["stan"]);
   a.atMs = millis();

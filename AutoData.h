@@ -37,6 +37,21 @@ struct AutoModel {
   uint8_t amps = 0;      // zadany prad [A]
   bool cable = false;    // kabel podpiety
 
+  // (v186) Czy klucz BLE ma ZYWE polaczenie z autem. 1 = polecenie ladowania ma
+  // przez co pojsc, 0 = nie ma. Steruje ikona auta w prawym gornym rogu ekranu
+  // spoczynkowego panelu OLED (OledPanel.cpp, drawCarIcon).
+  //
+  // SKAD TO POLE BIERZE SIE W HOME ASSISTANCIE — I DLACZEGO AKURAT STAMTAD.
+  // Liczone jest z `sensor.garaz_tesla_klucz_ble_sygnal_ble`, czyli z SILY SYGNALU,
+  // a NIE z `binary_sensor ... status` ani z przelacznika `Polaczenie BLE`. Tamte dwa
+  // KLAMIA: pokazuja `on` takze wtedy, gdy auta nie ma w zasiegu. Sprawdzone 26.08 —
+  // oba staly na `on`, sygnal byl `unknown`, a auto stalo na podjezdzie. Sile sygnalu
+  // da sie odczytac WYLACZNIE przy zywej sesji BLE, wiec tylko ona nie klamie i tylko
+  // ona nadaje sie na "polecenie przejdzie / nie przejdzie".
+  //
+  // Wiadomosc bez pola `ble` daje false — patrz parser w MqttClient.cpp.
+  bool bleLink = false;
+
   // Tryb ladowania — kontrakt z automatyka w garazu: dokladnie jeden z
   // "OFF" / "PV" / "PV+MIN" / "MAX". 8 B, bo najdluzszy ma 6 znakow + NUL, a 8
   // trzyma strukture wyrownana bez dziury.
@@ -59,6 +74,14 @@ struct AutoModel {
 // 2 x 44 B modelu + bufor tematu MQTT + uchwyt mutexu. Prog 80 B daje zapas na
 // jeszcze jedno-dwa pola; przekroczenie go ma ZATRZYMAC kompilacje, a nie po cichu
 // zjesc margines wydania.
+//
+// (v186) `bleLink` NIE KOSZTOWAL ANI BAJTA i to jest policzone, a nie nadzieja:
+// przed nim struktura miala 43 B tresci dopelnione do 44 B wyrownaniem (uint32_t
+// atMs wymusza wielokrotnosc 4). Nowy bool wszedl w te dziure obok `cable`, wiec
+// sizeof dalej wynosi 44 B i obie kopie zajmuja tyle samo. DLATEGO PROG ZOSTAJE
+// 80 B — podniesienie go bylo kuszace, ale opisywaloby wzrost, ktorego nie ma.
+// Nastepne pole tej wielkosci juz jednak zaplaci: dziura jest wykorzystana i
+// kolejny bajt przesunie strukture na 48 B, czyli +8 B statycznego RAM-u.
 static_assert(sizeof(AutoModel) < 80,
               "AutoModel zyje w dwoch kopiach — powyzej 80 B zaczyna byc widoczny "
               "w budzecie statycznego RAM-u (bariera 76 000 B)");
