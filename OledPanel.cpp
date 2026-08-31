@@ -107,6 +107,16 @@ uint8_t* gGraph = nullptr;
 uint8_t gGraphCnt = 0;    // ile probek jest w buforze (0..kGraphN)
 uint8_t gGraphMax = 0;    // najwieksza probka SESJI — trzymana, zeby nie skanowac
                           // 128 B PSRAM-u osiem razy na klatke i raz na obieg petli
+// (v189) LICZNIK DOPISAN — 1 B, i to jest bajt, bez ktorego wykres ZAMARZA. Rosnie
+// przy KAZDEJ dopisanej probce, takze wtedy, gdy bufor jest juz pelny i gGraphCnt
+// stoi na kGraphN. Od v189 pelny bufor sie PRZEWIJA (patrz graphTick), wiec po 6,4 h
+// sesji ani gGraphCnt, ani gGraphMax nie zmieniaja sie juz przy nowej probce — a
+// obraz owszem, bo caly przebieg jedzie o kolumne w lewo. signature() nie mieszalby
+// wtedy niczego nowego i panel przestalby przerysowywac wykres, choc dane by plynely.
+// To DOKLADNIE ten sam blad, ktory zlapano tu juz dwa razy: pole widoczne na szkle
+// musi byc w podpisie. Przekrecenie po 256 dopisaniach (12,8 h) nie szkodzi — podpis
+// ma WYKRYWAC ZMIANE, a nie liczyc probki: kolejne wartosci zawsze sie roznia.
+uint8_t gGraphSeq = 0;
 bool gCharging = false;   // trwa sesja (dopisujemy) / skonczyla sie (przygaszamy)
 uint32_t gGraphHighMs = 0;  // millis() ostatniej chwili z moca >= kGraphOnKw
 uint32_t gGraphSampMs = 0;  // millis() ostatniej dopisanej probki
@@ -279,13 +289,28 @@ constexpr float kSrcMinKw = 0.1f;   // ponizej: ZADNEJ ikony — nie ma czego dz
 //   czyli na slupek zostaje kGraphY1 - kGraphY0 = 21 px wysokosci.
 // 128 PROBEK NA 128 KOLUMN, jedna kolumna = jedna probka = 3 minuty. Okno wychodzi
 // 6,4 h i to jest liczba dobrana do ZJAWISKA, a nie do wygody: tyle mniej wiecej
-// trwa pelna sesja z niskiego stanu baterii, wiec caly przebieg miesci sie na
-// ekranie bez przewijania i bez usredniania.
+// trwa pelna sesja z niskiego stanu baterii, wiec typowy przebieg miesci sie na
+// ekranie w calosci i bez usredniania.
+//
+// (v189) CZAS PLYNIE W PRAWO, "TERAZ" STOI PRZY PRAWEJ KRAWEDZI. Do v188 najstarsza
+// probka lezala na x=0 i wykres rosl w prawo w pusty pas — czyli chwila biezaca
+// wedrowala przez ekran i przy krotkiej sesji trzeba bylo jej szukac. Od v189 jest
+// odwrotnie: OSTATNIA probka zawsze na x=127, starsze w lewo, wolne kolumny (sesja
+// krotsza niz okno) zostaja PO LEWEJ. Tak dziala kazdy wykres kroczacy i tylko tak
+// prawa krawedz znaczy zawsze to samo.
 constexpr int kGraphY0 = 42;
 constexpr int kGraphY1 = 63;
 constexpr int kGraphN = 128;        // probek = kolumn ekranu
 constexpr int kGraphHourPx = 20;    // kreska godzinowa: 20 probek x 3 min = 60 min
-constexpr int kGraphSclX = 125;     // prawa krawedz napisu "N kW" (2 px do krawedzi)
+// (v189) NAPIS SKALI PRZY LEWEJ KRAWEDZI PASA, NA JEGO GORNEJ GRANICY — i to jest
+// POPRAWKA CZYTELNOSCI, nie przestawianie mebli. Do v188 stal w prawym gornym rogu,
+// mniej wiecej na wysokosci szczytu slupkow, i wlasciciel odczytal go jako opis
+// LINII PRZERYWANEJ tuz obok: skoro linia to "2 kW", to slupki dwa razy wyzsze
+// musza byc 4 kW. Arytmetyka byla dobra, napis nie mowil, DO CZEGO sie odnosi.
+// Przy lewej krawedzi, dokladnie na gornej granicy pasa, czyta sie jednoznacznie:
+// "gora tego wykresu to tyle". Format bez spacji ("2kW"), bo napis ma byc etykieta
+// osi, a nie odczytem — te z jednostka i przecinkiem stoi wyzej, w wierszu MOC.
+constexpr int kGraphSclX = 0;       // lewa krawedz napisu "NkW"
 constexpr uint32_t kGraphStepMs = 180000;  // 3 min miedzy probkami
 // Poczatek sesji: moc przekroczyla ten prog PO co najmniej takiej przerwie ponizej.
 // 0,3 kW jest wyraznie powyzej szumu pomiaru i ponizej najslabszego realnego
@@ -656,8 +681,12 @@ void drawCarIcon(bool link) {
 // 0-11 kW (maksimum ladowarki) typowa sesja z nadwyzki — 1,5 do 3 kW — lezalaby
 // plaskim wezem tuz nad dolna krawedzia, gdzie roznicy miedzy 1,5 a 2,5 kW nie da
 // sie zobaczyc. Skalujemy wiec do MAKSIMUM SESJI zaokraglonego w gore do pelnych kW
-// i wypisujemy je przy prawej krawedzi, bo wykres bez podpisanej skali to ladny
-// ksztalt, a nie pomiar.
+// i wypisujemy je przy LEWEJ krawedzi, na gornej granicy pasa (v189 — patrz nizej,
+// przy napisie), bo wykres bez podpisanej skali to ladny ksztalt, a nie pomiar.
+//
+// (v189) OKNO JEDZIE ZA "TERAZ": najnowsza probka lezy na x=127, starsze w lewo,
+// a po zapelnieniu bufora najstarsza wypada (patrz graphTick). Prawa krawedz znaczy
+// wiec ZAWSZE to samo — chwile biezaca.
 //
 // PRZYGASZENIE PO SESJI ROBI RASTER, BO NIC INNEGO NIE MA. Wyswietlacz jest
 // JEDNOBITOWY: piksel jest albo zapalony, albo zgaszony, odcieni nie ma i zadne
@@ -691,11 +720,19 @@ void drawGraph(bool fresh) {
   // kwadransa. Raster mowi wtedy to, co trzeba: "to bylo".
   const bool solid = gCharging && fresh;
 
+  // (v189) PRZESUNIECIE KOLUMNA -> PROBKA. Bufor jest chronologiczny (gGraph[0] =
+  // najstarsza), a rysujemy OD PRAWEJ, wiec ostatnia probka ma trafic na x=127:
+  //   idx = x + gGraphCnt - kGraphN  →  x = 127 daje idx = gGraphCnt - 1.
+  // Przy niepelnym buforze wychodzi ujemne dla lewych kolumn i to wlasnie znaczy
+  // "tu jeszcze nie bylo pomiaru" — puste zostaja kolumny PO LEWEJ, nie po prawej.
+  const int idxOff = static_cast<int>(gGraphCnt) - kGraphN;
+
   for (int x = 0; x < kGraphN; ++x) {
-    const bool has = (x < gGraphCnt);
+    const int idx = x + idxOff;
+    const bool has = (idx >= 0);
     // Gorna krawedz slupka. Bez probki slupka nie ma i to jest cala reszta okna:
-    // sesja krotsza niz 6,4 h zostawia prawa czesc pasa pusta, zamiast udawac zera.
-    const int top = has ? (kGraphY1 - (gGraph[x] * h) / (kwMax * 10)) : kGraphY1;
+    // sesja krotsza niz 6,4 h zostawia LEWA czesc pasa pusta, zamiast udawac zera.
+    const int top = has ? (kGraphY1 - (gGraph[idx] * h) / (kwMax * 10)) : kGraphY1;
 
     // SIATKA RYSOWANA TYLKO NAD SLUPKIEM, a nie pod spodem i przykrywana. Gdyby szla
     // przez cale pole, przy PRZYGASZONYM wypelnieniu przezierala przez co drugi
@@ -707,7 +744,12 @@ void drawGraph(bool fresh) {
     // Kreska godzinowa co kGraphHourPx kolumn — pionowa, kropkowana, tez tylko nad
     // slupkiem. To ona daje osi czasu podzialke: bez niej "szeroki garb" nie mowi,
     // czy trwal dwadziescia minut, czy dwie godziny.
-    if (x != 0 && (x % kGraphHourPx) == 0) {
+    // (v189) LICZONA OD PRAWEJ KRAWEDZI, nie od lewej — kreski znacza teraz "godzine
+    // temu", "dwie godziny temu" i stoja w tych samych kolumnach zawsze, a przebieg
+    // przesuwa sie pod nimi. Liczone od lewej wedrowalyby razem z poczatkiem sesji
+    // i podzialka zmienialaby polozenie co trzy minuty, czyli nie bylaby podzialka.
+    const int ago = kGraphN - 1 - x;   // ile kolumn (3-minutowek) wstecz od "teraz"
+    if (ago != 0 && (ago % kGraphHourPx) == 0) {
       for (int y = kGraphY0; y < top; y += 2) px(x, y, true);
     }
 
@@ -719,16 +761,28 @@ void drawGraph(bool fresh) {
 
   hline(0, kW - 1, kGraphY1, true);   // linia zera = os czasu
 
-  // MAKSIMUM SKALI PRZY PRAWEJ KRAWEDZI, NA WYCZYSZCZONYM TLE. Kasowanie prostokata
-  // pod napisem kosztuje kawalek przebiegu w prawym gornym rogu i to jest swiadoma
-  // wymiana: bialy tekst na bialym wypelnieniu jest nieczytelny, a wykres bez
-  // podanej skali nie jest pomiarem. Rog trafia przy tym w najtansze miejsce —
-  // kolumny 96..127 to szosta godzina sesji, ktorej wiekszosc sesji w ogole nie ma.
+  // (v189) MAKSIMUM SKALI PRZY LEWEJ KRAWEDZI, NA GORNEJ GRANICY PASA, NA WYCZYSZCZONYM
+  // TLE. Baza liter to kGraphY0 + 8 = 50 i to nie jest okragla liczba, tylko metryka
+  // f10: "k" ma yOffset -8, wiec przy tej bazie jego gorny piksel lezy dokladnie na
+  // y=42, czyli NA gornej granicy pasa. O piksel wyzej px() scielaby mu czubek,
+  // o piksel nizej napis odklejalby sie od granicy, ktora ma opisywac. Cyfry (yOffset
+  // -7) siegaja y=43 i to jest w porzadku — granice wyznacza litera obok.
+  //
+  // KASOWANIE PROSTOKATA POD NAPISEM jest tu WAZNIEJSZE niz w v188, bo od v189 slupki
+  // dochodza przy dlugiej sesji az do LEWEJ krawedzi: bez tla napis lezalby wprost na
+  // wypelnieniu i na kreskach siatki. Cena: "11kW" (najszerszy przypadek — 11 kW to
+  // maksimum ladowarki) ma 24 px, wiec z jednopikselowym odstepem prostokat zjada
+  // kolumny 0..24 w wierszach 42..50 — 25 ze 128 kolumn, gorne 9 z 22 wierszy pasa,
+  // czyli szczyty slupkow z NAJSTARSZYCH 75 minut okna. Typowe "2kW" to 18 px i 19
+  // kolumn. To jest ta sama swiadoma wymiana, co w v188, tylko przeniesiona z rogu,
+  // gdzie napis klamal o tym, czego dotyczy: wykres bez podanej skali jest ladnym
+  // ksztaltem, a nie pomiarem, a najstarszy skraj okna to najtansze miejsce, jakie
+  // przy rysowaniu od prawej w ogole zostalo.
   char s[8];
-  snprintf(s, sizeof(s), "%d kW", kwMax);
+  snprintf(s, sizeof(s), "%dkW", kwMax);
   const int w = pltxt::stringWidth(plex::f10(), s);
-  fillRect(kGraphSclX - w - 1, kGraphY0, kW - 1, kGraphY0 + 8, false);
-  strRight(plex::f10(), s, kGraphSclX, kGraphY0 + 8, true);
+  fillRect(kGraphSclX, kGraphY0, kGraphSclX + w, kGraphY0 + 8, false);
+  str(plex::f10(), s, kGraphSclX, kGraphY0 + 8, true);
 }
 
 void drawIdle(const AutoModel& a, bool fresh) {
@@ -1123,12 +1177,6 @@ void graphTick(const AutoModel& a, uint32_t now, bool fresh) {
   }
 
   if (!gCharging) return;
-  // Bufor pelny = 6,4 h sesji. Dalej NIE dopisujemy i nie przewijamy: przewijanie
-  // zjadaloby POCZATEK ladowania, czyli te czesc przebiegu, ktora najczesciej mowi
-  // najwiecej (rozbieg, wejscie w nadwyzke), a memmove po 128 B PSRAM-u co trzy
-  // minuty jest za to kiepska zaplata. Sesja dluzsza niz okno pokazuje wiec swoje
-  // pierwsze 6,4 h i tyle.
-  if (gGraphCnt >= kGraphN) return;
   if (gGraphCnt != 0 &&
       static_cast<int32_t>(now - gGraphSampMs) < static_cast<int32_t>(kGraphStepMs)) {
     return;
@@ -1140,8 +1188,37 @@ void graphTick(const AutoModel& a, uint32_t now, bool fresh) {
   int v = static_cast<int>(a.kw * 10.f + 0.5f);
   if (v < 0) v = 0;
   if (v > 255) v = 255;
+
+  // (v189) BUFOR PELNY = PRZEWIJAMY, A NIE ZATRZYMUJEMY SIE. To ODWROCENIE decyzji
+  // z v188 i powod jest jeden: od v189 rysujemy OD PRAWEJ, gdzie prawa krawedz to
+  // zawsze "teraz". Zatrzymanie dopisywania po 6,4 h znaczyloby, ze prawa krawedz
+  // zastyga na chwili sprzed godzin, a wykres cichcem przestaje pokazywac biezaca
+  // moc — czyli klamie, i to w miejscu, w ktore patrzy sie najpierw. Przy rysowaniu
+  // od lewej (v188) ta sama decyzja byla dobra: tam zamarzal PRAWY, pusty skraj,
+  // a chroniony byl poczatek sesji.
+  //
+  // CENA JEST ZNANA I PRZYJETA: najstarsza probka wypada, wiec sesja dluzsza niz
+  // 6,4 h traci swoj rozbieg. Okno jedzie za biezaca chwila i pokazuje OSTATNIE
+  // 6,4 h zamiast pierwszych. Gdyby ktos chcial wrocic do v188, wystarczy w tym
+  // miejscu `if (gGraphCnt >= kGraphN) return;` — ale wtedy trzeba wrocic TAKZE do
+  // rysowania od lewej, inaczej wyjdzie zamarznieta prawa krawedz opisana wyzej.
+  //
+  // memmove po 128 B PSRAM-u wypada RAZ NA TRZY MINUTY i tylko przy pelnym buforze —
+  // przy zegarze 240 MHz to czas nie do zmierzenia w tej petli.
+  if (gGraphCnt >= kGraphN) {
+    memmove(gGraph, gGraph + 1, kGraphN - 1);
+    gGraphCnt = kGraphN - 1;
+  }
+
   gGraph[gGraphCnt++] = static_cast<uint8_t>(v);
+  // gGraphMax ZOSTAJE MAKSIMUM CALEJ SESJI, takze gdy szczyt wyjechal juz poza lewa
+  // krawedz. Przeliczanie go po przewinieciu (skan 128 B) byloby tanie, ale skala
+  // skakalaby wtedy w chwili, w ktorej z okna wypada pojedyncza probka — caly
+  // przebieg podskoczylby na wysokosc bez zadnej zmiany w mocy. Stala skala sesji
+  // czyta sie lepiej i to jest ta sama zasada, co przy zaokraglaniu w gore do
+  // pelnych kW: skala ma byc odniesieniem, a nie kolejnym ruchomym elementem.
   if (static_cast<uint8_t>(v) > gGraphMax) gGraphMax = static_cast<uint8_t>(v);
+  ++gGraphSeq;   // (v189) patrz deklaracja: BEZ TEGO wykres zamarza po 6,4 h
   gGraphSampMs = now;
 }
 
@@ -1200,10 +1277,15 @@ uint32_t signature(const AutoModel& a, bool fresh) {
   mix(gMsg);
   mix(fresh ? 1u : 0u);
 
-  // (v188) WYKRES MOCY — TRZY LICZBY, KTORE OPISUJA GO W CALOSCI. Liczba probek
-  // rosnie przy KAZDYM dopisaniu (i wraca do zera na poczatku sesji), wiec sama
-  // wylapuje zmiane zawartosci bufora; maksimum ustawia SKALE, czyli polozenie
-  // wszystkich slupkow i napis "N kW" przy krawedzi; gCharging przelacza wypelnienie
+  // (v189) WYKRES MOCY — CZTERY LICZBY, KTORE OPISUJA GO W CALOSCI. Czwarta doszla
+  // razem z PRZEWIJANIEM: gGraphSeq rosnie przy kazdej dopisanej probce takze wtedy,
+  // gdy bufor jest pelny i gGraphCnt stoi juz na 128, a wtedy caly przebieg jedzie
+  // o kolumne w lewo i prawa krawedz dostaje nowa wartosc. Bez tego pola podpis po
+  // 6,4 h sesji przestawalby sie zmieniac i WYKRES ZAMARZALBY na ostatnim obrazie,
+  // choc dane plynelyby dalej — ten sam blad zlapano w tym pliku juz dwa razy.
+  // Liczba probek rosnie przy KAZDYM dopisaniu do pelna (i wraca do zera na poczatku
+  // sesji), wiec do 6,4 h wystarcza sama; maksimum ustawia SKALE, czyli polozenie
+  // wszystkich slupkow i napis "NkW" przy lewej krawedzi; gCharging przelacza wypelnienie
   // miedzy pelnym a rastrem. Bufora NIE mieszamy bajt po bajcie — to 128 odczytow
   // z PSRAM-u na kazdy obieg petli rysowania za informacje, ktora niesie juz licznik.
   //
@@ -1213,6 +1295,7 @@ uint32_t signature(const AutoModel& a, bool fresh) {
   // mialoby prawa sie przerysowac.
   mix(gGraphCnt);
   mix(gGraphMax);
+  mix(gGraphSeq);   // (v189) przewiniecie okna — patrz akapit wyzej
   mix(gCharging ? 1u : 0u);
 
   if (fresh) {
