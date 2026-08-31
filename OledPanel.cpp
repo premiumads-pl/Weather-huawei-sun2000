@@ -213,12 +213,21 @@ uint32_t gEdgeAt[4] = {}; // millis() ostatniego przyjetego zbocza — holdoff d
 
 // ============================ SIATKA UKLADU ==================================
 // Liczby POLICZONE z metryk fontow (xAdvance kazdego glifu), a nie przymierzone na
-// oko. Najciasniejsze miejsce calego panelu to wiersz ekranu TEST: "GPIO15" konczy
-// sie na x=56, a prawostronnie wyrownany napis "WCIŚNIĘTY" (53 px) zaczyna sie na
-// x=72 — zostaje 15 px przerwy. Pozostale zapasy: nazwa trybu na ekranie
-// spoczynkowym ("CAŁA NAPRZÓD", 93 px w f13) ma 32 px do prawej krawedzi, wiersz
-// menu ("SŁOŃCE + MIN.", 85 px w f11) ma 26 px do kropki trybu aktywnego, a kolumna
-// MOC ("99,9 kW", 47 px w f11) ma 18 px do kolumny BATERIA.
+// oko. (v190) NAJCIASNIEJSZE MIEJSCE CALEGO PANELU PRZENIOSLO SIE Z EKRANU TEST NA
+// WIERSZ WARTOSCI EKRANU SPOCZYNKOWEGO: przy pelnej mocy ladowarki "11,0 kW" (45 px
+// w f13) konczy sie na x=47, a wysrodkowany blok ikon zrodla zaczyna sie na x=54 —
+// zostaje 6 px przerwy. Ekran TEST jest drugi: "GPIO15" konczy sie na x=56, a
+// prawostronnie wyrownany napis "WCIŚNIĘTY" (53 px) zaczyna sie na x=72, czyli
+// 15 px przerwy. Pozostale zapasy: nazwa trybu na ekranie spoczynkowym
+// ("CAŁA NAPRZÓD", 93 px w f13) ma 32 px do prawej krawedzi, wiersz menu
+// ("SŁOŃCE + MIN.", 85 px w f11) ma 26 px do kropki trybu aktywnego, a blok ikon
+// zrodla ma 15 px do wyrownanego w prawo "100 %" (36 px w f13).
+//
+// SZESC PIKSELI TO MALO I TAK MA BYC. Gdyby ta przerwa miala urosnac, musialby
+// przesunac sie blok ikon — a on stoi POSRODKU EKRANU i to jest jedyna rzecz,
+// ktora go tam trzyma. Przypadek 11 kW to maksimum ladowarki (jednorazowo, przy
+// ladowaniu z sieci); typowa nadwyzka fotowoltaiczna to "2,0 kW" = 38 px, czyli
+// 13 px przerwy.
 constexpr int kW = 128;
 constexpr int kMarginX = 3;
 
@@ -230,8 +239,23 @@ constexpr int kIdleTagY = 8;     // tytul menu / ekranu TEST, f10
 // (v188) EKRAN SPOCZYNKOWY PO PRZEBUDOWIE — linie bazowe (dolna krawedz liter,
 // standard GFX). Wyleciaty stad DWA WIERSZE TEKSTU: "TRYB" z gory (nazwa trybu mowi
 // sama za siebie, a etykieta nad nia byla powtorka) i zdanie na dole ("ładuję ze
-// słońca"), ktore zastapily dwie ikony zrodla przy wartosci mocy. Zwolniony w ten
-// sposob DOLNY PAS, 22 wiersze, dostal wykres mocy ladowania — patrz drawGraph().
+// słońca"), ktore zastapily dwie ikony zrodla przy wartosci mocy.
+//
+// (v190) WYLECIAL TRZECI WIERSZ — ETYKIETY "MOC" / "BATERIA" (dawne kIdleLabY = 27).
+// Napisy "kW" i "%" stoja przy samych liczbach i mowia dokladnie to samo, co te
+// etykiety, wiec byly TRZECIM juz powtorzeniem na tym ekranie — po "TRYB" i po
+// zdaniu na dole. Zwolniony wiersz nie poszedl jednak na powietrze, tylko na DWIE
+// rzeczy naraz: wartosci urosly z f11 na f13, a wykres dostal 10 dodatkowych
+// wierszy (pas z 22 na 32). Na dwa metry wiekszy font wazy wiecej niz podpis.
+//
+// F13 JEST TU WEZSZY OD F11 MIMO WIEKSZEJ WYSOKOSCI i to nie jest przeoczenie,
+// tylko zmierzona wlasciwosc tych dwoch tablic (suma xAdvance, jak stringWidth):
+//   "11,0 kW"  f11 = 47 px   f13 = 45 px
+//   "2,0 kW"   f11 = 40 px   f13 = 38 px
+//   "100 %"    f11 = 34 px   f13 = 36 px
+// Na wartosci mocy — czyli tam, gdzie jest ciasno — wieksze litery ZAJMUJA MNIEJ
+// MIEJSCA. Procent jest o 2 px szerszy, ale stoi przy prawej krawedzi, gdzie zapasu
+// jest 15 px, wiec nie ma to znaczenia.
 //
 // LICZBY SA POLICZONE Z METRYK FONTOW, nie przymierzone. Skrajne piksele glifow
 // (xOffset/yOffset kazdego uzytego znaku) przy tych bazach wypadaja tak:
@@ -240,22 +264,29 @@ constexpr int kIdleTagY = 8;     // tytul menu / ekranu TEST, f10
 //                                    11 kreska nad "Ó" wypadlaby na y = -1 i px()
 //                                    odcielaby ja bez sladu)
 //   kreska             y = 16
-//   "MOC" / "BATERIA"  y = 20..26
-//   wartosci, f11      y = 29..39   (z ogonkiem przecinka w "2,0")
-//   wykres             y = 42..63
+//   wartosci, f13      y = 18..29   (gora od "k" w "kW", yOffset -11; dol od ogonka
+//                                    przecinka w "2,0", ktory schodzi na sama baze)
+//   wykres             y = 32..63
 // "brak danych" w f13 ma ogonek "y" siegajacy y=14, czyli 2 px nad kreska — i to jest
 // jedyny napis, ktory tam schodzi.
 constexpr int kIdleModeY = 12;   // nazwa trybu, f13 — TERAZ PIERWSZY WIERSZ EKRANU
 constexpr int kIdleRuleY = 16;   // pozioma kreska
-constexpr int kIdleLabY = 27;    // "MOC" / "BATERIA", f10
-constexpr int kIdleValY = 38;    // wartosci, f11
-// (v188) KOLUMNA BATERIA PRZESUNIETA Z 68 NA 74 — o szerokosc ikon zrodla. Miedzy
-// wartoscia mocy ("99,9 kW" to 47 px w f11, czyli koniec na x=49) a ta kolumna musza
-// sie zmiescic OBIE ikony naraz (slonce 11 px + 2 px przerwy + wtyczka 7 px = 20 px,
-// pas x=52..71). Przy starych 68 zostawaloby 18 px i wtyczka wchodzilaby na "BATERIA".
-// Po przesunieciu "BATERIA" (38 px w f10) konczy sie na x=111, a "100 %" (34 px w f11)
-// na x=107 — do prawej krawedzi zostaje odpowiednio 16 i 20 px.
-constexpr int kIdleCol2X = 74;   // lewa krawedz kolumny BATERIA
+// (v190) BAZA WARTOSCI 29, A NIE 28 — I TO JEST METRYKA, NIE GUST. Litera "k" w f13
+// ma yOffset -11, wiec przy bazie 28 jej gorny piksel lezalby na y=17, DOKLADNIE
+// przy kresce z y=16 — "kW" dotykaloby jej i czytaloby sie jak podkreslenie. Baza 29
+// odsuwa napis o jeden wolny wiersz (y=17) i wciaz zostawia dwa wolne (y=30..31) do
+// gornej granicy wykresu, bo ogonek przecinka schodzi najwyzej na sama baze.
+constexpr int kIdleValY = 29;    // wartosci, f13
+// (v190) PROCENT BATERII WYROWNANY W PRAWO, a nie do stalej kolumny (dawne
+// kIdleCol2X = 74). Kolumna miala sens, dopoki nad wartoscia stala etykieta, ktorej
+// lewa krawedz trzeba bylo z czyms zgrac; bez etykiety liczba wisiala w powietrzu
+// z rosnaca dziura po prawej — "9 %" konczylo sie 27 px przed krawedzia, "100 %" 16.
+// Wyrownanie w prawo daje jej STALY punkt zaczepienia: prawa krawedz napisu nie
+// rusza sie przy przejsciu z 9 na 10 i z 99 na 100 procent, a to jest jedyne miejsce
+// tego wiersza, ktore zmienia szerokosc. 125 to ta sama krawedz, na ktorej konczy
+// sie nadwozie ikony auta (kCarX1) i stan przycisku na ekranie TEST (kTestRightX),
+// czyli 3 px do brzegu szkla — tyle samo, co kMarginX po lewej.
+constexpr int kIdleRightX = 125; // prawa krawedz kolumny BATERIA
 
 // (v186) Ikona auta — PRAWY GORNY ROG ekranu spoczynkowego, x 107..125, y 2..10.
 // (v188) MIEJSCA NIE ZMIENILISMY ANI O PIKSEL, mimo ze pod ikone wjechala nazwa
@@ -273,20 +304,42 @@ constexpr int kCarBodyY1 = 8;    // dolna krawedz nadwozia
 constexpr int kCarRoofY = 2;     // szczyt dachu
 constexpr int kCarWheelY = 10;   // dol kol
 
-// (v188) IKONY ZRODLA — pas x=52..71 miedzy wartoscia mocy a kolumna BATERIA.
+// (v188) IKONY ZRODLA — miedzy wartoscia mocy a procentem baterii.
 // Slonce stoi ZAWSZE w tym samym miejscu, takze gdy jest jedyna ikona: staly punkt
 // zaczepienia czyta sie jako "tu jest zrodlo", a ikona skaczaca w lewo i w prawo
 // zaleznie od tego, czy obok stoi druga — jako usterka rysowania.
-constexpr int kSrcSunCx = 57;    // srodek slonca (tarcza r=3, promienie do +-5)
-constexpr int kSrcPlugX = 65;    // lewa krawedz wtyczki (szerokosc 7)
-constexpr int kSrcCy = 34;       // srodek pionowy obu ikon = srodek wiersza wartosci
+//
+// (v190) BLOK PRZESUNIETY Z x=52..71 NA x=54..73, czyli DOKLADNIE NA SRODEK EKRANU:
+// slonce 11 px + 2 px przerwy + wtyczka 7 px = 20 px, a (128 - 20) / 2 = 54, wiec po
+// obu stronach zostaje po 54 px. To srodek BLOKU, nie slonca — regula "slonce stoi
+// zawsze tak samo" zostaje w mocy, wiec przy samym sloncu wieniec promieni wypada
+// 4 px na lewo od osi ekranu. Wysrodkowanie ma tu byc zaczepieniem dla oka, ktore
+// przebiega wiersz od lewej do prawej (moc — zrodlo — bateria), a nie osia symetrii
+// do sprawdzania linijka.
+//
+// SRODEK PIONOWY 24, A NIE 23 (srodek calego pasa liter): ikony maja sie zgrac
+// z CYFRAMI, a te w f13 przy bazie 29 zajmuja y=20..28, czyli maja srodek na 24.
+// Ascender "k" siega wyzej (y=18), ale to jedna litera na koncu napisu i rownanie
+// do niej scieloby ikony o piksel w gore wzgledem tego, z czym naprawde sasiaduja.
+// Przy cy=24 slonce zajmuje y=19..29, wtyczka y=19..28 — obie z 2 px zapasu
+// i do kreski (y=16), i do gornej granicy wykresu (y=32).
+constexpr int kSrcSunCx = 59;    // srodek slonca (tarcza r=3, promienie do +-5)
+constexpr int kSrcPlugX = 67;    // lewa krawedz wtyczki (szerokosc 7)
+constexpr int kSrcCy = 24;       // srodek pionowy obu ikon = srodek cyfr wiersza
 constexpr uint8_t kSrcSunLo = 10;   // ponizej: sama wtyczka
 constexpr uint8_t kSrcSunHi = 90;   // powyzej: samo slonce
 constexpr float kSrcMinKw = 0.1f;   // ponizej: ZADNEJ ikony — nie ma czego dzielic
 
-// (v188) WYKRES MOCY LADOWANIA — DOLNY PAS, y=42..63, cala szerokosc ekranu.
+// (v188) WYKRES MOCY LADOWANIA — DOLNY PAS, cala szerokosc ekranu.
+// (v190) PAS UROSL Z y=42..63 NA y=32..63, czyli z 22 na 32 wiersze — o polowe.
+// Dziesiec wierszy przyszlo z wykasowanego wiersza etykiet "MOC" / "BATERIA"
+// (patrz kIdleValY wyzej). Zmienila sie WYLACZNIE wysokosc rysowania: bufor
+// zostaje w PSRAM, probek dalej jest 128, okno dalej ma 6,4 h.
 //   kGraphY1 to LINIA ZERA (os czasu), a kGraphY0 to poziom maksimum skali,
-//   czyli na slupek zostaje kGraphY1 - kGraphY0 = 21 px wysokosci.
+//   czyli na slupek zostaje kGraphY1 - kGraphY0 = 31 px wysokosci (bylo 21).
+// Rozdzielczosc pionowa rosnie wiec o polowe i to jest cala rzecz: przy typowej
+// nadwyzce 2 kW slupek mial 21 px na pelna skale, teraz ma 31, czyli roznica
+// miedzy 1,5 a 2,5 kW to 15 px zamiast 10.
 // 128 PROBEK NA 128 KOLUMN, jedna kolumna = jedna probka = 3 minuty. Okno wychodzi
 // 6,4 h i to jest liczba dobrana do ZJAWISKA, a nie do wygody: tyle mniej wiecej
 // trwa pelna sesja z niskiego stanu baterii, wiec typowy przebieg miesci sie na
@@ -298,7 +351,7 @@ constexpr float kSrcMinKw = 0.1f;   // ponizej: ZADNEJ ikony — nie ma czego dz
 // odwrotnie: OSTATNIA probka zawsze na x=127, starsze w lewo, wolne kolumny (sesja
 // krotsza niz okno) zostaja PO LEWEJ. Tak dziala kazdy wykres kroczacy i tylko tak
 // prawa krawedz znaczy zawsze to samo.
-constexpr int kGraphY0 = 42;
+constexpr int kGraphY0 = 32;   // (v190) bylo 42 — patrz akapit wyzej
 constexpr int kGraphY1 = 63;
 constexpr int kGraphN = 128;        // probek = kolumn ekranu
 constexpr int kGraphHourPx = 20;    // kreska godzinowa: 20 probek x 3 min = 60 min
@@ -309,7 +362,11 @@ constexpr int kGraphHourPx = 20;    // kreska godzinowa: 20 probek x 3 min = 60 
 // musza byc 4 kW. Arytmetyka byla dobra, napis nie mowil, DO CZEGO sie odnosi.
 // Przy lewej krawedzi, dokladnie na gornej granicy pasa, czyta sie jednoznacznie:
 // "gora tego wykresu to tyle". Format bez spacji ("2kW"), bo napis ma byc etykieta
-// osi, a nie odczytem — te z jednostka i przecinkiem stoi wyzej, w wierszu MOC.
+// osi, a nie odczytem — ten z przecinkiem i spacja ("2,0 kW") stoi wyzej, przy lewej
+// krawedzi wiersza wartosci. (v190) Ta roznica zapisu robi teraz WIECEJ niz do v189:
+// odkad etykiety "MOC" / "BATERIA" zniknely, "2,0 kW" w f13 i "2kW" w f10 sa dwoma
+// jedynymi napisami z jednostka na tym ekranie i musza sie od siebie odroznic samym
+// wygladem — inaczej ten mniejszy czytaloby sie jak drugi, mniej wazny odczyt mocy.
 constexpr int kGraphSclX = 0;       // lewa krawedz napisu "NkW"
 constexpr uint32_t kGraphStepMs = 180000;  // 3 min miedzy probkami
 // Poczatek sesji: moc przekroczyla ten prog PO co najmniej takiej przerwie ponizej.
@@ -554,7 +611,7 @@ uint8_t srcIcons(const AutoModel& a, bool fresh) {
   // PONIZEJ 0,1 kW NIE MA ZADNEJ IKONY, i to nie jest oszczednosc miejsca. Przy
   // niedzialajacym ladowaniu `sp` nie ma z czego wyjsc i przychodzi jako 0, czyli
   // "same z sieci" — a to jest zdanie o przeplywie, ktorego nie ma. Brak ikony
-  // mowi "nie laduje", tak samo jak kreska w kolumnie MOC mowi "nie wiem".
+  // mowi "nie laduje", tak samo jak kreska zamiast mocy mowi "nie wiem".
   if (!fresh || a.kw < kSrcMinKw) return 0;
   uint8_t m = 0;
   if (a.sunPct >= kSrcSunLo) m |= kSrcSun;
@@ -619,8 +676,8 @@ void drawPlugIcon(int x0, int cy) {
 // TRZECI STAN — BRAK SWIEZYCH DANYCH — ROZSTRZYGA WYWOLUJACY, nie ta funkcja: przy
 // !fresh drawIdle w ogole tu nie wchodzi i ikony nie ma na ekranie wcale. Wtedy nie
 // wiemy NIC, a pusty obrys twierdzilby "sprawdzilem, polaczenia nie ma" — czyli
-// klamalby o wiedzy, ktorej nie mamy. To ta sama konwencja, co kreski w kolumnach
-// MOC i BATERIA oraz "brak danych z auta" w dolnym wierszu.
+// klamalby o wiedzy, ktorej nie mamy. To ta sama konwencja, co kreski zamiast mocy
+// i procentu baterii oraz "brak danych" zamiast nazwy trybu.
 //
 // PRYMITYWY, NIE BITMAPA. Tablica na te sylwetke to ~24 B stalych plus kod blittera,
 // a kilkanascie hline() nie kosztuje ANI BAJTA pamieci — ta sama zasada rzadzi calym
@@ -698,7 +755,12 @@ void drawGraph(bool fresh) {
   // Strona spoza pasa wykresu: wychodzimy PRZED petla po 128 kolumnach. Bez tego
   // kazda z osmiu stron przechodzilaby przez caly wykres, zeby px() odrzucilo
   // wszystko co do piksela — osiem razy wiecej pracy niz trzeba, przy pasie, ktory
-  // lezy na trzech stronach z osmiu.
+  // lezy na czterech stronach z osmiu.
+  // (v190) PO PODNIESIENIU GORNEJ GRANICY NA y=32 PAS ZACZYNA SIE DOKLADNIE NA
+  // GRANICY STRONY (32 = 4 x 8), wiec zajmuje strony 4..7 W CALOSCI. Do v189 gorna
+  // granica (y=42) lezala w srodku strony 5 i te strone caly wykres przechodzil dla
+  // szesciu wierszy z osmiu. Pas urosl o polowe, a stron do przejscia przybyla
+  // JEDNA — z trzech na cztery — i zadna nie jest juz przechodzona na wpol darmo.
   if (gRow0 > kGraphY1 || gRow0 + 7 < kGraphY0) return;
 
   // Skala: maksimum sesji (w 0,1 kW) w gore do pelnych kW, nigdy mniej niz 1 kW —
@@ -707,10 +769,19 @@ void drawGraph(bool fresh) {
   int kwMax = (gGraphMax + 9) / 10;
   if (kwMax < 1) kwMax = 1;
 
-  const int h = kGraphY1 - kGraphY0;   // 21 px na kwMax kW
+  const int h = kGraphY1 - kGraphY0;   // (v190) 31 px na kwMax kW — bylo 21
   // LINIE POMOCNICZE CO 1 kW TYLKO WTEDY, GDY NA 1 kW WYPADAJA CO NAJMNIEJ 3 px.
   // Ciasniej niz co 3 px kropkowane linie zlewaja sie na monochromie w szara kase,
   // ktora zaslania przebieg zamiast go opisywac — wtedy przechodzimy na co 2 kW.
+  //
+  // (v190) WARUNEK ZOSTAJE BEZ ZMIANY I TO JEST SPRAWDZONE, A NIE PRZEOCZONE. Jest
+  // liczony z `h`, wiec sam nadaza za wyzszym pasem — a nadazyc musial, bo prog
+  // przesunal sie mocno: przy h=21 linie co 1 kW przechodzily do kwMax=7 (21/7=3),
+  // przy h=31 przechodza do kwMax=10 (31/10=3). Policzone polozenia dla nowego pasa:
+  //   kwMax=10 → 9 linii co 3 px (najgesciej, jakie ten warunek przepuszcza)
+  //   kwMax=11 → step 2 kW, 5 linii co 5-6 px (31/11=2, wiec 1 kW odpada)
+  // Najgestszy przypadek trafia dokladnie w prog 3 px, czyli w to, co ta regula
+  // mowi — nie ma tu nic do poprawiania, jest co potwierdzic.
   const int stepKw = ((h / kwMax) >= 3) ? 1 : 2;
   // Solidne wypelnienie tylko przy TRWAJACEJ sesji I swiezych danych; inaczej —
   // szachownica. `fresh` jest tu razem z gCharging, bo milczaca od 45 s automatyka
@@ -762,19 +833,24 @@ void drawGraph(bool fresh) {
   hline(0, kW - 1, kGraphY1, true);   // linia zera = os czasu
 
   // (v189) MAKSIMUM SKALI PRZY LEWEJ KRAWEDZI, NA GORNEJ GRANICY PASA, NA WYCZYSZCZONYM
-  // TLE. Baza liter to kGraphY0 + 8 = 50 i to nie jest okragla liczba, tylko metryka
-  // f10: "k" ma yOffset -8, wiec przy tej bazie jego gorny piksel lezy dokladnie na
-  // y=42, czyli NA gornej granicy pasa. O piksel wyzej px() scielaby mu czubek,
+  // TLE. Baza liter to kGraphY0 + 8 i to nie jest okragla liczba, tylko metryka f10:
+  // "k" ma yOffset -8, wiec przy tej bazie jego gorny piksel lezy dokladnie na
+  // kGraphY0, czyli NA gornej granicy pasa. O piksel wyzej px() scielaby mu czubek,
   // o piksel nizej napis odklejalby sie od granicy, ktora ma opisywac. Cyfry (yOffset
-  // -7) siegaja y=43 i to jest w porzadku — granice wyznacza litera obok.
+  // -7) siegaja kGraphY0 + 1 i to jest w porzadku — granice wyznacza litera obok.
+  // (v190) BAZA JEST LICZONA Z kGraphY0, WIEC PRZY PODNIESIENIU PASA NA y=32 NIE BYLO
+  // TU NIC DO PRZESTAWIANIA: napis pojechal razem z granica na y=32..40, tak jak
+  // stal na 42..50. To wlasnie dlatego stoi tu wyrazenie, a nie wpisana liczba 50.
   //
   // KASOWANIE PROSTOKATA POD NAPISEM jest tu WAZNIEJSZE niz w v188, bo od v189 slupki
   // dochodza przy dlugiej sesji az do LEWEJ krawedzi: bez tla napis lezalby wprost na
   // wypelnieniu i na kreskach siatki. Cena: "11kW" (najszerszy przypadek — 11 kW to
   // maksimum ladowarki) ma 24 px, wiec z jednopikselowym odstepem prostokat zjada
-  // kolumny 0..24 w wierszach 42..50 — 25 ze 128 kolumn, gorne 9 z 22 wierszy pasa,
+  // kolumny 0..24 w wierszach 32..40 — 25 ze 128 kolumn i gorne 9 wierszy pasa,
   // czyli szczyty slupkow z NAJSTARSZYCH 75 minut okna. Typowe "2kW" to 18 px i 19
-  // kolumn. To jest ta sama swiadoma wymiana, co w v188, tylko przeniesiona z rogu,
+  // kolumn. (v190) TA CENA SPADLA O POLOWE, choc prostokat ma te same wymiary:
+  // przy pasie 22-wierszowym zjadal 9 z 22 wierszy, przy 32-wierszowym zjada 9 z 32.
+  // To jest ta sama swiadoma wymiana, co w v188, tylko przeniesiona z rogu,
   // gdzie napis klamal o tym, czego dotyczy: wykres bez podanej skali jest ladnym
   // ksztaltem, a nie pomiarem, a najstarszy skraj okna to najtansze miejsce, jakie
   // przy rysowaniu od prawej w ogole zostalo.
@@ -800,9 +876,18 @@ void drawIdle(const AutoModel& a, bool fresh) {
 
   hline(0, kW - 1, kIdleRuleY, true);
 
-  str(plex::f10(), "MOC", kMarginX, kIdleLabY, true);
-  str(plex::f10(), "BATERIA", kIdleCol2X, kIdleLabY, true);
-
+  // (v190) JEDEN WIERSZ ZAMIAST DWOCH. Do v189 stal tu wiersz etykiet ("MOC" po
+  // lewej, "BATERIA" od x=74) i pod nim wiersz wartosci w f11. Etykiety wylecialy
+  // w calosci: "kW" i "%" stoja przy samych liczbach i mowia to samo, a na dwa metry
+  // WIEKSZY FONT WAZY WIECEJ NIZ PODPIS. Wartosci przeszly z f11 na f13 — i to nie
+  // kosztuje ani piksela szerokosci, bo w tych tablicach f13 jest dla liczb WEZSZY
+  // od f11 mimo wiekszej wysokosci ("11,0 kW" to 45 px zamiast 47; pelny pomiar przy
+  // kIdleValY). Zwolniony wiersz poszedl na wykres: pas urosl z 22 na 32 px.
+  //
+  // TRZY PUNKTY ZACZEPIENIA, nie dwie kolumny: moc do LEWEJ krawedzi, ikona zrodla
+  // POSRODKU, procent do PRAWEJ. Kolumny mialy sens przy etykietach, ktore wyznaczaly
+  // im lewe krawedzie; bez nich jedynymi stalymi punktami tego wiersza sa krawedzie
+  // ekranu i jego srodek — i tylko na nich liczby stoja tak samo przy kazdej wartosci.
   char num[12];
   char val[16];
   if (fresh) {
@@ -811,16 +896,22 @@ void drawIdle(const AutoModel& a, bool fresh) {
   } else {
     snprintf(val, sizeof(val), "-");
   }
-  str(plex::f11(), val, kMarginX, kIdleValY, true);
+  str(plex::f13(), val, kMarginX, kIdleValY, true);
 
   if (fresh) {
     snprintf(val, sizeof(val), "%u %%", static_cast<unsigned>(a.soc));
   } else {
     snprintf(val, sizeof(val), "-");
   }
-  str(plex::f11(), val, kIdleCol2X, kIdleValY, true);
+  // Kreska przy braku danych tez idzie w prawo, na te sama krawedz, co liczba.
+  // Wyjatek "bez danych rysujemy od lewej" kazalby jej skakac przez pol ekranu
+  // w chwili, w ktorej automatyka milknie — czyli mowilby o polozeniu, a nie o
+  // danych. Ta sama zasada, co przy kolumnie MOC: kreska zastepuje liczbe w jej
+  // wlasnym miejscu.
+  strRight(plex::f13(), val, kIdleRightX, kIdleValY, true);
 
-  // (v188) IKONY ZRODLA obok wartosci mocy — pas x=52..71, srodek pionowy kSrcCy.
+  // (v188) IKONY ZRODLA obok wartosci mocy — (v190) blok x=54..73, czyli srodek
+  // ekranu; srodek pionowy kSrcCy = 24, na wysokosci cyfr.
   // Zadna, jedna albo obie; pelne uzasadnienie progow stoi przy srcIcons().
   const uint8_t src = srcIcons(a, fresh);
   if ((src & kSrcSun) != 0) drawSunIcon(kSrcSunCx, kSrcCy);
@@ -1273,6 +1364,26 @@ uint32_t signature(const AutoModel& a, bool fresh) {
     return h;
   }
 
+  // (v190) PRZEGLAD PODPISU PO SKASOWANIU WIERSZA ETYKIET — WYNIK: BEZ ZMIAN, i to
+  // jest wniosek z rachunku, a nie z przeoczenia. Regula tego pliku dziala w obie
+  // strony (patrz opis nad ta funkcja), wiec po kazdej przebudowie ekranu trzeba
+  // sprawdzic OBIE: czy nic widocznego nie wypadlo i czy nic martwego nie zostalo.
+  //   * NIC NIE WYPADLO. "MOC" i "BATERIA" byly LITERALAMI — tekstem wpisanym
+  //     w kod, ktory nie zalezal od zadnego pola modelu — wiec nigdy nie mialy
+  //     wlasnego wkladu do podpisu i nie ma stad czego usuwac. Tak samo font
+  //     (f11 → f13) i wspolrzedne: to stale kompilacji, ktore zmieniaja sie razem
+  //     z obrazem tylko przez nowy wsad, a nie w trakcie pracy.
+  //   * NIC NIE DOSZLO. Wiersz wartosci pokazuje DOKLADNIE te same dwie liczby,
+  //     co przedtem — a.kw (nizej, zaokraglone do 0,1 kW) i a.soc — tylko wiekszym
+  //     fontem i w innych miejscach. Wyrownanie procentu w prawo tez nic nie wnosi:
+  //     polozenie napisu liczy sie z jego szerokosci, czyli z tej samej wartosci.
+  //   * WYKRES UROSL, ALE NIE ZMIENIL ZRODEL. Wyzszy pas (y=32..63 zamiast 42..63)
+  //     przelicza slupki i siatke z tych samych czterech pol ponizej: gGraphCnt,
+  //     gGraphMax, gGraphSeq i gCharging. Wysokosc jest stala kompilacji.
+  // Kompletna lista tego, co widac na ekranie spoczynkowym, i pola, ktore to trzyma:
+  //   ikona auta → a.bleLink | nazwa trybu → a.mode | moc → a.kw | ikony zrodla →
+  //   srcIcons() | procent → a.soc | wykres → gGraphCnt, gGraphMax, gGraphSeq,
+  //   gCharging | wszystko naraz → fresh. Kazde z nich jest mieszane ponizej.
   mix(gCursor);
   mix(gMsg);
   mix(fresh ? 1u : 0u);
