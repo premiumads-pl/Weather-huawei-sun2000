@@ -3523,7 +3523,26 @@ void apiDiag() {
     // przy danych STARSZYCH niz cfg::AUTO_STALE_MS ikony na ekranie NIE MA WCALE,
     // a to pole dalej pokazuje ostatnia znana wartosc.
     AutoModel am{};
-    ol["ble"] = mqttha::autoSnapshot(am) && am.bleLink;
+    const bool haveAuto = mqttha::autoSnapshot(am);
+    ol["ble"] = haveAuto && am.bleLink;
+
+    // (v188) DWA POLA O PRZEBUDOWANYM EKRANIE SPOCZYNKOWYM — z tego samego powodu,
+    // co `ble` wyzej: zeby dalo sie sprawdzic, CO panel pokazuje, bez patrzenia na
+    // szklo i bez kabla USB.
+    //
+    // `sp` — udzial slonca w biezacym ladowaniu [%], czyli to, z czego panel liczy
+    // IKONE ZRODLA obok wartosci mocy (ponizej 10 sama wtyczka, powyzej 90 samo
+    // slonce, pomiedzy obie, a przy mocy ponizej 0,1 kW zadna). Zrodlem jest TA SAMA
+    // migawka, z ktorej rysuje panel — jeden odczyt autoSnapshot() na oba pola,
+    // bo drugie wolanie moglo by trafic w inna wiadomosc i pokazac `ble` z jednej,
+    // a `sp` z drugiej.
+    //
+    // `graf` — ile probek ma wykres mocy w dolnym pasie (0..128, jedna co 3 min).
+    // Stale 0 przy trwajacym ladowaniu znaczy, ze nie udala sie alokacja 128 B
+    // w PSRAM — a to jest jedyny objaw tej awarii, bo panel dziala wtedy normalnie,
+    // tylko bez wykresu (patrz oled::graphCount()).
+    ol["sp"] = haveAuto ? am.sunPct : 0;
+    ol["graf"] = oled::graphCount();
   }
 
   // --- DOTYK GPIO7: ile gestow policzylismy i ile ODRZUCILISMY ---

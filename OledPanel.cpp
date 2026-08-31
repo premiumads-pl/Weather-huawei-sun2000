@@ -93,6 +93,24 @@ uint32_t gI2cErr = 0;    // ile transakcji sie nie udalo (zerwany przewod, zly s
 // nullptr = podgladu nie ma; panel dziala wtedy bez zmiany.
 uint8_t* gShadow = nullptr;
 
+// (v188) BUFOR WYKRESU MOCY — 128 B, TAKZE W PSRAM, z tego samego powodu i tym
+// samym sposobem, co kopia obrazu wyzej. W statycznym RAM-ie zostaje SAM WSKAZNIK,
+// czyli 4 B: 128 B w .bss to prawie dziesiata czesc calego zapasu do bariery
+// 76 000 B, oddana za rzecz, ktora widac tylko na jednym z osmiu ekranow.
+// nullptr = wykresu po prostu NIE MA, reszta ekranu spoczynkowego dziala bez zmiany
+// (patrz drawGraph i graphTick — obie wychodza pierwsza linia). To NIE jest blad.
+//
+// JEDEN BAJT = JEDNA PROBKA, w jednostkach 0,1 kW (0..25,5 kW). Rozdzielczosc jest
+// DOKLADNIE taka, jak napisu "2,0 kW" nad wykresem — mniejsza rysowalaby roznice,
+// ktorych nie widac w liczbie, wieksza nie zmiescilaby sie w bajcie.
+uint8_t* gGraph = nullptr;
+uint8_t gGraphCnt = 0;    // ile probek jest w buforze (0..kGraphN)
+uint8_t gGraphMax = 0;    // najwieksza probka SESJI — trzymana, zeby nie skanowac
+                          // 128 B PSRAM-u osiem razy na klatke i raz na obieg petli
+bool gCharging = false;   // trwa sesja (dopisujemy) / skonczyla sie (przygaszamy)
+uint32_t gGraphHighMs = 0;  // millis() ostatniej chwili z moca >= kGraphOnKw
+uint32_t gGraphSampMs = 0;  // millis() ostatniej dopisanej probki
+
 // (v176) KOLEJKA WIRTUALNYCH NACISNIEC — maska ROL do obsluzenia (bit 0..3).
 // DWA ZADANIA, JEDNA SCIEZKA AKCJI: injectPress() wola zadanie serwera WWW, a
 // onKey() musi sie wykonac w zadaniu petli rysowania, bo dotyka calego stanu ekranu
@@ -194,26 +212,87 @@ uint32_t gEdgeAt[4] = {}; // millis() ostatniego przyjetego zbocza — holdoff d
 constexpr int kW = 128;
 constexpr int kMarginX = 3;
 
-// Ekran spoczynkowy — linie bazowe (dolna krawedz liter, standard GFX).
-constexpr int kIdleTagY = 8;     // "TRYB", f10
-constexpr int kIdleModeY = 23;   // nazwa trybu, f13
-constexpr int kIdleRuleY = 28;   // pozioma kreska
-constexpr int kIdleLabY = 39;    // "MOC" / "BATERIA", f10
-constexpr int kIdleValY = 50;    // wartosci, f11
-constexpr int kIdleTextY = 62;   // zdanie o tym, co sie dzieje, f10
-constexpr int kIdleCol2X = 68;   // lewa krawedz kolumny BATERIA
+// (v188) NAGLOWEK USTAWIEN I MENU — linia bazowa, ktora do v187 nosila takze napis
+// "TRYB" na ekranie spoczynkowym. Sam napis zniknal (patrz drawIdle nizej), nazwa
+// zostala: tytuly menu i ustawien stoja na niej dalej i nic ich nie rusza.
+constexpr int kIdleTagY = 8;     // tytul menu / ekranu TEST, f10
+
+// (v188) EKRAN SPOCZYNKOWY PO PRZEBUDOWIE — linie bazowe (dolna krawedz liter,
+// standard GFX). Wyleciaty stad DWA WIERSZE TEKSTU: "TRYB" z gory (nazwa trybu mowi
+// sama za siebie, a etykieta nad nia byla powtorka) i zdanie na dole ("ładuję ze
+// słońca"), ktore zastapily dwie ikony zrodla przy wartosci mocy. Zwolniony w ten
+// sposob DOLNY PAS, 22 wiersze, dostal wykres mocy ladowania — patrz drawGraph().
+//
+// LICZBY SA POLICZONE Z METRYK FONTOW, nie przymierzone. Skrajne piksele glifow
+// (xOffset/yOffset kazdego uzytego znaku) przy tych bazach wypadaja tak:
+//   nazwa trybu, f13   y =  0..11   ("CAŁA NAPRZÓD" — akcentowane wersaliki siegaja
+//                                    12 px nad baze, wiec baza 12 jest MINIMUM: przy
+//                                    11 kreska nad "Ó" wypadlaby na y = -1 i px()
+//                                    odcielaby ja bez sladu)
+//   kreska             y = 16
+//   "MOC" / "BATERIA"  y = 20..26
+//   wartosci, f11      y = 29..39   (z ogonkiem przecinka w "2,0")
+//   wykres             y = 42..63
+// "brak danych" w f13 ma ogonek "y" siegajacy y=14, czyli 2 px nad kreska — i to jest
+// jedyny napis, ktory tam schodzi.
+constexpr int kIdleModeY = 12;   // nazwa trybu, f13 — TERAZ PIERWSZY WIERSZ EKRANU
+constexpr int kIdleRuleY = 16;   // pozioma kreska
+constexpr int kIdleLabY = 27;    // "MOC" / "BATERIA", f10
+constexpr int kIdleValY = 38;    // wartosci, f11
+// (v188) KOLUMNA BATERIA PRZESUNIETA Z 68 NA 74 — o szerokosc ikon zrodla. Miedzy
+// wartoscia mocy ("99,9 kW" to 47 px w f11, czyli koniec na x=49) a ta kolumna musza
+// sie zmiescic OBIE ikony naraz (slonce 11 px + 2 px przerwy + wtyczka 7 px = 20 px,
+// pas x=52..71). Przy starych 68 zostawaloby 18 px i wtyczka wchodzilaby na "BATERIA".
+// Po przesunieciu "BATERIA" (38 px w f10) konczy sie na x=111, a "100 %" (34 px w f11)
+// na x=107 — do prawej krawedzi zostaje odpowiednio 16 i 20 px.
+constexpr int kIdleCol2X = 74;   // lewa krawedz kolumny BATERIA
 
 // (v186) Ikona auta — PRAWY GORNY ROG ekranu spoczynkowego, x 107..125, y 2..10.
-// Miejsce jest wolne i to jest sprawdzone, a nie zalozone: jedyna tresc na tej
-// wysokosci to "TRYB" w f10 przy lewym marginesie (kMarginX = 3, szerokosc napisu
-// 26 px, czyli koniec na x=29) — zostaje 77 px przerwy. Pierwsza rzecza siegajaca
-// w prawo jest dopiero pozioma kreska na kIdleRuleY = 28, osiemnascie wierszy nizej.
+// (v188) MIEJSCA NIE ZMIENILISMY ANI O PIKSEL, mimo ze pod ikone wjechala nazwa
+// trybu z dawnego kIdleModeY = 23. Zapas dalej jest i dalej jest policzony, tylko
+// z innego napisu: najszersza nazwa trybu ("CAŁA NAPRZÓD", 93 px w f13) zaczyna sie
+// na kMarginX = 3 i konczy na x=95, wiec do lewej krawedzi dachu (x=110) zostaje
+// 14 px przerwy, a do nadwozia (kCarX0 = 107) — 11 px. Pionowo tez sie mijaja:
+// glify f13 przy bazie 12 siegaja y=0..11, ikona y=2..10, czyli LEZA OBOK SIEBIE
+// w tym samym pasie i wlasnie dlatego 11 px odstepu jest tu warunkiem czytelnosci,
+// a nie ozdoba.
 constexpr int kCarX0 = 107;      // lewa krawedz nadwozia
 constexpr int kCarX1 = 125;      // prawa krawedz nadwozia (2 px do krawedzi ekranu)
 constexpr int kCarBodyY0 = 5;    // gorna krawedz nadwozia
 constexpr int kCarBodyY1 = 8;    // dolna krawedz nadwozia
 constexpr int kCarRoofY = 2;     // szczyt dachu
 constexpr int kCarWheelY = 10;   // dol kol
+
+// (v188) IKONY ZRODLA — pas x=52..71 miedzy wartoscia mocy a kolumna BATERIA.
+// Slonce stoi ZAWSZE w tym samym miejscu, takze gdy jest jedyna ikona: staly punkt
+// zaczepienia czyta sie jako "tu jest zrodlo", a ikona skaczaca w lewo i w prawo
+// zaleznie od tego, czy obok stoi druga — jako usterka rysowania.
+constexpr int kSrcSunCx = 57;    // srodek slonca (tarcza r=3, promienie do +-5)
+constexpr int kSrcPlugX = 65;    // lewa krawedz wtyczki (szerokosc 7)
+constexpr int kSrcCy = 34;       // srodek pionowy obu ikon = srodek wiersza wartosci
+constexpr uint8_t kSrcSunLo = 10;   // ponizej: sama wtyczka
+constexpr uint8_t kSrcSunHi = 90;   // powyzej: samo slonce
+constexpr float kSrcMinKw = 0.1f;   // ponizej: ZADNEJ ikony — nie ma czego dzielic
+
+// (v188) WYKRES MOCY LADOWANIA — DOLNY PAS, y=42..63, cala szerokosc ekranu.
+//   kGraphY1 to LINIA ZERA (os czasu), a kGraphY0 to poziom maksimum skali,
+//   czyli na slupek zostaje kGraphY1 - kGraphY0 = 21 px wysokosci.
+// 128 PROBEK NA 128 KOLUMN, jedna kolumna = jedna probka = 3 minuty. Okno wychodzi
+// 6,4 h i to jest liczba dobrana do ZJAWISKA, a nie do wygody: tyle mniej wiecej
+// trwa pelna sesja z niskiego stanu baterii, wiec caly przebieg miesci sie na
+// ekranie bez przewijania i bez usredniania.
+constexpr int kGraphY0 = 42;
+constexpr int kGraphY1 = 63;
+constexpr int kGraphN = 128;        // probek = kolumn ekranu
+constexpr int kGraphHourPx = 20;    // kreska godzinowa: 20 probek x 3 min = 60 min
+constexpr int kGraphSclX = 125;     // prawa krawedz napisu "N kW" (2 px do krawedzi)
+constexpr uint32_t kGraphStepMs = 180000;  // 3 min miedzy probkami
+// Poczatek sesji: moc przekroczyla ten prog PO co najmniej takiej przerwie ponizej.
+// 0,3 kW jest wyraznie powyzej szumu pomiaru i ponizej najslabszego realnego
+// ladowania (1-fazowo 6 A to ~1,4 kW), a 10 minut przerwy nie da sie pomylic
+// z chwilowym zanikiem nadwyzki z falownika przy przechodzacej chmurze.
+constexpr float kGraphOnKw = 0.3f;
+constexpr uint32_t kGraphGapMs = 600000;   // 10 min ciszy = koniec sesji
 
 // Menu i test — cztery wiersze po 13 px, pierwszy zaczyna sie na y=12.
 // Ostatni konczy sie dokladnie na y=63, czyli wypelnia ekran co do piksela.
@@ -421,30 +500,84 @@ void strRight(const pltxt::FontSet& f, const char* t, int right, int baseline, b
 
 // ============================ TRESC EKRANOW ==================================
 
-// Jedno zdanie o tym, CO SIE TERAZ DZIEJE — nie powtorka trybu, tylko jego skutek.
-// Zamknieta lista, tak samo jak autoStateLabel() w AutoData.h i z tego samego
-// powodu: napis ma sie zmiescic w 122 px, a gdyby przychodzil gotowy z Home
-// Assistanta, kazde slowo dopisane po tamtej stronie potrafiloby rozwalic uklad.
-// Najdluzsza pozycja to "ładowanie wyłączone" (97 px w f10) — 25 px zapasu.
-const char* sceneLine(const AutoModel& a, bool fresh) {
-  if (!fresh) return "brak danych z auta";
-  // "laduje" SPRAWDZAMY PRZED kablem, mimo ze wyglada to na odwrotna kolejnosc.
-  // Oba pola przychodza z tej samej wiadomosci, ale nie musza byc spojne (integracja
-  // Tesli potrafi odswiezyc jedno przed drugim). Gdy sie klocza, wierzymy temu, co
-  // mowi o PRZEPLYWIE ENERGII: napis "brak kabla" przy realnie ladujacym aucie
-  // jest bledem, ktory wlasciciel zobaczy i ktoremu uwierzy.
-  if (a.stateIs("laduje")) {
-    if (a.modeIs("PV")) return "ładuje ze słońca";
-    if (a.modeIs("PV+MIN")) return "słońce + minimum";
-    if (a.modeIs("MAX")) return "ładuje pełną mocą";
-    return "ładuje";
-  }
-  if (!a.cable) return "brak kabla";
-  if (a.stateIs("czeka")) return a.modeIs("PV") ? "czeka na słońce" : "czeka na warunki";
-  if (a.stateIs("stoi")) return a.modeIs("OFF") ? "ładowanie wyłączone" : "postój, nie ładuje";
-  if (a.stateIs("spi")) return "auto śpi";
-  if (a.stateIs("brak")) return "brak kabla";
-  return "stan nieznany";
+// (v188) IKONY ZRODLA — CO WIDAC, W JEDNEJ LICZBIE.
+//
+// Do v187 stalo w tym miejscu ZDANIE na dole ekranu ("ładuje ze słońca", "czeka na
+// słońce", "brak kabla"...). Zniklo nie dlatego, ze bylo zle, tylko dlatego, ze bylo
+// DRUGIM napisem o tym samym: nazwa trybu stoi juz na gorze wielkimi literami, a
+// jedyna rzecza, ktorej nie dalo sie z niej odczytac, bylo ZRODLO PRADU plynacego
+// w te sekunde. Zrodlo miesci sie w dwoch ikonach obok wartosci mocy — i dopiero
+// zwolniony w ten sposob dolny pas dal miejsce na wykres, ktory pokazuje cala sesje
+// zamiast jednej chwili.
+//
+// Zwraca MASKE tego, co ma sie znalezc na szkle: bit 0 = slonce, bit 1 = wtyczka.
+// Osobna funkcja, a nie warunki wprost w drawIdle, bo TE SAME dwa bity musza wejsc
+// do signature() — i to jest cala jej racja bytu. Gdyby podpis mieszal surowe
+// `sunPct`, kazda zmiana o jeden procent skladalaby pelna klatke (osiem stron,
+// ~25 ms) mimo ze na ekranie nie zmienia sie ani jeden piksel; a gdyby liczyl te
+// bity po swojemu, byloby to drugie miejsce z progami 10/90 do rozjechania.
+//
+// PROGI 10 I 90 SA SZEROKIE CELOWO. Udzial slonca liczy sie z nadwyzki, ktora
+// faluje przy kazdej chmurze, wiec ostry prog w polowie skali dawalby ikone
+// zapalajaca sie i gasnaca co kilkanascie sekund — czyli migotanie, ktore czyta
+// sie jak usterka. Przedzial 10..90 pokazuje OBIE ikony i to jest prawda o tym,
+// co sie wtedy dzieje: energia idzie z dwoch zrodel naraz.
+constexpr uint8_t kSrcSun = 1;
+constexpr uint8_t kSrcPlug = 2;
+
+uint8_t srcIcons(const AutoModel& a, bool fresh) {
+  // PONIZEJ 0,1 kW NIE MA ZADNEJ IKONY, i to nie jest oszczednosc miejsca. Przy
+  // niedzialajacym ladowaniu `sp` nie ma z czego wyjsc i przychodzi jako 0, czyli
+  // "same z sieci" — a to jest zdanie o przeplywie, ktorego nie ma. Brak ikony
+  // mowi "nie laduje", tak samo jak kreska w kolumnie MOC mowi "nie wiem".
+  if (!fresh || a.kw < kSrcMinKw) return 0;
+  uint8_t m = 0;
+  if (a.sunPct >= kSrcSunLo) m |= kSrcSun;
+  if (a.sunPct <= kSrcSunHi) m |= kSrcPlug;
+  return m;
+}
+
+// SLONCE — tarcza r=3 i osiem promieni po jednym pikselu w odleglosci 5 od srodka.
+// Calosc miesci sie w 11 x 11 px (cx-5..cx+5, cy-5..cy+5).
+//
+// PROMIENIE PO JEDNYM PIKSELU, A NIE KRESKI: przy tarczy o srednicy 7 px kreska
+// dluzsza niz piksel zlewa sie z tarcza w klaks, ktory z dwoch metrow czyta sie jak
+// kropka. Osiem osobnych punktow w regularnym wiencu widac jako slonce nawet wtedy,
+// gdy pojedynczego punktu nie da sie rozroznic — to ten sam mechanizm, dzieki
+// ktoremu ikona auta obok dziala przy 19 x 9 px.
+void drawSunIcon(int cx, int cy) {
+  disc(cx, cy, 3, true);
+  px(cx, cy - 5, true);          // gora / dol / lewo / prawo
+  px(cx, cy + 5, true);
+  px(cx - 5, cy, true);
+  px(cx + 5, cy, true);
+  px(cx - 4, cy - 4, true);      // skosy
+  px(cx + 4, cy - 4, true);
+  px(cx - 4, cy + 4, true);
+  px(cx + 4, cy + 4, true);
+}
+
+// WTYCZKA — 7 x 10 px, lewa krawedz na x0, srodek pionowy na cy.
+//   y-5  .#...#.   dwa bolce
+//   y-4  .#...#.
+//   y-3  #######   korpus
+//   y-2  #######
+//   y-1  #######
+//   y+0  #######
+//   y+1  .#####.
+//   y+2  ...#...   przewod
+//   y+3  ...#...
+//   y+4  ...#...
+// Sylwetka jest CELOWO inna w obrysie niz slonce (prostokat kontra kolo), bo obie
+// ikony potrafia stac obok siebie i wtedy rozroznia je nie detale, tylko ksztalt.
+void drawPlugIcon(int x0, int cy) {
+  px(x0 + 1, cy - 5, true);
+  px(x0 + 5, cy - 5, true);
+  px(x0 + 1, cy - 4, true);
+  px(x0 + 5, cy - 4, true);
+  fillRect(x0, cy - 3, x0 + 6, cy, true);
+  hline(x0 + 1, x0 + 5, cy + 1, true);
+  for (int y = cy + 2; y <= cy + 4; ++y) px(x0 + 3, y, true);
 }
 
 // (v186) IKONA AUTA — PRAWY GORNY ROG EKRANU SPOCZYNKOWEGO.
@@ -511,12 +644,101 @@ void drawCarIcon(bool link) {
   px(121, kCarBodyY1 + 1, false);
 }
 
-void drawIdle(const AutoModel& a, bool fresh) {
-  str(plex::f10(), "TRYB", kMarginX, kIdleTagY, true);
+// (v188) WYKRES MOCY LADOWANIA — DOLNY PAS EKRANU SPOCZYNKOWEGO.
+//
+// CO POKAZUJE: cala biezaca (albo ostatnia) sesje ladowania, probka co 3 minuty,
+// 128 probek na 128 kolumn — czyli okno 6,4 h. Wartosc w liczbie nad wykresem mowi,
+// ILE PLYNIE TERAZ; wykres mowi, JAK TO SZLO — a przy ladowaniu z nadwyzki
+// fotowoltaicznej to jest wlasciwe pytanie, bo moc zmienia sie z kazda chmura
+// i pojedynczy odczyt nie odrozni "slabo dzis" od "wlasnie przeszla chmura".
+//
+// SKALA PIONOWA JEST AUTOMATYCZNA i to jest decyzja, nie wygoda. Przy stalej skali
+// 0-11 kW (maksimum ladowarki) typowa sesja z nadwyzki — 1,5 do 3 kW — lezalaby
+// plaskim wezem tuz nad dolna krawedzia, gdzie roznicy miedzy 1,5 a 2,5 kW nie da
+// sie zobaczyc. Skalujemy wiec do MAKSIMUM SESJI zaokraglonego w gore do pelnych kW
+// i wypisujemy je przy prawej krawedzi, bo wykres bez podpisanej skali to ladny
+// ksztalt, a nie pomiar.
+//
+// PRZYGASZENIE PO SESJI ROBI RASTER, BO NIC INNEGO NIE MA. Wyswietlacz jest
+// JEDNOBITOWY: piksel jest albo zapalony, albo zgaszony, odcieni nie ma i zadne
+// sterowanie kontrastem ich nie zrobi (kontrast SSD1306 dziala na CALY ekran naraz).
+// Jedyny polton, jaki istnieje na takim szkle, to szachownica — co drugi piksel —
+// i z dwoch metrow czyta sie dokladnie jako "to bylo, a nie jest".
+void drawGraph(bool fresh) {
+  if (gGraph == nullptr || gGraphCnt == 0) return;
+  // Strona spoza pasa wykresu: wychodzimy PRZED petla po 128 kolumnach. Bez tego
+  // kazda z osmiu stron przechodzilaby przez caly wykres, zeby px() odrzucilo
+  // wszystko co do piksela — osiem razy wiecej pracy niz trzeba, przy pasie, ktory
+  // lezy na trzech stronach z osmiu.
+  if (gRow0 > kGraphY1 || gRow0 + 7 < kGraphY0) return;
 
-  // Ikona auta stoi w rogu, ktorego nie zajmuje ani "TRYB" (konczy sie na x=29),
-  // ani nic ponizej — pelne uzasadnienie miejsca przy kCarX0. Rysujemy ja WYLACZNIE
-  // przy swiezych danych; bez nich nie ma czego pokazac i nie udajemy, ze mamy.
+  // Skala: maksimum sesji (w 0,1 kW) w gore do pelnych kW, nigdy mniej niz 1 kW —
+  // przy samych zerach dzielenie przez zero, a przy 0,4 kW slupek na cala wysokosc
+  // ekranu, ktory klamalby o skali rzedu wielkosci.
+  int kwMax = (gGraphMax + 9) / 10;
+  if (kwMax < 1) kwMax = 1;
+
+  const int h = kGraphY1 - kGraphY0;   // 21 px na kwMax kW
+  // LINIE POMOCNICZE CO 1 kW TYLKO WTEDY, GDY NA 1 kW WYPADAJA CO NAJMNIEJ 3 px.
+  // Ciasniej niz co 3 px kropkowane linie zlewaja sie na monochromie w szara kase,
+  // ktora zaslania przebieg zamiast go opisywac — wtedy przechodzimy na co 2 kW.
+  const int stepKw = ((h / kwMax) >= 3) ? 1 : 2;
+  // Solidne wypelnienie tylko przy TRWAJACEJ sesji I swiezych danych; inaczej —
+  // szachownica. `fresh` jest tu razem z gCharging, bo milczaca od 45 s automatyka
+  // zostawilaby gCharging na `true` (koniec sesji stwierdzamy dopiero po 10 minutach
+  // niskiej mocy, a bez wiadomosci nie ma czego stwierdzac) i wykres rysowalby sie
+  // pelnym wypelnieniem, czyli twierdzil "to dzieje sie TERAZ" o danych sprzed
+  // kwadransa. Raster mowi wtedy to, co trzeba: "to bylo".
+  const bool solid = gCharging && fresh;
+
+  for (int x = 0; x < kGraphN; ++x) {
+    const bool has = (x < gGraphCnt);
+    // Gorna krawedz slupka. Bez probki slupka nie ma i to jest cala reszta okna:
+    // sesja krotsza niz 6,4 h zostawia prawa czesc pasa pusta, zamiast udawac zera.
+    const int top = has ? (kGraphY1 - (gGraph[x] * h) / (kwMax * 10)) : kGraphY1;
+
+    // SIATKA RYSOWANA TYLKO NAD SLUPKIEM, a nie pod spodem i przykrywana. Gdyby szla
+    // przez cale pole, przy PRZYGASZONYM wypelnieniu przezierala przez co drugi
+    // piksel szachownicy i obie rzeczy zamienialyby sie w jednolita plame.
+    for (int k = stepKw; k < kwMax; k += stepKw) {
+      const int y = kGraphY1 - (k * h) / kwMax;
+      if (y < top && (x & 3) == 0) px(x, y, true);   // kropkowana, co czwarta kolumna
+    }
+    // Kreska godzinowa co kGraphHourPx kolumn — pionowa, kropkowana, tez tylko nad
+    // slupkiem. To ona daje osi czasu podzialke: bez niej "szeroki garb" nie mowi,
+    // czy trwal dwadziescia minut, czy dwie godziny.
+    if (x != 0 && (x % kGraphHourPx) == 0) {
+      for (int y = kGraphY0; y < top; y += 2) px(x, y, true);
+    }
+
+    if (!has) continue;
+    for (int y = top; y < kGraphY1; ++y) {
+      if (solid || (((x + y) & 1) == 0)) px(x, y, true);
+    }
+  }
+
+  hline(0, kW - 1, kGraphY1, true);   // linia zera = os czasu
+
+  // MAKSIMUM SKALI PRZY PRAWEJ KRAWEDZI, NA WYCZYSZCZONYM TLE. Kasowanie prostokata
+  // pod napisem kosztuje kawalek przebiegu w prawym gornym rogu i to jest swiadoma
+  // wymiana: bialy tekst na bialym wypelnieniu jest nieczytelny, a wykres bez
+  // podanej skali nie jest pomiarem. Rog trafia przy tym w najtansze miejsce —
+  // kolumny 96..127 to szosta godzina sesji, ktorej wiekszosc sesji w ogole nie ma.
+  char s[8];
+  snprintf(s, sizeof(s), "%d kW", kwMax);
+  const int w = pltxt::stringWidth(plex::f10(), s);
+  fillRect(kGraphSclX - w - 1, kGraphY0, kW - 1, kGraphY0 + 8, false);
+  strRight(plex::f10(), s, kGraphSclX, kGraphY0 + 8, true);
+}
+
+void drawIdle(const AutoModel& a, bool fresh) {
+  // (v188) NAPIS "TRYB" ZNIKNAL, a nazwa trybu wskoczyla na jego miejsce. Etykieta
+  // nad "TYLKO SŁOŃCE" nie dodawala nic, czego nie widac z samej nazwy — a wiersz,
+  // ktory zajmowala, byl na tym ekranie najdrozszym miejscem, jakie mielismy.
+
+  // Ikona auta stoi w rogu, ktorego nazwa trybu nie siega (konczy sie najdalej na
+  // x=95, patrz kCarX0). Rysujemy ja WYLACZNIE przy swiezych danych; bez nich nie
+  // ma czego pokazac i nie udajemy, ze mamy.
   if (fresh) drawCarIcon(a.bleLink);
 
   const int act = fresh ? autoModeIndex(a.mode) : -1;
@@ -544,7 +766,19 @@ void drawIdle(const AutoModel& a, bool fresh) {
   }
   str(plex::f11(), val, kIdleCol2X, kIdleValY, true);
 
-  str(plex::f10(), sceneLine(a, fresh), kMarginX, kIdleTextY, true);
+  // (v188) IKONY ZRODLA obok wartosci mocy — pas x=52..71, srodek pionowy kSrcCy.
+  // Zadna, jedna albo obie; pelne uzasadnienie progow stoi przy srcIcons().
+  const uint8_t src = srcIcons(a, fresh);
+  if ((src & kSrcSun) != 0) drawSunIcon(kSrcSunCx, kSrcCy);
+  if ((src & kSrcPlug) != 0) drawPlugIcon(kSrcPlugX, kSrcCy);
+
+  // (v188) WYKRES ZOSTAJE TAKZE PRZY BRAKU SWIEZYCH DANYCH — i to nie jest
+  // niekonsekwencja wobec ikony auta, ktora wtedy znika. Ikona mowi o STANIE TERAZ
+  // ("polecenie przejdzie"), wiec bez swiezych danych klamalaby. Wykres mowi o
+  // PRZESZLOSCI ("tak szla ostatnia sesja") — a to, ze automatyka zamilkla, nie
+  // uniewaznia pomiarow sprzed godziny. Rysuje sie za to rastrem (patrz drawGraph),
+  // czyli tym samym znakiem, co po zakonczeniu sesji: "to bylo, a nie jest".
+  drawGraph(fresh);
 }
 
 // KURSOR I KROPKA TO DWIE ROZNE RZECZY i musza dac sie rozroznic TAKZE wtedy, gdy
@@ -853,6 +1087,64 @@ void drawValues(uint8_t scr) {
   }
 }
 
+// ============ (v188) ZBIERANIE PROBEK DO WYKRESU MOCY ========================
+// Wolane RAZ NA OBIEG step(), niezaleznie od tego, ktory ekran jest na szkle: dane
+// maja sie zbierac takze wtedy, gdy wlasciciel grzebie w ustawieniach albo panel
+// stoi na menu. Inaczej wykres mialby dziure dokladnie w tych minutach, w ktorych
+// ktos przy nim byl.
+//
+// GDZIE SIE ZACZYNA SESJA — I DLACZEGO NIE NA "stan == laduje". Pole `stan` mowi,
+// co o sobie sadzi integracja Tesli, i potrafi stac na "laduje" przez cala noc przy
+// zerowej mocy albo przeskoczyc na "czeka" na jedna wiadomosc w srodku ladowania.
+// Wykres jest o MOCY, wiec i sesje wyznacza moc: przekroczenie kGraphOnKw po co
+// najmniej kGraphGapMs ciszy ponizej tego progu. Dziesiec minut jest tu progiem
+// osobnym od trzech minut probkowania i to jest celowe — chmura potrafi sciac
+// nadwyzke do zera na kwadrans, ale takie zalamanie ma zostac WIDOCZNE W SRODKU
+// wykresu jako dolina, a nie skasowac dotychczasowy przebieg i zaczac od nowa.
+void graphTick(const AutoModel& a, uint32_t now, bool fresh) {
+  if (gGraph == nullptr || !fresh) return;
+
+  const bool high = (a.kw >= kGraphOnKw);
+  // Roznice czasu ZAWSZE przez int32_t — millis() przekreca sie po ~49 dniach,
+  // a ten panel ma chodzic miesiacami bez restartu (ta sama zasada, co przy atMs).
+  const bool idleLong = (gGraphHighMs == 0) ||
+                        (static_cast<int32_t>(now - gGraphHighMs) >= static_cast<int32_t>(kGraphGapMs));
+
+  if (high) {
+    if (!gCharging && idleLong) {   // POCZATEK NOWEJ SESJI — czyscimy bufor
+      gGraphCnt = 0;
+      gGraphMax = 0;
+    }
+    gCharging = true;
+    gGraphHighMs = now;
+    if (gGraphHighMs == 0) gGraphHighMs = 1;   // 0 znaczy "nigdy", patrz wyzej
+  } else if (idleLong) {
+    gCharging = false;   // bufor ZOSTAJE — od tej chwili rysuje sie rastrem
+  }
+
+  if (!gCharging) return;
+  // Bufor pelny = 6,4 h sesji. Dalej NIE dopisujemy i nie przewijamy: przewijanie
+  // zjadaloby POCZATEK ladowania, czyli te czesc przebiegu, ktora najczesciej mowi
+  // najwiecej (rozbieg, wejscie w nadwyzke), a memmove po 128 B PSRAM-u co trzy
+  // minuty jest za to kiepska zaplata. Sesja dluzsza niz okno pokazuje wiec swoje
+  // pierwsze 6,4 h i tyle.
+  if (gGraphCnt >= kGraphN) return;
+  if (gGraphCnt != 0 &&
+      static_cast<int32_t>(now - gGraphSampMs) < static_cast<int32_t>(kGraphStepMs)) {
+    return;
+  }
+
+  // Zaokraglenie do 0,1 kW, czyli do rozdzielczosci napisu nad wykresem. Ujemna moc
+  // (oddawanie z auta) idzie jako 0: os zaczyna sie na zerze i slupek w dol nie mialby
+  // gdzie sie zmiescic, a takie chwile trwaja pojedyncze sekundy.
+  int v = static_cast<int>(a.kw * 10.f + 0.5f);
+  if (v < 0) v = 0;
+  if (v > 255) v = 255;
+  gGraph[gGraphCnt++] = static_cast<uint8_t>(v);
+  if (static_cast<uint8_t>(v) > gGraphMax) gGraphMax = static_cast<uint8_t>(v);
+  gGraphSampMs = now;
+}
+
 // ====================== PODPIS TRESCI (kiedy przerysowac) ====================
 // Pelna klatka to 1 kB po I2C, czyli okolo 25 ms. Gdyby leciala co obieg, panel
 // zabieralby polowe kazdej klatki glownego ekranu — dlatego przerysowujemy
@@ -907,9 +1199,30 @@ uint32_t signature(const AutoModel& a, bool fresh) {
   mix(gCursor);
   mix(gMsg);
   mix(fresh ? 1u : 0u);
+
+  // (v188) WYKRES MOCY — TRZY LICZBY, KTORE OPISUJA GO W CALOSCI. Liczba probek
+  // rosnie przy KAZDYM dopisaniu (i wraca do zera na poczatku sesji), wiec sama
+  // wylapuje zmiane zawartosci bufora; maksimum ustawia SKALE, czyli polozenie
+  // wszystkich slupkow i napis "N kW" przy krawedzi; gCharging przelacza wypelnienie
+  // miedzy pelnym a rastrem. Bufora NIE mieszamy bajt po bajcie — to 128 odczytow
+  // z PSRAM-u na kazdy obieg petli rysowania za informacje, ktora niesie juz licznik.
+  //
+  // Podpis liczymy TAKZE przy !fresh, inaczej niz reszta pol ponizej: wykres zostaje
+  // na ekranie takze bez swiezych danych (patrz drawIdle) i musi wtedy przejsc
+  // z pelnego wypelnienia na raster — a bez tych bitow w podpisie przejscie nie
+  // mialoby prawa sie przerysowac.
+  mix(gGraphCnt);
+  mix(gGraphMax);
+  mix(gCharging ? 1u : 0u);
+
   if (fresh) {
     mix(a.soc);
-    mix(a.cable ? 1u : 0u);
+    // (v188) IKONY ZRODLA JAKO DWA BITY, A NIE SUROWE `sunPct`. Do podpisu wchodzi
+    // to, CO WIDAC (patrz opis nad ta funkcja): udzial slonca skacze o kilka procent
+    // przy kazdej chmurze, a ikona zmienia sie tylko na progach 10 i 90 — mieszanie
+    // procentow skladaloby wiec pelna klatke (osiem stron, ~25 ms) co 15 s bez ani
+    // jednego zmienionego piksela.
+    mix(srcIcons(a, fresh));
     // (v186) bleLink MUSI tu byc, inaczej ikona auta zamarza. Podpis jest JEDYNYM
     // powodem przerysowania (patrz opis nad ta funkcja), wiec pole, ktore widac na
     // ekranie, a ktorego nie ma w podpisie, zmienia sie na szkle dopiero przy
@@ -920,7 +1233,12 @@ uint32_t signature(const AutoModel& a, bool fresh) {
     // ujemnego float-a wprost na uint32_t jest zachowaniem niezdefiniowanym.
     mix(static_cast<uint32_t>(static_cast<int32_t>(a.kw * 10.f)));
     for (const char* p = a.mode; *p != '\0'; ++p) mix(static_cast<uint8_t>(*p));
-    for (const char* p = a.state; *p != '\0'; ++p) mix(static_cast<uint8_t>(*p));
+    // (v188) `state` I `cable` WYPADLY Z PODPISU RAZEM ZE ZDANIEM NA DOLE EKRANU.
+    // Po usunieciu sceneLine() nie widac ich juz NIGDZIE — ani na spoczynku, ani
+    // w menu trybu — a regula tego panelu dziala w obie strony: pole widoczne MUSI
+    // byc w podpisie, pole niewidoczne nie ma prawa w nim byc. Zostawione skladalyby
+    // pelna klatke (osiem stron, ~25 ms) za kazdym razem, gdy integracja Tesli
+    // przerzuci "czeka" na "stoi", czyli za nic.
   }
   return h;
 }
@@ -1443,6 +1761,23 @@ void begin() {
     LOG("OLED: brak 1024 B w PSRAM na kopie obrazu — panel dziala, podgladu WWW nie ma\n");
   }
 
+  // (v188) BUFOR WYKRESU MOCY — 128 B, TA SAMA DROGA I TA SAMA UMOWA, co kopia
+  // obrazu wyzej: PSRAM, bo w statycznym RAM-ie do bariery 76 000 B zostalo ~1,4 kB
+  // i 128 B z tego za jeden pas jednego ekranu to zla wymiana. Nieudana alokacja NIE
+  // JEST BLEDEM — gGraph zostaje nullptr, graphTick() i drawGraph() wychodza pierwsza
+  // linia, a ekran spoczynkowy dziala bez zmiany, tylko dolny pas jest pusty.
+  //
+  // ZERUJEMY, bo heap_caps_malloc oddaje pamiec nietknieta: bez tego pierwsza sesja
+  // rysowalaby smieci po poprzednim uzytkowniku PSRAM-u. gGraphCnt = 0 i tak nie
+  // pozwolilby ich pokazac, ale bufor, ktorego zawartosc zalezy od przypadku, jest
+  // gorszy od bufora wyzerowanego przy KAZDYM pozniejszym bledzie.
+  gGraph = static_cast<uint8_t*>(heap_caps_malloc(kGraphN, MALLOC_CAP_SPIRAM));
+  if (gGraph != nullptr) {
+    memset(gGraph, 0, kGraphN);
+  } else {
+    LOG("OLED: brak %d B w PSRAM na wykres mocy — panel dziala, wykresu nie ma\n", kGraphN);
+  }
+
   // Czyscimy WSZYSTKIE osiem stron, zanim wlasciciel cokolwiek zobaczy: pamiec
   // kontrolera po wlaczeniu zasilania jest przypadkowa, a pierwsza nasza klatka
   // pojdzie dopiero za kilka obiegow petli.
@@ -1491,6 +1826,11 @@ void step(const AutoModel& a, uint32_t now) {
   // je otworzyl z przegladarki.
   drainInject(now, a);
   tick(now, a, fresh);
+  // (v188) Probka do wykresu — PRZED policzeniem podpisu, zeby dopisana wartosc
+  // trafila na szklo w TYM obiegu, a nie dopiero przy najblizszej zmianie czegos
+  // innego. Wolane niezaleznie od ekranu: dane zbieraja sie takze wtedy, gdy panel
+  // stoi na menu albo w ustawieniach.
+  graphTick(a, now, fresh);
 
   // Zmiana podpisu przerywa skladanie biezacej klatki i zaczyna od strony 0. Przez
   // te ~25 ms gorne strony pokazuja juz nowa tresc, a dolne jeszcze stara — na
@@ -1520,6 +1860,7 @@ uint32_t i2cErrors() { return gI2cErr; }
 uint32_t lastStepUs() { return gStepUs; }
 uint8_t buttonMask() { return gDown; }
 const char* sentMode() { return gSentMode; }
+uint8_t graphCount() { return gGraph != nullptr ? gGraphCnt : 0; }
 
 // --- (v176) podglad i sterowanie z panelu WWW — patrz OledPanel.h --------------
 

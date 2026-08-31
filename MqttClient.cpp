@@ -588,6 +588,16 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
   // przy zywej sesji BLE — i wlasnie dlatego to ona rozstrzyga, czy polecenie
   // ladowania z panelu ma przez co pojsc. Pelny opis stoi przy polu w AutoData.h.
   a.bleLink = (doc["ble"] | 0) != 0;
+  // (v188) `sp` — UDZIAL SLONCA w biezacym ladowaniu, 0..100 %. Ten sam wzorzec, co
+  // `ble` i `kabel` wyzej: pole NIEOBOWIAZKOWE, brak daje 0, i celowo NIE wchodzi do
+  // sprawdzenia kompletu soc/tryb/stan — starsza automatyka ma dalej dostarczac ekran
+  // AUTO, a nie zostac odrzucona w calosci przez jedna nowa nazwe.
+  //
+  // PRZYCINAMY DO 0..100 tak samo, jak soc i limit: to jest UDZIAL, wiec 120 % nie
+  // znaczy nic, a panel liczy z tego pola progi 10/90 i po przekroczeniu zakresu
+  // rysowalby ikone, ktora nie odpowiada zadnemu stanowi swiata.
+  const int sp = doc["sp"] | 0;
+  a.sunPct = static_cast<uint8_t>(sp < 0 ? 0 : (sp > 100 ? 100 : sp));
   copyStr(a.mode, sizeof(a.mode), doc["tryb"]);
   copyStr(a.state, sizeof(a.state), doc["stan"]);
   a.atMs = millis();

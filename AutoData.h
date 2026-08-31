@@ -52,6 +52,21 @@ struct AutoModel {
   // Wiadomosc bez pola `ble` daje false — patrz parser w MqttClient.cpp.
   bool bleLink = false;
 
+  // (v188) UDZIAL SLONCA W BIEZACYM LADOWANIU, 0..100 %. Pole `sp` w auto/stan.
+  // Steruje IKONA ZRODLA obok wartosci mocy na ekranie spoczynkowym panelu OLED
+  // (OledPanel.cpp, drawSunIcon/drawPlugIcon): ponizej 10 % sama wtyczka, powyzej
+  // 90 % samo slonce, pomiedzy — obie obok siebie. Progi sa SZEROKIE celowo, zeby
+  // ikona nie migotala przy drobnych wahaniach nadwyzki z falownika.
+  //
+  // Zastapilo to ZDANIE na dole ekranu ("ładuję ze słońca"), ktore mowilo to samo
+  // dwa razy: nazwa trybu stoi juz na gorze, a zrodlo energii da sie pokazac dwoma
+  // ikonami zamiast wiersza tekstu — i dopiero to zwolnilo dolny pas na wykres mocy.
+  //
+  // Wiadomosc bez pola `sp` daje 0 — patrz parser w MqttClient.cpp. Przy mocy
+  // ponizej 0,1 kW panel nie rysuje ZADNEJ ikony: nie ma wtedy czego dzielic,
+  // a 0 % przy niedzialajacej ladowarce znaczyloby "laduje z sieci", czyli nieprawde.
+  uint8_t sunPct = 0;
+
   // Tryb ladowania — kontrakt z automatyka w garazu: dokladnie jeden z
   // "OFF" / "PV" / "PV+MIN" / "MAX". 8 B, bo najdluzszy ma 6 znakow + NUL, a 8
   // trzyma strukture wyrownana bez dziury.
@@ -80,8 +95,12 @@ struct AutoModel {
 // atMs wymusza wielokrotnosc 4). Nowy bool wszedl w te dziure obok `cable`, wiec
 // sizeof dalej wynosi 44 B i obie kopie zajmuja tyle samo. DLATEGO PROG ZOSTAJE
 // 80 B — podniesienie go bylo kuszace, ale opisywaloby wzrost, ktorego nie ma.
-// Nastepne pole tej wielkosci juz jednak zaplaci: dziura jest wykorzystana i
-// kolejny bajt przesunie strukture na 48 B, czyli +8 B statycznego RAM-u.
+//
+// (v188) `sunPct` TO BYL TEN OSTATNI DARMOWY BAJT i tez jest policzony: przed nim
+// struktura miala 43 B tresci dopelnione do 44 B (uint32_t atMs wymusza wielokrotnosc
+// czterech), wiec nowy uint8_t wszedl w ostatnia komorke wyrownania i sizeof dalej
+// wynosi 44 B. TERAZ dziura jest juz zajeta naprawde: kolejne pole, nawet jednobajtowe,
+// przesunie strukture na 48 B, czyli +8 B statycznego RAM-u w dwoch kopiach.
 static_assert(sizeof(AutoModel) < 80,
               "AutoModel zyje w dwoch kopiach — powyzej 80 B zaczyna byc widoczny "
               "w budzecie statycznego RAM-u (bariera 76 000 B)");

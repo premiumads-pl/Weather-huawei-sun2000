@@ -100,6 +100,13 @@ uint32_t lastStepUs();     // ile trwal ostatni obieg step() [us]
 uint8_t buttonMask();      // bity 0..3 = K1..K4 wcisniete (po debounce)
 const char* sentMode();    // ostatnio WYSLANY tryb ("" = nic nie wysylano)
 
+// (v188) Ile probek ma wykres mocy ladowania w dolnym pasie ekranu spoczynkowego
+// (0..128, jedna co 3 minuty). Odpowiada na dwa pytania naraz, ktorych bez kabla USB
+// nie da sie rozstrzygnac inaczej: czy bufor w PSRAM w ogole powstal (przy nieudanej
+// alokacji zawsze 0) i czy trwa sesja ladowania (liczba rosnie co 3 min). Zero przy
+// dzialajacym buforze znaczy "od uruchomienia nie bylo ani jednej sesji".
+uint8_t graphCount();
+
 // --- (v176) PODGLAD I STEROWANIE Z PANELU WWW -------------------------------
 // Strona ma pokazywac PIKSEL W PIKSEL to, co jest na szkle, i miec cztery klikalne
 // przyciski robiace dokladnie to samo, co te na module. Wszystkie cztery funkcje
