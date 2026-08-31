@@ -750,8 +750,33 @@ void drawCarIcon(bool link) {
 // sterowanie kontrastem ich nie zrobi (kontrast SSD1306 dziala na CALY ekran naraz).
 // Jedyny polton, jaki istnieje na takim szkle, to szachownica — co drugi piksel —
 // i z dwoch metrow czyta sie dokladnie jako "to bylo, a nie jest".
+// (v191) ZASADA, KTORA RZADZI TA FUNKCJA — I TO JUZ DRUGI RAZ W TYM PLIKU:
+// ELEMENT, KTORY ZNIKA, CZYTA SIE JAKO AWARIA, A NIE JAKO INFORMACJA.
+// Tak samo rozwiazana jest ikona auta w v186: przy zerwanym kluczu BLE zostaje
+// sam OBRYS nadwozia, a nie pustka po ikonie. Wykres zachowuje sie teraz spojnie:
+// pas y=32..63 ZAWSZE ma ramke wykresu — linie zera, kreski godzinowe i napis
+// skali. Przy zerze probek brakuje w nim WYLACZNIE slupkow, a to, ze ich nie ma,
+// jest wprost napisane na srodku pasa.
+//
+// USTERKA, KTORA TO NAPRAWIA (zgloszona z zywego urzadzenia, graf: 0). Do v190
+// stalo tu `if (gGraph == nullptr || gGraphCnt == 0) return;` i pusty bufor kasowal
+// CALY pas: ani ramki, ani osi, ani podzialki, ani skali. Wlasciciel zobaczyl pusty
+// prostokat w miejscu, gdzie przed chwila byl wykres, i zglosil to jako "wykres
+// zniknal". Bufor siedzi w PSRAM i NIE PRZEZYWA RESTARTU (patrz deklaracja gGraph),
+// wiec kazda aktualizacja firmware'u przy niepodpietym aucie pokazywala ten sam
+// obraz awarii — choc liczenie bylo i jest poprawne. Zla byla WYLACZNIE reakcja
+// na stan pusty i tylko ona sie tu zmienia.
+//
+// WARUNEK NA SAM BUFOR ZOSTAJE W CALOSCI I TO NIE JEST NIEKONSEKWENCJA WOBEC
+// POWYZSZEJ ZASADY. gGraph == nullptr znaczy "alokacja 128 B w PSRAM sie nie udala",
+// czyli stan ustalony RAZ przy starcie i niezmienny do konca zycia programu (patrz
+// graphTick — wychodzi ta sama linia). Nic tu nie znika w trakcie patrzenia, wiec
+// nie ma czego czytac jako awarii. Wiecej: bez bufora nie da sie odroznic "nie
+// ladowalo" od "nie ma czym zmierzyc", a napis na srodku pasa twierdzilby wtedy
+// "brak ładowania" TAKZE w trakcie ladowania. W tym jednym przypadku milczenie
+// jest uczciwsze niz zdanie, ktoremu nikt nie kazal byc prawdziwym.
 void drawGraph(bool fresh) {
-  if (gGraph == nullptr || gGraphCnt == 0) return;
+  if (gGraph == nullptr) return;
   // Strona spoza pasa wykresu: wychodzimy PRZED petla po 128 kolumnach. Bez tego
   // kazda z osmiu stron przechodzilaby przez caly wykres, zeby px() odrzucilo
   // wszystko co do piksela — osiem razy wiecej pracy niz trzeba, przy pasie, ktory
@@ -798,9 +823,19 @@ void drawGraph(bool fresh) {
   // "tu jeszcze nie bylo pomiaru" — puste zostaja kolumny PO LEWEJ, nie po prawej.
   const int idxOff = static_cast<int>(gGraphCnt) - kGraphN;
 
+  // (v191) ZERO PROBEK — JEDYNE, CZEGO WTEDY NIE RYSUJEMY, TO SLUPKI. Warunek nie
+  // zostal napisany na nowo, tylko PRZESUNIETY z wejscia funkcji dokladnie tam,
+  // gdzie od poczatku nalezal: przy gGraphCnt == 0 wychodzi idxOff = -128, wiec
+  // `has` jest falszem dla KAZDEJ ze 128 kolumn i petla sama z siebie nie postawi
+  // ani jednego slupka — siatka, kreski godzinowe i os jada dalej bez zmiany.
+  // `empty` w warunku `has` ponizej jest przez to nadmiarowe i stoi tam swiadomie:
+  // jedno slowo trzyma te zaleznosc WIDOCZNA w kodzie, zamiast chowac ja w znaku
+  // liczby ujemnej, ktory nastepna przebudowa okna moze przestawic bez ostrzezenia.
+  const bool empty = (gGraphCnt == 0);
+
   for (int x = 0; x < kGraphN; ++x) {
     const int idx = x + idxOff;
-    const bool has = (idx >= 0);
+    const bool has = !empty && (idx >= 0);
     // Gorna krawedz slupka. Bez probki slupka nie ma i to jest cala reszta okna:
     // sesja krotsza niz 6,4 h zostawia LEWA czesc pasa pusta, zamiast udawac zera.
     const int top = has ? (kGraphY1 - (gGraph[idx] * h) / (kwMax * 10)) : kGraphY1;
@@ -832,6 +867,64 @@ void drawGraph(bool fresh) {
 
   hline(0, kW - 1, kGraphY1, true);   // linia zera = os czasu
 
+  // (v191) PUSTY PAS MOWI, DLACZEGO JEST PUSTY. Ramka bez slupkow i bez slowa
+  // wyjasnienia byla polowa poprawki: wyglada juz jak wykres, ale wciaz nie tlumaczy,
+  // czemu nic na niej nie ma — a niewyjasniona pustka czyta sie tak samo jak
+  // zniknieta, czyli jako awaria (patrz zasada nad ta funkcja).
+  //
+  // BRZMIENIE. "brak ładowania" — nie "brak danych", nie "błąd", nie "brak sesji".
+  // Stan, ktory opisujemy, jest NORMALNY, a nie zepsuty: auto po prostu nie ladowalo,
+  // odkad panel wstal. Zdanie musi byc prawdziwe we wszystkich trzech drogach, ktore
+  // tu prowadza, i jest: po restarcie (bufor w PSRAM go nie przezywa), po pierwszym
+  // wgraniu firmware'u i po prostu wtedy, gdy od uruchomienia nie bylo ani jednej
+  // sesji. "brak danych" sugerowaloby zerwana lacznosc, ktora ma na tym ekranie
+  // WLASNY, inny znak (kreski zamiast liczb i zgaszona ikona auta), wiec mowiloby
+  // o czyms, co sie nie stalo.
+  //
+  // NIE ROZMIJA SIE Z RZECZYWISTOSCIA NAWET NA JEDEN OBIEG PETLI, i to nie jest
+  // szczescie, tylko wlasciwosc graphTick: pierwsza probka sesji trafia do bufora
+  // OD RAZU, bo odstep kGraphStepMs jest pomijany dokladnie przy gGraphCnt == 0.
+  // Zaczete ladowanie kasuje wiec ten napis w tym samym obiegu, w ktorym moc
+  // przekroczyla kGraphOnKw — nie po trzech minutach.
+  //
+  // FONT TEN SAM, CO NAPIS SKALI NIZEJ (f10), bo to druga etykieta TEGO SAMEGO pasa,
+  // a nie odczyt: wiekszy konkurowalby z wartoscia mocy w f13 wiersz wyzej i czytalby
+  // sie jako komunikat calego ekranu, a nie opis wykresu.
+  //
+  // WYSRODKOWANIE W PIONIE POLICZONE Z METRYK, NIE PRZYMIERZONE. W f10 wersaliki
+  // i wydluzenia gorne siegaja 8 px nad linie bazowa (b, d, i, k, ł maja yOffset -8),
+  // reszta liter tego napisu (a, r, o, w, n) 5 px, a NIE MA W NIM ANI JEDNEJ litery
+  // schodzacej pod linie bazowa — "ą", "ę", "y", "g", "j", "p" tu nie wystepuja,
+  // wiec dolna krawedz to baseline-1. Napis zajmuje przez to DOKLADNIE 8 wierszy:
+  // baseline-8 .. baseline-1. Przy bazie kGraphY0 + 20 = 52 leza one na y=44..51,
+  // czyli zostaje po 12 wolnych wierszy nad napisem (32..43) i pod nim (52..63) —
+  // pas 32-wierszowy dzieli sie 12/8/12 co do piksela. Gdyby brzmienie kiedys
+  // dostalo ogonek, dolna krawedz zejdzie na baseline+1 i TE liczbe trzeba przeliczyc
+  // razem z prostokatem nizej. Wyrazenie z kGraphY0, a nie wpisana liczba 52: pas juz
+  // raz urosl (v190, z 42 na 32) i baza ma pojechac razem z nim — tak samo jak baza
+  // napisu skali.
+  //
+  // WYSRODKOWANIE W POZIOMIE ZE STRINGWIDTH, nie z policzonych znakow: napis ma
+  // 70 px, wiec stoi na x=29..98. To go rozmija z napisem skali (x=0..18, y=32..40)
+  // i tak ma zostac — dwie etykiety tego samego pasa nie moga na siebie wejsc.
+  //
+  // KASOWANIE PROSTOKATA POD NAPISEM — z tego samego powodu, co przy napisie skali,
+  // tylko tu jest ono WARUNKIEM CZYTELNOSCI, a nie ulepszeniem: przy pustym pasie
+  // "slupek" ma wysokosc zero, wiec kreski godzinowe ida przez CALA wysokosc pasa
+  // (rysujemy je nad slupkiem) i napis lezalby wprost na pionowych liniach
+  // kropkowanych. Prostokat obejmuje wiersze 43..52, czyli glify z jednopikselowa
+  // obwodka z gory i z dolu, i kolumny 28..99 — kasuje przez to trzy z szesciu kresek
+  // godzinowych (x=47, 67, 87) na wysokosci napisu, a kreski z x=7, 27 i 107 zostaja
+  // nietkniete. Cena jest tu zerowa: pod spodem nie ma zadnego pomiaru do zaslonienia.
+  if (empty) {
+    const char* msg = "brak ładowania";
+    const int mw = pltxt::stringWidth(plex::f10(), msg);
+    const int mx = (kW - mw) / 2;
+    const int mb = kGraphY0 + 20;   // linia bazowa napisu — patrz rachunek wyzej
+    fillRect(mx - 1, mb - 9, mx + mw, mb, false);
+    str(plex::f10(), msg, mx, mb, true);
+  }
+
   // (v189) MAKSIMUM SKALI PRZY LEWEJ KRAWEDZI, NA GORNEJ GRANICY PASA, NA WYCZYSZCZONYM
   // TLE. Baza liter to kGraphY0 + 8 i to nie jest okragla liczba, tylko metryka f10:
   // "k" ma yOffset -8, wiec przy tej bazie jego gorny piksel lezy dokladnie na
@@ -854,6 +947,21 @@ void drawGraph(bool fresh) {
   // gdzie napis klamal o tym, czego dotyczy: wykres bez podanej skali jest ladnym
   // ksztaltem, a nie pomiarem, a najstarszy skraj okna to najtansze miejsce, jakie
   // przy rysowaniu od prawej w ogole zostalo.
+  // (v191) NAPIS SKALI RYSUJE SIE TAKZE PRZY ZERZE PROBEK, Z DOMYSLNYM "1kW" — i to
+  // jest wybor miedzy dwoma wariantami, nie przeoczenie po przesunieciu warunku.
+  //   * "NIE RYSUJ" ODPADA na tej samej zasadzie, ktora rzadzi cala ta funkcja
+  //     (patrz jej poczatek): etykieta pojawiajaca sie i znikajaca razem z pierwsza
+  //     probka mrugalaby na POCZATKU I KONCU KAZDEJ SESJI, a mrugniecie czyta sie
+  //     jako usterka rysowania, nie jako informacja. Pas mialby wtedy dwa rozne
+  //     wyglady pustki — z opisem i bez — czyli dokladnie to, co tu naprawiamy.
+  //   * "WARTOSC DOMYSLNA" NICZEGO NIE ZMYSLA, bo 1 kW nie jest wzieta z powietrza:
+  //     to PODLOGA SKALI, ktora `kwMax` wymusza tak samo przy KAZDEJ sesji (patrz
+  //     zaokraglenie wyzej). Pusty pas jest wiec opisany dokladnie ta sama skala,
+  //     jaka dostanie pierwsza slaba sesja — nic sie pod napisem nie przeskaluje,
+  //     dopoki probki nie przekrocza 1 kW. Odczytania tego jako "zmierzono do 1 kW"
+  //     nie da sie obronic: na srodku pasa stoi wtedy "brak ładowania".
+  // Kodu ta decyzja nie kosztuje ani jednej linii — po przesunieciu warunku z wejscia
+  // funkcji `kwMax` sam wychodzi 1 przy gGraphMax == 0.
   char s[8];
   snprintf(s, sizeof(s), "%dkW", kwMax);
   const int w = pltxt::stringWidth(plex::f10(), s);
@@ -1404,6 +1512,23 @@ uint32_t signature(const AutoModel& a, bool fresh) {
   // na ekranie takze bez swiezych danych (patrz drawIdle) i musi wtedy przejsc
   // z pelnego wypelnienia na raster — a bez tych bitow w podpisie przejscie nie
   // mialoby prawa sie przerysowac.
+  // (v191) PRZEJSCIE PUSTY <-> PELNY JEST W PODPISIE — SPRAWDZONE, NIE ZALOZONE.
+  // Napis "brak ładowania" na srodku pasa (patrz drawGraph) zalezy od DOKLADNIE
+  // dwoch rzeczy i obie sa tu rozliczone:
+  //   * gGraphCnt == 0 — mieszane linijke nizej, wiec kazda zmiana liczby probek
+  //     rusza podpisem;
+  //   * gGraph != nullptr — ustalane RAZ przy starcie i do konca zycia programu
+  //     niezmienne, wiec do podpisu nie ma po co wchodzic (to samo rozumowanie, co
+  //     przy wspolrzednych i fontach w akapicie z v190: stala kompilacji lub startu
+  //     nie jest stanem).
+  // Pierwsza probka sesji rusza przy tym TRZEMA z czterech pol naraz — gGraphCnt
+  // 0 -> 1, gGraphSeq +1, gCharging false -> true — wiec podpis zmienia sie w tym
+  // samym obiegu petli, w ktorym napis ma zniknac, i to potrojnie. Sprawdzenie nie
+  // jest tu formalnoscia: to DOKLADNIE ten blad, ktory w tym pliku zlapano juz trzy
+  // razy (ikona auta w v186, przewijanie okna w v189, a przed nimi ekrany ustawien
+  // w v187) i za kazdym razem objawial sie tak samo — element zamarza na szkle az
+  // do najblizszej zmiany czegos zupelnie innego. Tutaj kosztowalby ekran, ktory po
+  // pierwszej probce zostaje na napisie "brak ładowania" mimo plynacych danych.
   mix(gGraphCnt);
   mix(gGraphMax);
   mix(gGraphSeq);   // (v189) przewiniecie okna — patrz akapit wyzej
