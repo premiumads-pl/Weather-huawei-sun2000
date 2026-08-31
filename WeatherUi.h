@@ -5,12 +5,27 @@
 
 #include "AirData.h"
 #include "AutoData.h"
+#include "Config.h"
 #include "FlightData.h"
 #include "PvData.h"
 #include "RadarData.h"
 #include "RoomData.h"
 #include "WeatherData.h"
 #include "Viessmann.h"
+
+// Nazwy ekranow, indeks = cfg::VIEW_*. Definicja (razem z pelnym uzasadnieniem
+// kazdego slota) stoi w WeatherUi.cpp.
+//
+// (v187) TA DEKLARACJA ISTNIEJE PO TO, ZEBY NIE BYLO DRUGIEJ LISTY. Menu ustawien
+// na panelu OLED ma podekran "Ekran", ktory wypisuje WSZYSTKIE widoki do przypiecia
+// — i bierze ich nazwy STAD, a nie z wlasnej tablicy. Bez tej deklaracji tablica
+// miala LINKAGE WEWNETRZNY (tablica const w zakresie namespace), wiec z innego pliku
+// nie bylo do niej dostepu i jedynym wyjsciem byloby przepisanie czternastu napisow
+// po raz drugi. Dwie listy rozjezdzaja sie przy pierwszym nowym ekranie i rozjezdzaja
+// sie CICHO: panel pokazywalby stara nazwe albo przesuniete numery, a nic by o tym
+// nie krzyknelo. Rozmiar to cfg::VIEW_COUNT, wiec indeksowanie dowolnym cfg::VIEW_*
+// jest w zakresie; sloty wycofane (0 i 2) niosa "—" i panel je po tym pomija.
+extern const char* const kViewNames[cfg::VIEW_COUNT];
 
 enum class AlertKind : uint8_t {
   NONE = 0,

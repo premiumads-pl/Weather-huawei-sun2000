@@ -44,6 +44,12 @@
 #include "MqttClient.h"  // requestAutoMode() / autoModeReqState()
 #include "PlText.h"      // pltxt:: — silnik fontow projektu (dekoder UTF-8, metryki)
 #include "PlexText.h"    // plex::f10/f11/f13 — te same fonty, co glowny ekran
+#include "Settings.h"    // (v187) settings() — menu ustawien edytuje TE pola i tylko te
+// (v187) WYLACZNIE dla kViewNames — nazw ekranow do podekranu "Ekran". Drugiej listy
+// nazw w tym pliku NIE MA i byc nie moze; uzasadnienie stoi przy deklaracji tablicy
+// w WeatherUi.h. Naglowek nie doklada tu nic ciezkiego: TFT_eSPI i tak wchodzi juz
+// przez PlexText.h -> Plex10.h, wiec kosztem jest kilka struktur modeli danych.
+#include "WeatherUi.h"
 
 namespace oled {
 namespace {
@@ -57,6 +63,14 @@ namespace {
 // obrazu (4 B — sama kopia siedzi w PSRAM), maska wirtualnych nacisniec (4 B)
 // i indeks potwierdzonego trybu (1 B). Kilobajt kopii NIE wchodzi do tego rachunku
 // i nie ma prawa wejsc — to jest cala idea tego rozwiazania.
+// (v187) Cale menu ustawien — piec ekranow, edycja z podgladem i przewijana lista
+// widokow — kosztuje 18 B: szesc bajtow stanu menu (dwa kursory, gorny wiersz listy,
+// flaga edycji, wartosc do cofniecia) i trzy wskazniki do glownego ekranu.
+// Zmierzone na calym programie (arduino-cli, build_verify): 74 520 B -> 74 536 B,
+// czyli +16 B po upakowaniu w dziury wyrownania, przy barierze 76 000 B. Tak malo,
+// bo menu NIE KOPIUJE ustawien — czyta i pisze wprost do settings(), a nazwy ekranow
+// bierze z kViewNames. Kazda "wygodna" kopia zaczynalaby sie tutaj od kilkudziesieciu
+// bajtow i konczyla pytaniem, ktora z dwoch wersji jest prawdziwa.
 bool gPresent = false;
 uint8_t gAddr = 0;
 i2c_master_bus_handle_t gBus = nullptr;   // oba uchwyty siedza na STERCIE
@@ -110,10 +124,51 @@ uint32_t gSig = 0;       // podpis tresci — zmiana podpisu jest JEDYNYM powode
 uint32_t gPagesSent = 0;
 uint32_t gStepUs = 0;
 
-enum Screen : uint8_t { SCR_IDLE = 0, SCR_MENU = 1, SCR_TEST = 2 };
+// (v187) EKRANY USTAWIEN DOPISANE NA KONCU, A NIE WSTAWIONE W SRODEK: SCR_IDLE/MENU/
+// TEST musza zachowac swoje wartosci, bo wchodza do signature() jako pierwsza rzecz
+// mieszana i przesuniecie ktorejkolwiek zmienialoby podpis calego ekranu bez zadnej
+// zmiany tresci. Kolejnosc SCR_VIEW..SCR_NIGHT ODPOWIADA kolejnosci wierszy w menu
+// glownym ustawien — pilnuje tego static_assert przy enterSub().
+enum Screen : uint8_t {
+  SCR_IDLE = 0,
+  SCR_MENU = 1,   // wybor trybu ladowania auta
+  SCR_TEST = 2,
+  SCR_SET = 3,    // menu ustawien: Ekran / Jasność / Rotacja / Noc
+  SCR_VIEW = 4,   // Ekran — pilot do duzego wyswietlacza (przypiecie widoku)
+  SCR_BRI = 5,    // Jasność — blDay / blDim / blNight
+  SCR_ROT = 6,    // Rotacja — autoRotate / dwellS
+  SCR_NIGHT = 7,  // Noc — nightStartH / nightEndH
+};
 uint8_t gScr = SCR_IDLE;
+// "Jestesmy gdziekolwiek w ustawieniach" — jeden warunek zamiast wyliczanki pieciu
+// stalych w czterech miejscach (podpis, bezczynnosc, obsluga klawiszy, nazwa ekranu).
+// Dziala, bo ustawienia zajmuja CIAGLY ogon enuma i nic nie moze wejsc za nie.
+inline bool inSettings() { return gScr >= SCR_SET; }
 uint8_t gCursor = 0;      // podswietlony wiersz menu (0..3) — to NIE jest tryb aktywny
 uint32_t gLastKeyMs = 0;  // ostatnie zbocze na dowolnym przycisku
+
+// ---- (v187) STAN MENU USTAWIEN — 6 BAJTOW, I TAKI MA ZOSTAC -----------------
+// Panel nie ma wlasnego bufora klatki i nie bedzie mial (punkt 1 w OledPanel.h), wiec
+// tym bardziej nie ma miejsca na "wygodna" strukture stanu menu. Trzymamy tu WYLACZNIE
+// to, czego nie da sie policzyc na miejscu: dwa kursory, gorny wiersz przewijanej
+// listy, flage edycji i JEDNA wartosc do cofniecia. Same ustawienia mieszkaja w
+// settings() i to one sa zrodlem prawdy — menu ich nie kopiuje.
+uint8_t gSetCur = 0;      // wiersz menu glownego ustawien (0..3)
+uint8_t gRowCur = 0;      // wiersz w podekranie (na liscie widokow: 0..viewRows()-1)
+uint8_t gTop = 0;         // pierwszy WIDOCZNY wiersz listy widokow (przewijanie)
+bool gEditing = false;    // true = ∧∨ zmieniaja WARTOSC, a nie wiersz
+// Wartosc SPRZED wejscia w edycje — jedyne, co trzeba pamietac, zeby "#" i wyjscie
+// po bezczynnosci potrafily cofnac zmiane. JEDNA, a nie komplet siedmiu pol: edytuje
+// sie zawsze dokladnie jeden wiersz, a zatwierdzenie zamyka sprawe (wartosc idzie do
+// NVS i nie ma juz czego cofac). uint16_t, bo najszersze pole to dwellS; bool
+// autoRotate jedzie tu jako 0/1.
+uint16_t gEditOld = 0;
+
+// (v187) Wskazniki do glownego ekranu — patrz setUiHooks() w OledPanel.h.
+// 12 B statycznego RAM-u za brak zaleznosci OledPanel -> WeatherUi.
+void (*gPinFn)(int) = nullptr;
+int (*gPinnedFn)() = nullptr;
+void (*gBlFn)(uint8_t, uint32_t) = nullptr;
 
 // Komunikat w naglowku menu. 0 = zwykly tytul.
 enum Msg : uint8_t { MSG_NONE = 0, MSG_SENDING = 1, MSG_NOACK = 2, MSG_FAILED = 3 };
@@ -168,6 +223,22 @@ constexpr int kMenuTextDX = 6;    // wciecie tekstu w wierszu menu
 constexpr int kMenuDotX = 119;    // srodek kropki "tryb aktywny"
 constexpr int kTestGpioX = 22;    // kolumna "GPIOnn" na ekranie testu
 constexpr int kTestRightX = 125;  // prawa krawedz kolumny stanu przycisku
+
+// (v187) USTAWIENIA JADA NA TEJ SAMEJ SIATCE WIERSZY, CO MENU TRYBU — cztery wiersze
+// po kRowH od kRow0Y. To nie jest oszczednosc na kodzie, tylko warunek czytelnosci:
+// wlasciciel przechodzi miedzy tymi ekranami w dwa nacisniecia, wiec podskakujaca
+// siatka wierszy czytalaby sie jak usterka rysowania.
+constexpr int kSetValRight = 121;  // prawa krawedz kolumny WARTOSCI (ramka siega 123)
+constexpr int kSetVisible = 4;     // ile wierszy listy widac naraz (caly ekran)
+// NAGLOWEK USTAWIEN STOI 2 px NIZEJ NIZ POZOSTALE (kIdleTagY = 8) I TO JEST POMIAR,
+// NIE GUST. Tytul "JASNOŚĆ" ma AKCENTOWANE WERSALIKI: w metrykach f10 najwyzszy
+// piksel "Ś" lezy 10 px nad linia bazowa, wiec przy bazie 8 kreski nad Ś i Ć
+// wypadalyby na y = -2 i px() odcielaby je bez sladu — zostalby napis "JASNOSC"
+// z dziurami, ktorego nikt by nie powiazal z ta linijka. Przy bazie 10 glify
+// mieszcza sie w pasie y = 0..11, czyli dokladnie nad pierwszym wierszem (kRow0Y = 12),
+// i nie ma juz czego przycinac. Ta sama pulapka co przy U+2014 na ekranie testu:
+// silnik fontow pomija po cichu to, czego nie umie narysowac.
+constexpr int kSetHdrY = 10;
 
 // ====================== SSD1306 — SEKWENCJA INICJALIZACJI =====================
 // Wartosci dla panelu 128x64 z wewnetrzna pompka ladunkowa (moduly 0,96" i ich
@@ -278,6 +349,23 @@ void disc(int cx, int cy, int r, bool on) {
     for (int dx = -r; dx <= r; ++dx) {
       if (dx * dx + dy * dy <= r * r + 1) px(cx + dx, cy + dy, on);
     }
+  }
+}
+
+// (v187) RAMKA 1 px WOKOL WARTOSCI — znak "TE liczbe wlasnie zmieniasz".
+// Potrzebny, bo na tym panelu podswietlenie wiersza znaczy juz "tu stoi kursor",
+// a w menu ustawien te dwa stany trzeba rozroznic: w jednym ∧∨ przesuwaja sie po
+// wierszach, w drugim kreca wartoscia. Bez drugiego znaku wlasciciel naciska
+// strzalke i nie wie, czy przeskoczy wiersz, czy zmieni jasnosc — a to jest
+// dokladnie ta klasa niepewnosci, przez ktora panel dostal juz raz zgloszenie
+// "przyciski sa zepsute". Ramka, a nie negatyw wartosci: negatyw na podswietlonym
+// wierszu zlewa sie z tlem sasiada.
+void frame(int x0, int y0, int x1, int y1, bool on) {
+  hline(x0, x1, y0, on);
+  hline(x0, x1, y1, on);
+  for (int y = y0 + 1; y < y1; ++y) {
+    px(x0, y, on);
+    px(x1, y, on);
   }
 }
 
@@ -523,6 +611,248 @@ void drawTest() {
   }
 }
 
+// ====================== (v187) MENU USTAWIEN — MODEL ========================
+// Wszystko ponizej liczy sie NA MIEJSCU, z settings() i z kViewNames. Zadna z tych
+// funkcji nie ma wlasnej tablicy ani wlasnej kopii wartosci — bo kazda taka kopia
+// musialaby byc odswiezana i predzej czy pozniej rozjechalaby sie ze zrodlem.
+
+// Przypiety widok wg glownego ekranu; -1 = rotacja automatyczna albo brak spiecia.
+int pinnedView() { return (gPinnedFn != nullptr) ? gPinnedFn() : -1; }
+
+// Czy slot `v` jest ZYWYM widokiem. Sloty 0 i 2 sa wycofane (RETRO/GODZINY, v162)
+// i niosa w kViewNames "—" — to JEST ich znacznik i innego nie ma po co wymyslac.
+// Numeru widoku nie odgadujemy tu z niczego innego: gdy kiedys wroca albo dojdzie
+// nowy ekran, ta lista zmieni sie w jednym miejscu i panel pojdzie za nia sam.
+bool viewLive(int v) { return strcmp(kViewNames[v], "—") != 0; }
+
+// Wiersz 0 to "auto (rotacja)", czyli ZDJECIE przypiecia; dalej ida zywe widoki.
+int viewRows() {
+  int n = 1;
+  for (int v = 0; v < cfg::VIEW_COUNT; ++v) {
+    if (viewLive(v)) ++n;
+  }
+  return n;
+}
+
+// Numer widoku dla wiersza listy. Wiersz 0 -> -1, czyli dokladnie ta wartosc,
+// ktora WeatherUi::pinView() rozumie jako "wroc do rotacji".
+int viewForRow(int row) {
+  if (row <= 0) return -1;
+  int n = 0;
+  for (int v = 0; v < cfg::VIEW_COUNT; ++v) {
+    if (!viewLive(v)) continue;
+    if (++n == row) return v;
+  }
+  return -1;
+}
+
+// Odwrotnosc viewForRow() — zeby wejscie w liste stawalo OD RAZU na tym, co jest
+// teraz na duzym ekranie, a nie na poczatku listy.
+int rowForView(int view) {
+  int n = 0;
+  for (int v = 0; v < cfg::VIEW_COUNT; ++v) {
+    if (!viewLive(v)) continue;
+    ++n;
+    if (v == view) return n;
+  }
+  return 0;
+}
+
+// Przewijanie: kursor ma byc widoczny, okno przesuwa sie o tyle, ile trzeba i ani
+// piksela wiecej. Bez wysrodkowywania — przy czterech wierszach skakaloby ono
+// okno o dwa wiersze na kazde nacisniecie i lista czytalaby sie jak losowa.
+void scrollIntoView() {
+  if (gRowCur < gTop) gTop = gRowCur;
+  if (gRowCur >= gTop + kSetVisible) gTop = static_cast<uint8_t>(gRowCur - (kSetVisible - 1));
+}
+
+// Ile wierszy ma podekran WARTOSCI (jasnosc ma trzy, pozostale po dwa).
+uint8_t valRows(uint8_t scr) { return (scr == SCR_BRI) ? 3 : 2; }
+
+// --- WARTOSCI: jedno okienko na settings(), zamiast siedmiu galezi w kazdym miejscu -
+// Menu nie trzyma kopii ustawien, tylko siega po nie przez te cztery funkcje. Dzieki
+// temu rysowanie, edycja, cofanie i podpis tresci widza DOKLADNIE to samo pole i nie
+// da sie ich rozjechac przy dopisaniu kolejnego wiersza.
+uint16_t valGet(uint8_t scr, uint8_t row) {
+  const Settings& s = settings();
+  switch (scr) {
+    case SCR_BRI:   return (row == 0) ? s.blDay : ((row == 1) ? s.blDim : s.blNight);
+    case SCR_ROT:   return (row == 0) ? (s.autoRotate ? 1u : 0u) : s.dwellS;
+    case SCR_NIGHT: return (row == 0) ? s.nightStartH : s.nightEndH;
+    default:        return 0;
+  }
+}
+
+void valSet(uint8_t scr, uint8_t row, uint16_t v) {
+  Settings& s = settings();
+  switch (scr) {
+    case SCR_BRI:
+      if (row == 0) s.blDay = static_cast<uint8_t>(v);
+      else if (row == 1) s.blDim = static_cast<uint8_t>(v);
+      else s.blNight = static_cast<uint8_t>(v);
+      break;
+    case SCR_ROT:
+      if (row == 0) s.autoRotate = (v != 0);
+      else s.dwellS = v;
+      break;
+    case SCR_NIGHT:
+      if (row == 0) s.nightStartH = static_cast<uint8_t>(v);
+      else s.nightEndH = static_cast<uint8_t>(v);
+      break;
+    default: break;
+  }
+}
+
+// ZAKRESY BIERZEMY Z Settings, A NIE PISZEMY ICH TU DRUGI RAZ. Twarde minima
+// jasnosci istnieja po to, zeby z ekranu w lazience dalo sie wrocic — panel nie ma
+// prawa ich obchodzic, a gdyby mial wlasne liczby, obszedlby je przy pierwszej
+// zmianie po tamtej stronie. Settings::clampTuning() i tak przycina wszystko przy
+// zapisie; te dwie funkcje sprawiaja tylko, ze wlasciciel NIE WIDZI wartosci,
+// ktorej i tak nie dostanie.
+uint16_t valMin(uint8_t scr, uint8_t row) {
+  switch (scr) {
+    case SCR_BRI:
+      return (row == 0) ? Settings::BL_DAY_MIN
+                        : ((row == 1) ? Settings::BL_DIM_MIN : Settings::BL_NIGHT_MIN);
+    case SCR_ROT: return (row == 0) ? 0 : Settings::DWELL_MIN;
+    default:      return 0;   // godziny
+  }
+}
+
+uint16_t valMax(uint8_t scr, uint8_t row) {
+  switch (scr) {
+    case SCR_BRI: return 255;
+    case SCR_ROT: return (row == 0) ? 1 : Settings::DWELL_MAX;
+    default:      return 23;  // godziny
+  }
+}
+
+// KROK JASNOSCI TO 5, A NIE 1, i to jest decyzja o CZASIE WLASCICIELA, nie o
+// precyzji: roznicy jednego stopnia z 255 nie widzi zadne oko, a przejechanie
+// zakresu 60..255 krokiem 1 to 195 nacisniec. Krokiem 5 sa 39, a wartosci dziela
+// sie rowno (195, 225 i 240 sa podzielne przez 5), wiec oba konce zakresu daja sie
+// trafic dokladnie. Reszta pol idzie krokiem 1 — tam kazda jednostka cos znaczy.
+uint16_t valStep(uint8_t scr) { return (scr == SCR_BRI) ? 5 : 1; }
+
+// Napis wartosci. Jednostka JEST czescia napisu ("9 s", "22:00"), bo sama liczba
+// w kolumnie obok slowa "Koniec" nie mowi, czy to godzina, czy minuty.
+void valText(uint8_t scr, uint8_t row, char* out, size_t n) {
+  const unsigned v = valGet(scr, row);
+  switch (scr) {
+    case SCR_BRI:   snprintf(out, n, "%u", v); break;
+    case SCR_ROT:
+      if (row == 0) snprintf(out, n, "%s", (v != 0) ? "tak" : "nie");
+      else snprintf(out, n, "%u s", v);
+      break;
+    case SCR_NIGHT: snprintf(out, n, "%u:00", v); break;
+    default:        snprintf(out, n, "-"); break;
+  }
+}
+
+// Etykiety — switch, a nie tablica wskaznikow: tablica `static const char* const`
+// to cztery wskazniki, ktore moga wyladowac w statycznym RAM-ie, a switch nie
+// kosztuje ani bajta danych. Ta sama zasada rzadzi calym tym plikiem (patrz kInit
+// i celowy brak bitmapy ikony auta).
+const char* setItem(int i) {
+  switch (i) {
+    case 0:  return "Ekran";
+    case 1:  return "Jasność";
+    case 2:  return "Rotacja";
+    default: return "Noc";
+  }
+}
+
+const char* valLabel(uint8_t scr, uint8_t row) {
+  switch (scr) {
+    // Te trzy slowa sa TE SAME, ktorymi petla glowna opisuje poziomy LDR w dzienniku
+    // ("ciemno" / "polmrok" / "swiatlo", patrz pogoda-gdynia.ino) — wlasciciel czyta
+    // jedno i drugie, wiec nie moga sie nazywac inaczej.
+    case SCR_BRI:   return (row == 0) ? "Światło" : ((row == 1) ? "Półmrok" : "Ciemno");
+    case SCR_ROT:   return (row == 0) ? "Auto-rotacja" : "Czas ekranu";
+    case SCR_NIGHT: return (row == 0) ? "Początek" : "Koniec";
+    default:        return "";
+  }
+}
+
+const char* setTitle(uint8_t scr) {
+  switch (scr) {
+    case SCR_VIEW:  return "EKRAN";
+    case SCR_BRI:   return "JASNOŚĆ";
+    case SCR_ROT:   return "ROTACJA";
+    case SCR_NIGHT: return "NOC";
+    default:        return "USTAWIENIA";
+  }
+}
+
+// ====================== (v187) MENU USTAWIEN — RYSOWANIE =====================
+
+// Naglowek podekranu. W EDYCJI TYTUL USTEPUJE MIEJSCA INSTRUKCJI i to nie jest
+// ozdoba: to jedyna chwila, w ktorej dwa te same przyciski robia co innego niz
+// przed sekunda, a wlasciciel patrzy wtedy na DUZY ekran (podglad jasnosci), nie
+// na panel. Wracajac wzrokiem musi od razu wiedziec, ze zmiana jeszcze nie jest
+// przyjeta. Tytul i tak stoi na ekranie, z ktorego przed chwila tu wszedl.
+void drawSetHeader(uint8_t scr) {
+  str(plex::f10(), gEditing ? "* zapisz   # anuluj" : setTitle(scr), kMarginX, kSetHdrY,
+      true);
+}
+
+// Wiersz "etykieta ......... wartosc". `edit` doklada ramke wokol wartosci.
+void drawValRow(int i, const char* label, const char* value, bool sel, bool edit) {
+  const int top = kRow0Y + i * kRowH;
+  if (sel) fillRect(0, top, kW - 1, top + kRowH - 1, true);
+  // +11 = wysokosc wersalika w f11, tak samo jak w menu trybu.
+  str(plex::f11(), label, kMenuTextDX, top + 11, !sel);
+  const int x = kSetValRight - pltxt::stringWidth(plex::f11(), value);
+  str(plex::f11(), value, x, top + 11, !sel);
+  if (edit) frame(x - 3, top + 1, kSetValRight + 2, top + kRowH - 2, !sel);
+}
+
+void drawSettings() {
+  str(plex::f10(), "USTAWIENIA", kMarginX, kSetHdrY, true);
+  for (int i = 0; i < 4; ++i) {
+    const int top = kRow0Y + i * kRowH;
+    const bool sel = (i == static_cast<int>(gSetCur));
+    if (sel) fillRect(0, top, kW - 1, top + kRowH - 1, true);
+    str(plex::f11(), setItem(i), kMenuTextDX, top + 11, !sel);
+  }
+}
+
+// PILOT DO DUZEGO WYSWIETLACZA. Lista jest dluzsza od ekranu (czternascie pozycji
+// na cztery wiersze), wiec naglowek niesie licznik "n/m" — bez niego przewijanie
+// po ciemku wyglada jak lista bez konca. KROPKA znaczy tu DOKLADNIE to samo, co
+// w menu trybu: "to jest stan, ktory obowiazuje TERAZ" — czyli przypiety widok
+// albo, gdy nic nie jest przypiete, wiersz "auto (rotacja)".
+void drawViewList() {
+  const int rows = viewRows();
+  str(plex::f10(), "EKRAN", kMarginX, kSetHdrY, true);
+  char hdr[12];
+  snprintf(hdr, sizeof(hdr), "%d/%d", static_cast<int>(gRowCur) + 1, rows);
+  strRight(plex::f10(), hdr, kTestRightX, kSetHdrY, true);
+
+  const int pin = pinnedView();
+  for (int k = 0; k < kSetVisible; ++k) {
+    const int r = gTop + k;
+    if (r >= rows) break;
+    const int top = kRow0Y + k * kRowH;
+    const bool sel = (r == static_cast<int>(gRowCur));
+    if (sel) fillRect(0, top, kW - 1, top + kRowH - 1, true);
+    const int v = viewForRow(r);
+    str(plex::f11(), (r == 0) ? "auto (rotacja)" : kViewNames[v], kMenuTextDX, top + 11,
+        !sel);
+    if ((r == 0) ? (pin < 0) : (v == pin)) disc(kMenuDotX, top + kRowH / 2, 2, !sel);
+  }
+}
+
+void drawValues(uint8_t scr) {
+  drawSetHeader(scr);
+  const uint8_t rows = valRows(scr);
+  char v[12];
+  for (uint8_t i = 0; i < rows; ++i) {
+    valText(scr, i, v, sizeof(v));
+    drawValRow(i, valLabel(scr, i), v, i == gRowCur, (i == gRowCur) && gEditing);
+  }
+}
+
 // ====================== PODPIS TRESCI (kiedy przerysowac) ====================
 // Pelna klatka to 1 kB po I2C, czyli okolo 25 ms. Gdyby leciala co obieg, panel
 // zabieralby polowe kazdej klatki glownego ekranu — dlatego przerysowujemy
@@ -539,6 +869,38 @@ uint32_t signature(const AutoModel& a, bool fresh) {
   mix(gScr);
   if (gScr == SCR_TEST) {
     mix(gDown);   // ekran testu pokazuje WYLACZNIE stan przyciskow
+    return h;
+  }
+
+  // (v187) USTAWIENIA MAJA WLASNY PODPIS I TO JEST WARUNEK ICH DZIALANIA, nie
+  // optymalizacja. Regula tego panelu brzmi: KAZDY stan widoczny na szkle musi
+  // wejsc do podpisu, inaczej ekran zamarza az do najblizszej zmiany czegos innego
+  // (dokladnie tak zachowala sie ikona auta przed poprawka z v186, patrz bleLink
+  // nizej). Tu widac kursory, flage edycji i SIEDEM POL settings() — a ostatnie
+  // zmieniaja sie takze SPOZA panelu, z formularza WWW, wiec bez nich menu
+  // pokazywaloby liczbe, ktorej juz nie ma.
+  //
+  // Osobna galaz, a nie dopisanie pol do wspolnej sciezki: na ekranach ustawien nie
+  // widac ANI JEDNEGO pola z AutoModelu, wiec mieszanie ich tutaj kazaloby skladac
+  // pelna klatke (osiem stron, ~25 ms) przy kazdej wiadomosci z Home Assistanta —
+  // co 15 s, przez caly czas, gdy wlasciciel czyta menu.
+  if (inSettings()) {
+    mix(gSetCur);
+    mix(gRowCur);
+    mix(gTop);
+    mix(gEditing ? 1u : 0u);
+    const Settings& s = settings();
+    mix(s.nightStartH);
+    mix(s.nightEndH);
+    mix(s.dwellS);
+    mix(s.blDay);
+    mix(s.blDim);
+    mix(s.blNight);
+    mix(s.autoRotate ? 1u : 0u);
+    // Przypiecie zmienia sie takze dotykiem i z panelu WWW, a widac je jako kropke
+    // na liscie widokow. +1, zeby "brak przypiecia" (-1) nie wchodzilo do mieszania
+    // jako 0xFFFFFFFF razem z sasiednim polem — czytelnosc, nie poprawnosc.
+    mix(static_cast<uint32_t>(pinnedView() + 1));
     return h;
   }
 
@@ -566,9 +928,14 @@ uint32_t signature(const AutoModel& a, bool fresh) {
 void renderPage(const AutoModel& a, bool fresh) {
   memset(gPage + 1, 0, sizeof(gPage) - 1);   // gPage[0] to bajt sterujacy — zostaje
   switch (gScr) {
-    case SCR_MENU: drawMenu(a, fresh); break;
-    case SCR_TEST: drawTest(); break;
-    default:       drawIdle(a, fresh); break;
+    case SCR_MENU:  drawMenu(a, fresh); break;
+    case SCR_TEST:  drawTest(); break;
+    case SCR_SET:   drawSettings(); break;
+    case SCR_VIEW:  drawViewList(); break;
+    case SCR_BRI:
+    case SCR_ROT:
+    case SCR_NIGHT: drawValues(gScr); break;
+    default:        drawIdle(a, fresh); break;
   }
 }
 
@@ -584,6 +951,167 @@ void sendMode(uint32_t now) {
   gMsg = MSG_SENDING;
 }
 
+// ====================== (v187) MENU USTAWIEN — OBSLUGA KLAWISZY ==============
+
+// PODGLAD NA ZYWO. Wartosc siedzi JUZ w settings() w RAM-ie, a caly firmware czyta
+// te pola co klatke — wiec czas ekranu i auto-rotacja dzialaja natychmiast same
+// z siebie, bez ani jednej linii wsparcia stad. Jasnosc wymaga jednego ruchu
+// wiecej i to jest jedyny powod, dla ktorego ta funkcja w ogole istnieje: petla
+// glowna wystawia na PWM ten z TRZECH poziomow, ktory pasuje do biezacego odczytu
+// LDR (pogoda-gdynia.ino), wiec ustawianie "Światła" po ciemku nie dawaloby ZADNEGO
+// widocznego skutku. Na czas edycji wymuszamy wiec poziom EDYTOWANY — i tylko na
+// czas edycji: wymuszenie jest ograniczone czasowo po drugiej stronie
+// (WeatherUi::testBacklight), wiec samo gasnie, gdyby wlasciciel odszedl od panelu.
+void preview() {
+  if (gScr != SCR_BRI || gBlFn == nullptr) return;
+  gBlFn(static_cast<uint8_t>(valGet(SCR_BRI, gRowCur)), cfg::OLED_BL_PREVIEW_MS);
+}
+
+// Koniec podgladu — ODDAJEMY sterowanie automatowi z LDR OD RAZU, zamiast czekac,
+// az wymuszenie wygasnie samo. Bez tego po anulowaniu edycji ekran przez ponad
+// dwie sekundy swiecilby jasnoscia, ktora wlasciciel wlasnie odrzucil, i wygladalo
+// by to na zignorowane "#". 0 ms znaczy "wymuszenie wygaslo" — tickBacklight()
+// sprawdza to przy najblizszej klatce.
+void previewOff() {
+  if (gScr != SCR_BRI || gBlFn == nullptr) return;
+  gBlFn(static_cast<uint8_t>(valGet(SCR_BRI, gRowCur)), 0);
+}
+
+void enterSettings() {
+  gScr = SCR_SET;
+  gSetCur = 0;
+  gEditing = false;
+}
+
+// Wejscie w podekran. Mapowanie "wiersz menu -> ekran" jest ARYTMETYCZNE, wiec
+// pilnuje go straznik ponizej: przestawienie kolejnosci w setItem() bez przestawienia
+// enuma otwieraloby cichaczem nie ten ekran, co trzeba.
+static_assert(SCR_VIEW + 1 == SCR_BRI && SCR_BRI + 1 == SCR_ROT && SCR_ROT + 1 == SCR_NIGHT,
+              "kolejnosc SCR_VIEW/BRI/ROT/NIGHT musi odpowiadac wierszom setItem()");
+void enterSub(uint8_t scr) {
+  gScr = scr;
+  gEditing = false;
+  gRowCur = 0;
+  gTop = 0;
+  if (scr != SCR_VIEW) return;
+  // Lista widokow otwiera sie NA TYM, CO JEST TERAZ NA DUZYM EKRANIE. Wlasciciel
+  // siega po panel, zeby cos ZMIENIC wzgledem stanu biezacego, wiec kursor stojacy
+  // gdzie indziej kazalby mu najpierw odszukac, gdzie jest.
+  const int pin = pinnedView();
+  gRowCur = static_cast<uint8_t>((pin < 0) ? 0 : rowForView(pin));
+  scrollIntoView();
+}
+
+// ZATWIERDZENIE TO JEDEN ZAPIS DO NVS, A NIE PIEC. saveTuning() pisze KOMPLET
+// (dwie godziny nocne, czas ekranu, trzy jasnosci, auto-rotacja) i robi to pod
+// osobnymi kluczami, natychmiast — dokladnie tak samo, jak formularz w panelu WWW.
+// Wartosci sa juz w settings(), bo edycja pisze tam na biezaco (to ona daje podglad
+// na zywo), wiec tutaj tylko UTRWALAMY to, co wlasciciel widzi. Przewijanie menu
+// i sama edycja nie dotykaja flasha ANI RAZU.
+void commitEdit() {
+  gEditing = false;
+  previewOff();
+  Settings& s = settings();
+  s.saveTuning(s.nightStartH, s.nightEndH, s.dwellS, s.blDay, s.blDim, s.blNight,
+               s.autoRotate);
+}
+
+// ANULOWANIE PRZYWRACA STAN SPRZED WEJSCIA W EDYCJE. Nie "wartosc domyslna" i nie
+// "ostatnio zapisana" — dokladnie te, ktora byla na ekranie w chwili nacisniecia
+// "✱". Do NVS nic nie poszlo, wiec cofniecie to jeden zapis do RAM-u.
+void cancelEdit() {
+  valSet(gScr, gRowCur, gEditOld);
+  gEditing = false;
+  previewOff();
+}
+
+// Zmiana wartosci W KOLKO, a nie do sciany — ta sama regula, co przy kursorze menu
+// trybu i z tego samego powodu: przy 39 krokach jasnosci albo 24 godzinach dojscie
+// do drugiego konca "po sciance" trwaloby caly zakres, a tak jest jedno nacisniecie.
+// Ryzyka nie ma, bo nic tu jeszcze nie jest zapisane: "#" cofa kazdy przeskok.
+void bumpValue(int dir) {
+  const int32_t lo = valMin(gScr, gRowCur);
+  const int32_t hi = valMax(gScr, gRowCur);
+  int32_t v = static_cast<int32_t>(valGet(gScr, gRowCur)) + dir * static_cast<int32_t>(valStep(gScr));
+  if (v > hi) v = lo;
+  if (v < lo) v = hi;
+  valSet(gScr, gRowCur, static_cast<uint16_t>(v));
+  preview();
+}
+
+// Podekran "Ekran". Tu NIE MA trybu edycji i nie jest to niekonsekwencja: przypiecie
+// widoku dziala natychmiast i widac je na duzym ekranie, wiec "zatwierdzanie" nie
+// mialoby czego zatwierdzac. Do NVS tez nic nie idzie — przypiecie zyje w polu
+// WeatherUi::pinned_ i ginie przy restarcie, tak jak przypiecie z panelu WWW.
+void viewKey(uint8_t i) {
+  const int rows = viewRows();
+  switch (i) {
+    case cfg::BTN_UP:
+      gRowCur = static_cast<uint8_t>((gRowCur + rows - 1) % rows);
+      scrollIntoView();
+      break;
+    case cfg::BTN_DOWN:
+      gRowCur = static_cast<uint8_t>((gRowCur + 1) % rows);
+      scrollIntoView();
+      break;
+    // viewForRow(0) oddaje -1, czyli dokladnie to, co pinView() rozumie jako
+    // "zwolnij przypiecie" — wiersz "auto (rotacja)" nie potrzebuje wiec zadnego
+    // przypadku szczegolnego.
+    case cfg::BTN_OK:
+      if (gPinFn != nullptr) gPinFn(viewForRow(gRowCur));
+      break;
+    case cfg::BTN_BACK: gScr = SCR_SET; break;
+    default: break;
+  }
+}
+
+// Trzy podekrany wartosci maja WSPOLNA obsluge, bo roznia sie wylacznie danymi
+// (ile wierszy, jaki zakres, jaki napis) — a te siedza w valRows()/valMin()/
+// valMax()/valText(). Osobne funkcje na jasnosc, rotacje i noc znaczylyby trzy
+// kopie tej samej maszynki stanow, ktore rozjezdzaja sie przy pierwszej poprawce.
+void valueKey(uint8_t i) {
+  const uint8_t rows = valRows(gScr);
+  if (!gEditing) {
+    switch (i) {
+      case cfg::BTN_UP:   gRowCur = static_cast<uint8_t>((gRowCur + rows - 1) % rows); break;
+      case cfg::BTN_DOWN: gRowCur = static_cast<uint8_t>((gRowCur + 1) % rows); break;
+      case cfg::BTN_OK:
+        gEditing = true;
+        gEditOld = valGet(gScr, gRowCur);
+        preview();   // jasnosc ma byc widoczna JUZ przy wejsciu, nie dopiero po zmianie
+        break;
+      case cfg::BTN_BACK: gScr = SCR_SET; break;
+      default: break;
+    }
+    return;
+  }
+  switch (i) {
+    case cfg::BTN_UP:   bumpValue(+1); break;
+    case cfg::BTN_DOWN: bumpValue(-1); break;
+    case cfg::BTN_OK:   commitEdit(); break;
+    case cfg::BTN_BACK: cancelEdit(); break;
+    default: break;
+  }
+}
+
+void settingsKey(uint8_t i) {
+  if (gScr == SCR_SET) {
+    switch (i) {
+      case cfg::BTN_UP:   gSetCur = static_cast<uint8_t>((gSetCur + 3) & 3); break;
+      case cfg::BTN_DOWN: gSetCur = static_cast<uint8_t>((gSetCur + 1) & 3); break;
+      case cfg::BTN_OK:   enterSub(static_cast<uint8_t>(SCR_VIEW + gSetCur)); break;
+      case cfg::BTN_BACK: gScr = SCR_IDLE; break;
+      default: break;
+    }
+    return;
+  }
+  if (gScr == SCR_VIEW) {
+    viewKey(i);
+    return;
+  }
+  valueKey(i);
+}
+
 // Akcja przypisana do PUSZCZENIA przycisku (patrz pollButtons — i tam jest
 // uzasadnienie, dlaczego nie do wcisniecia).
 void onKey(uint8_t i, uint32_t now, const AutoModel& a) {
@@ -593,6 +1121,17 @@ void onKey(uint8_t i, uint32_t now, const AutoModel& a) {
   if (gScr == SCR_TEST) return;
 
   if (gScr == SCR_IDLE) {
+    // (v187) ZE SPOCZYNKU ROZCHODZA SIE DWIE DROGI, A NIE JEDNA. Do v186 KAZDY
+    // przycisk budzil menu trybu — teraz strzalki prowadza tam, a "✱" do ustawien.
+    // "#" NIE ROBI TU NIC I TO JEST CALA JEGO ROLA: skoro obiecalismy, ze ten
+    // przycisk zawsze cofa, to ze spoczynku, gdzie cofac sie nie ma dokad, ma
+    // milczec. Gdyby otwieral cokolwiek, przestalby byc przyciskiem, ktory mozna
+    // nacisnac na oslep — a to jedyny taki na tym module.
+    if (i == cfg::BTN_BACK) return;
+    if (i == cfg::BTN_OK) {
+      enterSettings();
+      return;
+    }
     // Pierwsze nacisniecie BUDZI menu i celowo NICZEGO nie wybiera: wlasciciel
     // siega do panelu, nie wiedzac, ktory przycisk trzyma pod palcem, wiec
     // wykonanie akcji "od razu" bylo by losowaniem.
@@ -600,6 +1139,11 @@ void onKey(uint8_t i, uint32_t now, const AutoModel& a) {
     const int act = autoModeIndex(a.mode);
     gCursor = (act >= 0) ? static_cast<uint8_t>(act) : 0;
     gMsg = MSG_NONE;
+    return;
+  }
+
+  if (inSettings()) {
+    settingsKey(i);
     return;
   }
 
@@ -643,6 +1187,14 @@ void checkTestCombo(uint32_t now) {
   const uint32_t heldBack = now - gDownAt[cfg::BTN_BACK];
   const uint32_t held = (heldOk < heldBack) ? heldOk : heldBack;
   if (held < cfg::OLED_TEST_HOLD_MS) return;
+
+  // (v187) CHWYT DZIALA TAKZE Z USTAWIEN — i wtedy MUSI ZAMKNAC EDYCJE JAK "#".
+  // Inaczej byloby to jedyne wyjscie z ekranu wartosci, ktore zostawia w RAM-ie
+  // liczbe nigdzie nie zatwierdzona: z testu wychodzi sie do spoczynku, wiec
+  // wlasciciel nie zobaczylby juz tamtego wiersza i nie mialby jak jej cofnac.
+  // Obietnica "anulowanie przywraca stan sprzed edycji" nie moze miec wyjatku
+  // ukrytego pod chwytem serwisowym.
+  if (gEditing) cancelEdit();
 
   gScr = SCR_TEST;
   gMsg = MSG_NONE;
@@ -772,6 +1324,16 @@ void tick(uint32_t now, const AutoModel& a, bool fresh) {
     gScr = SCR_IDLE;
     gMsg = MSG_NONE;
     gSentAtMs = 0;   // patrz uzasadnienie przy BTN_BACK w onKey()
+  }
+  // (v187) USTAWIENIA GASNA PO WLASNYM, DLUZSZYM PROGU (cfg::OLED_SET_IDLE_MS) —
+  // uzasadnienie tej drugiej liczby stoi przy niej w Config.h. WYJSCIE ZACHOWUJE SIE
+  // DOKLADNIE JAK "#": nie zapisuje niczego i przywraca wartosc sprzed wejscia
+  // w edycje. Odejscie od panelu w polowie dobierania jasnosci nie ma prawa niczego
+  // utrwalic — to jedyna zmiana w tym menu, ktorej z drugiego konca mieszkania nie
+  // widac, wiec musi sama po sobie posprzatac.
+  if (inSettings() && (now - gLastKeyMs) >= cfg::OLED_SET_IDLE_MS) {
+    if (gEditing) cancelEdit();
+    gScr = SCR_IDLE;
   }
   // (v178) DRUGA FURTKA Z TESTU: 10 s bez zadnego zbocza i bez trzymanego guzika.
   // Pierwsza i wazniejsza jest natychmiastowa — krotkie nacisniecie i puszczenie
@@ -977,12 +1539,31 @@ void injectPress(uint8_t role) {
   gInject.fetch_or(1u << role, std::memory_order_relaxed);
 }
 
+// (v187) JEDNA NAZWA NA CALE DRZEWO USTAWIEN, a nie piec osobnych. /api/diag ma
+// odpowiadac na pytanie "co panel teraz robi", a nie prowadzic wlasnej nawigacji:
+// piksele i tak widac w podgladzie (shadow()), a piec nowych napisow trzeba by
+// utrzymywac w zgodzie z enumem przy kazdym nowym podekranie.
 const char* screenName() {
   switch (gScr) {
     case SCR_MENU: return "menu";
     case SCR_TEST: return "test";
+    case SCR_SET:
+    case SCR_VIEW:
+    case SCR_BRI:
+    case SCR_ROT:
+    case SCR_NIGHT: return "ustawienia";
     default: return "spoczynek";
   }
+}
+
+// Trzy wskazniki do glownego ekranu — pelne uzasadnienie stoi przy deklaracji
+// w OledPanel.h. Ustawiane RAZ, w setup(), zanim cokolwiek moze je wywolac:
+// menu ustawien budzi sie dopiero z nacisniecia przycisku, a to jest o cala
+// inicjalizacje pozniej.
+void setUiHooks(void (*pinFn)(int), int (*pinnedFn)(), void (*blFn)(uint8_t, uint32_t)) {
+  gPinFn = pinFn;
+  gPinnedFn = pinnedFn;
+  gBlFn = blFn;
 }
 
 }  // namespace oled

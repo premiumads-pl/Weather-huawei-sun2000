@@ -2161,6 +2161,20 @@ void setup() {
   // pamieci ani czasu. Jesli jest — probowanie dwoch adresow to najwyzej ~100 ms
   // raz na uruchomienie. Zaden z pinow (4, 5, 6, 15, 16, 17) nie koliduje z TFT,
   // dotykiem, PIR-em ani LDR-em, wiec kolejnosc wzgledem nich jest bez znaczenia.
+  // (v187) Spiecie panelu OLED z glownym ekranem — trzy wskazniki, TA SAMA droga,
+  // ktora panel WWW dostaje przez portal::setViewHandler() kilkadziesiat linii wyzej.
+  // Menu ustawien na module musi umiec przypiac widok, zapytac o przypiety (kropka
+  // na liscie) i wymusic jasnosc na czas podgladu; obiekt `ui` zyje tutaj, wiec
+  // spinamy to tu, a OledPanel nie uczy sie o istnieniu WeatherUi. PRZED begin()
+  // celowo: gdyby kiedys ktos wolal ktorykolwiek z tych wskaznikow juz przy rozruchu
+  // panelu, ma zastac ustawione, a nie nullptr.
+  oled::setUiHooks([](int i) { ui.pinView(i); },
+                   []() {
+                     int cur = 0, pin = -1;
+                     ui.viewState(cur, pin);
+                     return pin;
+                   },
+                   [](uint8_t v, uint32_t ms) { ui.testBacklight(v, ms); });
   oled::begin();
   // Wynik NIE jest juz ignorowany. Nieudana alokacja nie konczy sprawy — netTask
   // ponawia ja w tle (radarmap::ensureReady()) — ale ma zostawic slad w dzienniku

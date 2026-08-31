@@ -38,6 +38,31 @@
 // w tescie przyciski nic nie robia, wiec wlasciciel naciskal wiecej i mocniej,
 // a kazde nacisniecie zerowalo licznik wyjscia. Skonczylo sie zgloszeniem, ze
 // "przyciski sa zepsute i zmiana trybu nie dziala".
+//
+// (v187) MENU USTAWIEN — I JEDNA GRAMATYKA PRZYCISKOW NA KAZDYM POZIOMIE.
+// Panel przestal byc jednoekranowym pilotem do auta i dostal drugie drzewo: cztery
+// pozycje (Ekran / Jasność / Rotacja / Noc), a pod nimi podekrany. Zeby to dalo sie
+// obsluzyc czterema guzikami BEZ INSTRUKCJI, obowiazuje jedna, wyjatkow nie ma:
+//     ∧ ∨   poruszaj sie / zmieniaj wartosc
+//     ✱     wejdz / zatwierdz        (cfg::BTN_OK)
+//     #     wroc / anuluj            (cfg::BTN_BACK)
+// "#" NIGDY nie robi nic innego niz KROK WSTECZ — ze spoczynku, gdzie cofac sie nie
+// ma dokad, nie robi wiec NIC. To jest obietnica wobec wlasciciela, a nie detal
+// implementacji: jedyny przycisk, ktorego mozna nacisnac na oslep i niczego nie
+// zepsuc, przestaje byc taki w chwili, gdy gdziekolwiek zaczyna cos zatwierdzac.
+// Ze spoczynku: ∧ albo ∨ -> wybor trybu ladowania (jak dotad, jedno nacisniecie),
+// ✱ -> ustawienia, ✱ i # razem przez cfg::OLED_TEST_HOLD_MS -> ekran TEST.
+//
+// CZEGO W TYM MENU NIE MA I NIE BEDZIE: WiFi, MQTT, adresow, hasel i kluczy.
+// Czterema przyciskami na 128x64 nie wpisuje sie hasla — probowanie tego skonczyloby
+// sie ekranem wyboru znaku po znaku, ktory wyglada jak funkcja, a jest pulapka.
+// To zostaje w panelu WWW, gdzie jest klawiatura.
+//
+// EDYCJA MA PODGLAD NA ZYWO I ODWROTNY BIEG. ✱ na wierszu wchodzi w edycje, ∧∨ zmieniaja
+// wartosc W RAM-ie ustawien od razu (jasnosc realnie sie zmienia, czas ekranu realnie
+// przyspiesza rotacje), ✱ zatwierdza i robi JEDEN zapis do NVS przez Settings::
+// saveTuning(), a # przywraca wartosc sprzed wejscia w edycje. Bezczynnosc
+// (cfg::OLED_SET_IDLE_MS) konczy sie tak samo jak # — bez zapisu.
 namespace oled {
 
 // Wykrywa modul po I2C (ACK pod 0x3C, potem 0x3D) i konfiguruje przyciski.
@@ -47,6 +72,20 @@ namespace oled {
 // Slad zostaje w dzienniku i w /api/diag (sekcja "oled").
 void begin();
 
+// (v187) TRZY WSKAZNIKI DO GLOWNEGO EKRANU — ustawiane RAZ, w setup().
+// Menu ustawien (patrz nizej) musi umiec przypiac widok, zapytac o przypiety
+// i wymusic jasnosc na czas podgladu. Wszystkie trzy rzeczy naleza do obiektu
+// WeatherUi, ktory zyje w pogoda-gdynia.ino — a ten panel z zalozenia nie zna
+// glownego ekranu i znac go nie ma po co. Wskazniki zamiast `extern WeatherUi ui`
+// to dokladnie ten sam wzorzec, ktorym z panelem WWW rozmawia portal::
+// setViewHandler(): jedno miejsce spiecia, w setup(), i zadnej zaleznosci w druga
+// strone. Nieustawione (nullptr) nie sa bledem — podekran "Ekran" po prostu nic
+// wtedy nie przypina, a podglad jasnosci ogranicza sie do zapisu w RAM.
+//   pinFn(i)   — przypnij widok i (i < 0 zwalnia przypiecie, czyli wraca rotacja)
+//   pinnedFn() — numer przypietego widoku albo -1; STAD bierze sie kropka na liscie
+//   blFn(v,ms) — wymus jasnosc v na ms milisekund (WeatherUi::testBacklight)
+void setUiHooks(void (*pinFn)(int), int (*pinnedFn)(), void (*blFn)(uint8_t, uint32_t));
+
 // Jeden obieg: odczyt przyciskow, obsluga stanu, najwyzej JEDNA strona obrazu.
 // Wolac z petli rysowania, po zlozeniu klatki glownego ekranu.
 void step(const AutoModel& a, uint32_t now);
@@ -54,7 +93,7 @@ void step(const AutoModel& a, uint32_t now);
 // --- podglad dla /api/diag (zero nowych pol w Diag, wiec zero bajtow w .bss) ---
 bool present();            // czy modul odpowiedzial przy starcie
 uint8_t address();         // 0x3C / 0x3D / 0 gdy nie ma
-const char* screenName();  // "spoczynek" / "menu" / "test"
+const char* screenName();  // "spoczynek" / "menu" / "test" / (v187) "ustawienia"
 uint32_t pagesSent();      // ile stron poszlo na I2C od uruchomienia
 uint32_t i2cErrors();      // ile transakcji NIE doszlo (urwany przewod, zly styk)
 uint32_t lastStepUs();     // ile trwal ostatni obieg step() [us]
@@ -84,7 +123,12 @@ const uint8_t* shadow();
 // Sama akcja NIE wykonuje sie tutaj — patrz komentarz przy gInject w OledPanel.cpp.
 void injectPress(uint8_t role);
 
-uint8_t cursor();          // podswietlony wiersz menu 0..3 (to NIE jest tryb aktywny)
+// Podswietlony wiersz menu WYBORU TRYBU, 0..3 (to NIE jest tryb aktywny).
+// (v187) Menu ustawien ma WLASNY kursor i celowo go tu nie wystawiamy: panel WWW
+// rysuje ekran z kopii obrazu piksel w piksel (shadow()), wiec i tak widzi, gdzie
+// stoi podswietlenie, a kolejna liczba w /api/diag musialaby znaczyc co innego na
+// kazdym z pieciu ekranow ustawien.
+uint8_t cursor();
 const char* activeMode();  // tryb POTWIERDZONY przez <prefix>/auto/stan, "" gdy brak
                            // — to samo zrodlo, co kropka na ekranie, nigdy wlasna wysylka
 

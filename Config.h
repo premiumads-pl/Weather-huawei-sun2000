@@ -117,8 +117,28 @@ constexpr uint8_t BTN_BACK = 2;  // wyjscie bez zmiany  (K3, GPIO16)
 // Probkowanie potwierdzajace kosztowaloby caly obieg opoznienia na kazde zbocze;
 // holdoff nie kosztuje nic i tak samo dziala dotyk GPIO7 (Touch.cpp).
 constexpr uint32_t OLED_BTN_HOLDOFF_MS = 120;
-// Menu wraca do ekranu spoczynkowego po tylu ms bez zadnego zbocza.
+// Menu WYBORU TRYBU LADOWANIA wraca do ekranu spoczynkowego po tylu ms bez zadnego
+// zbocza. (v187) Ta liczba dotyczy JUZ TYLKO tamtego jednego ekranu — menu ustawien
+// ma wlasny, dluzszy prog (OLED_SET_IDLE_MS nizej).
 constexpr uint32_t OLED_MENU_IDLE_MS = 15000;
+// (v187) MENU USTAWIEN i jego cztery podekrany — DWA RAZY WIECEJ CZASU i to jest
+// roznica zamierzona, a nie niedopatrzenie. Wybor trybu ladowania to jeden ruch:
+// przewin do wiersza, zatwierdz. W ustawieniach trzeba przeczytac wiersz, wejsc
+// w edycje i DOBRAC LICZBE, patrzac przy tym NIE na panel, tylko na duzy ekran,
+// ktory wlasnie zmienia jasnosc — 15 s gasiloby menu pod palcem wlasciciela.
+// WYJSCIE PO TYM CZASIE NIE ZAPISUJE NICZEGO i przywraca wartosc sprzed wejscia
+// w edycje, czyli zachowuje sie DOKLADNIE jak przycisk "wroc" (cfg::BTN_BACK).
+// Inaczej odejscie od panelu w polowie kreconia galka utrwalaloby przypadkowa
+// liczbe — a to jest jedyny stan, ktorego z drugiego konca mieszkania nie widac.
+constexpr uint32_t OLED_SET_IDLE_MS = 30000;
+// (v187) PODGLAD JASNOSCI NA ZYWO: na tyle ms edycja WYMUSZA edytowany poziom na
+// duzym wyswietlaczu (WeatherUi::testBacklight). Bez tego wymuszenia petla glowna
+// wystawialaby na PWM ten z trzech poziomow, ktory pasuje do BIEZACEGO odczytu LDR
+// — czyli ustawianie "Światła" w ciemnej lazience nie dawaloby ZADNEGO widocznego
+// skutku i wygladalo na zepsuty panel. 2,5 s to wiecej niz odstep miedzy dwoma
+// nacisnieciami przy dobieraniu wartosci, wiec podglad nie mruga miedzy krokami,
+// a jednoczesnie sam gasnie, gdyby wlasciciel odszedl od panelu w trakcie edycji.
+constexpr uint32_t OLED_BL_PREVIEW_MS = 2500;
 // (v178) Wejscie w ekran testu: cfg::BTN_OK i cfg::BTN_BACK wcisniete JEDNOCZESNIE
 // przez tyle ms. DO v177 wystarczylo przytrzymanie DOWOLNEGO przycisku i to bylo
 // zle, bo robilo z tamtego ekranu PULAPKE: w tescie zadne nacisniecie nic nie robi,

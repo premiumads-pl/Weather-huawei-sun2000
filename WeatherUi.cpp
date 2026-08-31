@@ -436,11 +436,15 @@ void WeatherUi::drawColorTest() {
 
 // Nazwy ekranow, indeks = cfg::VIEW_*. Krotkie, bo w belce gornej V1/V2 na tytul
 // zostawalo 152 px ("FOTOWOLTAIKA", najdluzsza, ma 112 px).
-// UWAGA — TA TABLICA JEST DZIS MARTWA: belke rysowal uklad V1/V2 (usuniete w v160),
-// a panel WWW ma wlasna liste etykiet w literale HTML (VIEWS/VDIAG w Portal.cpp).
-// Zostawiona nietknieta poza dwoma slotami nizej, bo nie nalezy do zadania "skasuj
-// RETRO i GODZINY" — ale nie jest juz "jednym zrodlem prawdy", cokolwiek twierdzil
-// tu poprzedni komentarz.
+// (v187) TA TABLICA ZNOWU ZYJE — I MA JEDNEGO, KONKRETNEGO CZYTELNIKA. Miedzy v160
+// a v186 byla martwa: belke rysowal uklad V1/V2 (usuniety w v160), a panel WWW ma
+// wlasna liste etykiet w literale HTML (VIEWS/VDIAG w Portal.cpp). Od v187 czyta ja
+// podekran "Ekran" w menu ustawien panelu OLED (OledPanel.cpp) — pilot do duzego
+// wyswietlacza, ktory wypisuje wszystkie widoki do przypiecia. Deklaracja siedzi
+// w WeatherUi.h i to ona daje tej tablicy linkage zewnetrzny; uzasadnienie "dlaczego
+// nie druga lista w OledPanel.cpp" stoi tam, przy deklaracji.
+// JEDNYM ZRODLEM PRAWDY DLA CALEGO PROJEKTU DALEJ NIE JEST — panel WWW ma swoja liste
+// i tego ta zmiana nie rusza.
 // Sloty 0 i 2 to WYCOFANE ekrany RETRO/GODZINY (v162). Rozmiar tablicy zostaje
 // cfg::VIEW_COUNT, zeby indeksowanie dowolnym cfg::VIEW_* dalej bylo w zakresie.
 const char* const kViewNames[cfg::VIEW_COUNT] = {
