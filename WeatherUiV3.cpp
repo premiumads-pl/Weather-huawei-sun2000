@@ -411,6 +411,33 @@ void precipChart(TFT_eSPI& s, const WeatherModel& w, int x, int y, int wdt, int 
   }
 }
 
+// (v193) IKONA STRONY RACHUNKU — trojkat przy kwocie w linii kosztu na ekranie
+// glownym: w GORE (zielony) = sprzedaz, w DOL (czerwony) = zakup. Pelne uzasadnienie
+// tego rozwiazania stoi przy uzyciu, w mainPvModule().
+//
+// TROJKAT RYSOWANY, A NIE ZNAK Z FONTU, i to nie z wygody: strzalek ↑ i ↓ (U+2191,
+// U+2190) W KROJACH PLEX PO PROSTU NIE MA — sprawdzone tools/szer.py. A drawGlyph()
+// pomija nieznany znak BEZ SLOWA, wiec taki napis nie zglasza bledu, tylko cicho
+// gubi ikone i zostawia sama kwote. Dokladnie tak zniknely kiedys ◀ i ▸ z menu
+// i szukalem powodu w logice, zamiast w tablicy znakow. fillTriangle() nie ma jak
+// zawiesc po cichu.
+//
+// KOTWICA NA LINII BAZOWEJ tekstu, nie na gorze pola: kwota obok jest rysowana od
+// baseline'u, wiec ikona liczona od tej samej krawedzi zostanie z nia wyrownana
+// nawet po zmianie kroju. Trojkat siedzi 1..10 px NAD baselinem, czyli w pasie cyfr
+// (f16 ma ascent 15), a nie pod nimi.
+constexpr int kMoneyIconW = 11;    // szerokosc trojkata
+constexpr int kMoneyIconH = 9;     // wysokosc trojkata
+constexpr int kMoneyIconGap = 4;   // przerwa miedzy ikona a kwota
+
+void drawMoneyTri(TFT_eSPI& s, int x, int baseline, bool up, uint16_t c) {
+  const int b = baseline - 1;              // dol ikony tuz nad linia bazowa
+  const int t = b - kMoneyIconH;           // gora ikony
+  const int mid = x + kMoneyIconW / 2;
+  if (up) s.fillTriangle(mid, t, x, b, x + kMoneyIconW, b, c);
+  else    s.fillTriangle(x, t, x + kMoneyIconW, t, mid, b, c);
+}
+
 // Modul PRAD na ekranie glownym (stany: produkcja / pobor / spi / lokalny).
 // (v180) `cost` moze byc nullptr (warstwa danych jeszcze nic nie podpiela) — wtedy
 // wiersz z kosztem po prostu nie powstaje, tak samo jak przy braku wiadomosci MQTT.
@@ -665,7 +692,8 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv,
   //                     "zakup dziś 0,00 zł", ktore twierdziloby, ze dzis nie
   //                     kupilismy ani kilowatogodziny — a to jest zdanie o domu,
   //                     nie o naszym braku danych.
-  //   (b) swieze     -> "zakup dziś 4,80 zł".
+  //   (b) swieze     -> kwota zakupu (od v193: czerwony trojkat w dol + "4,80 zł",
+  //                     a obok niej zielona sprzedaz — patrz akapit v193 nizej).
   //   (c) stare      -> kwota ZOSTAJE (to wciaz jedyne, co wiemy), ale slowo "dziś"
   //                     ustepuje miejsca WIEKOWI. Ten sam zabieg, co w naglowku tego
   //                     modulu kilkadziesiat linii wyzej (v161: "dziś X kWh" ustepuje
@@ -676,53 +704,79 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv,
   //                     licznik, a my mamy kwote z wczoraj. Sam wiek dostaje col::WARN
   //                     — ten sam kolor "nieswieze", co przy PV i piecu.
   //
-  // (v192) DRUGI CZLON TEJ LINII: "sprzedaż X zł" przy LEWEJ krawedzi kolumny.
-  // Dwie strony jednego rachunku dobowego stoja naprzeciw siebie i rosna ku sobie:
-  // kupno przy DATA_R, sprzedaz przy DATA_L.
+  // (v193) SLOWA USTAPILY MIEJSCA IKONOM — i to NIE jest zamiana estetyczna, tylko
+  // sposob na POWIEKSZENIE liczb. v192 mial obie kwoty opisane slowami ("sprzedaż
+  // 1,30 zł" / "zakup dziś 2,78 zł") i wlasciciel powiedzial wprost: czcionka jest
+  // za mala. Byla — bo slowa zjadaly 60% szerokosci kolumny i zeby oba czlony sie
+  // zmiescily, krój musial zejsc az do f10. Zmierzone (tools/szer.py):
+  //     ze slowami, f10:  83 px + 94 px = 177 px z 186 px kolumny  -> zostaje 9 px
+  //     ikona + kwota, f16: (11+4+67) x2 = 166 px                  -> zostaje 20 px
+  // Czyli po wyrzuceniu slow miesci sie krój PONAD POLTORA RAZA WYZSZY (ascent 15
+  // zamiast 10) i to nawet w wariancie skrajnym "999,99 zł", ktory fizycznie nie ma
+  // prawa wystapic. Ikona jest tansza w pikselach niz slowo, ktore opisuje.
   //
-  // KROJ ZESZEDL Z f11 NA f10 I TO JEST WARUNEK ISTNIENIA TEGO CZLONU, nie kosmetyka.
-  // Zmierzone w tablicach (tools/szer.py, a nie na oko — na oko pomylilem sie przy
-  // "100 %" o 4 px i przy y=208 o caly sprite):
-  //     f11: "sprzedaż 99,99 zł" 104 px + "zakup dziś 999,99 zł" 111 px = 215 px
-  //     f10: "sprzedaż 99,99 zł"  83 px + "zakup dziś 999,99 zł"  94 px = 177 px
-  // Kolumna ma 186 px (DATA_L 127 .. DATA_R 313). Na f11 czlony NACHODZILYBY na
-  // siebie o 29 px nawet w skrajnym wariancie, a przy realnych kwotach (9,99 i
-  // 39,99) zostawaly 4 px przerwy — czyli tyle, co nic. Na f10 skrajny wariant ma
-  // 9 px zapasu, a realny 21 px. Zmniejszenie kroju POPRAWIA tez hierarchie: to
-  // jest linia kontekstu pod liczbami chwilowymi, wiec ma byc cichsza od nich.
+  // ZNACZENIE NIOSA DWIE CECHY NARAZ, nie jedna: KIERUNEK (trojkat w gore = pieniadz
+  // przychodzi, w dol = wychodzi) i KOLOR (zielony = sprzedaz, czerwony = zakup).
+  // Podwojne kodowanie jest tu celowe — sam kolor nie wystarcza, bo przy 8% populacji
+  // z zaburzeniem widzenia barw czerwony i zielony potrafia byc nie do odroznienia,
+  // a sam trojkat bez koloru gubi sie w rzedzie innych drobnych elementow.
   //
-  // STRAZNIK NA ZDERZENIE (kolizja) ISTNIEJE MIMO TYCH POMIAROW. Liczby wyzej sa
-  // prawdziwe dzisiaj, dla tych napisow i tego kroju — ale komentarz nie jest
-  // wykonywany, a napis kiedys sie zmieni. Mierzymy wiec OBA czlony w locie tym
-  // samym plex::width(), ktorego uzywa rysowanie, i gdy nie ma 8 px przerwy,
-  // sprzedaz NIE JEST rysowana. Nachodzace na siebie napisy sa gorsze niz brak
-  // jednego z nich, a kupno jest wazniejsze (to wydatek, na ktory mozna zareagowac).
+  // KOLOR NIE LAMIE KONTRAKTU BARW TEGO EKRANU, mimo ze v180 zapisal tu wprost
+  // "zadnego nowego koloru, ta linia ma byc col::MUTE, zeby nie czytala sie jak
+  // drugi alarm". Powod, dla ktorego wtedy tak bylo: JEDNA szara kwota pod czerwona
+  // albo zielona liczba chwilowa rzeczywiscie wygladalaby na powtorzenie tamtego
+  // sygnalu. Teraz kwoty sa DWIE i stoja naprzeciw siebie, wiec kolor przestal
+  // znaczyc "alarm", a zaczal znaczyc "ktora to strona rachunku" — czyli rozroznia
+  // elementy, zamiast krzyczec. Barw uzywamy TYCH SAMYCH, co linia wyzej (col::OK
+  // dla oddawania, col::GRID dla poboru), wiec zielony nadal wszedzie na tym ekranie
+  // znaczy "energia plynie do sieci", a czerwony "z sieci" — paleta sie nie poszerza.
   //
-  // W STANIE NIESWIEZYM SPRZEDAZY NIE MA W OGOLE. Miejsce po lewej zajmuje wtedy
-  // WIEK ("sprzed 14 min"), ktory jest wazniejszy: po polnocy bez lacznosci obie
-  // kwoty sa wczorajsze, a slowo "dziś" bylo by wprost falszywe. Trzeci czlon i tak
-  // by sie nie zmiescil, wiec wybor jest miedzy wiekiem a sprzedaza — i wygrywa wiek.
+  // SLOWA "dziś" TEZ NIE MA i nie jest potrzebne: naglowek tego modulu kilkadziesiat
+  // linii wyzej mowi juz "dziś X kWh" i to on ustawia ramy czasowe dla calego bloku.
+  // Powtarzanie go przy kazdej kwocie bylo redundancja, ktora kosztowala 22 px.
+  //
+  // STRAZNIK NA ZDERZENIE ZOSTAJE mimo zapasu 20 px. Liczby wyzej sa prawdziwe dla
+  // TYCH kwot i TEGO kroju, a komentarz nie jest wykonywany — mierzymy wiec oba
+  // czlony w locie tym samym plex::width(), ktorego uzywa rysowanie, i przy braku
+  // 10 px przerwy sprzedaz NIE JEST rysowana. Nachodzace napisy sa gorsze niz brak
+  // jednego z nich, a zakup jest wazniejszy: to wydatek, na ktory mozna zareagowac.
+  //
+  // W STANIE NIESWIEZYM SPRZEDAZY NIE MA W OGOLE — miejsce po lewej zajmuje WIEK
+  // ("sprzed 14 min", col::WARN). Po polnocy bez lacznosci obie kwoty sa wczorajsze
+  // i wiek jest wazniejszy niz druga liczba; trzeci czlon i tak by sie nie zmiescil.
   if (cost != nullptr && cost->atMs != 0) {
     char zl[12];
     fmt2(zl, sizeof(zl), cost->zl);
     char line[32];
+    const int yb = top + 84;              // baseline: f16 ma ascent 15, wiec gora
+                                          // cyfr siada na y=181 — 2 px pod linia
+                                          // wyzej (y=179), a ogonek przecinka konczy
+                                          // sie na ~199, czyli 4 px nad moduleSep (203).
     if (freshMs(cost->atMs, cfg::COST_STALE_MS)) {
-      snprintf(line, sizeof(line), "zakup dziś %s zł", zl);
-      const int bw = plex::strRight(s, plex::f10(), line, grid::DATA_R, top + 82, col::MUTE);
+      snprintf(line, sizeof(line), "%s zł", zl);
+      const int bw = plex::strRight(s, plex::f16(), line, grid::DATA_R, yb, col::GRID);
+      drawMoneyTri(s, grid::DATA_R - bw - kMoneyIconGap - kMoneyIconW, yb, false, col::GRID);
 
-      char sell[32];
+      char sell[16];
       fmt2(zl, sizeof(zl), static_cast<float>(cost->sellGr) / 100.f);
-      snprintf(sell, sizeof(sell), "sprzedaż %s zł", zl);
-      const int sw = plex::width(plex::f10(), sell);
-      if (grid::DATA_L + sw + 8 <= grid::DATA_R - bw) {
-        plex::str(s, plex::f10(), sell, grid::DATA_L, top + 82, col::MUTE);
+      snprintf(sell, sizeof(sell), "%s zł", zl);
+      const int sw = kMoneyIconW + kMoneyIconGap + plex::width(plex::f16(), sell);
+      // Lewy skraj PRAWEGO czlonu to jego ikona, a nie jego napis — inaczej
+      // straznik porownywalby sie z niewlasciwa krawedzia i pozwolilby sprzedazy
+      // wejsc pod czerwony trojkat.
+      if (grid::DATA_L + sw + 10 <= grid::DATA_R - bw - kMoneyIconGap - kMoneyIconW) {
+        drawMoneyTri(s, grid::DATA_L, yb, true, col::OK);
+        plex::str(s, plex::f16(), sell, grid::DATA_L + kMoneyIconW + kMoneyIconGap,
+                  yb, col::OK);
       }
     } else {
       char ago[24];
       agoWords(ago, sizeof(ago), okAgeS(cost->atMs));
-      const int aw = plex::strRight(s, plex::f10(), ago, grid::DATA_R, top + 82, col::WARN);
-      snprintf(line, sizeof(line), "zakup %s zł", zl);
-      plex::strRight(s, plex::f10(), line, grid::DATA_R - aw - 4, top + 82, col::MUTE);
+      const int aw = plex::strRight(s, plex::f11(), ago, grid::DATA_R, yb, col::WARN);
+      snprintf(line, sizeof(line), "%s zł", zl);
+      const int bw = plex::strRight(s, plex::f16(), line, grid::DATA_R - aw - 8, yb, col::GRID);
+      drawMoneyTri(s, grid::DATA_R - aw - 8 - bw - kMoneyIconGap - kMoneyIconW, yb,
+                   false, col::GRID);
     }
   }
 

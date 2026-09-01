@@ -836,8 +836,17 @@ const $=i=>document.getElementById(i);
 // (v181) ZWROT wszedl na 12, wiec SAMOCHOD przesunal sie na 13 (Config.h). Kolejnosc
 // pigulek idzie za petla rotacji: Prad -> Zwrot -> Samochod.
 const VIEWS=[['Auto',-1],['Główny',1],['Radar',3],['5 dni',4],['Prąd',7],['Zwrot',12],['Samochód',13],['Pokoje',5],['Ogrzewanie',6],['Powietrze',9],['Samoloty',8]];
-// Kolejnosc jak numeracja na wyswietlaczu: para dotykowa Statystyki(1/2, VIEW_STATS=13)
-// -> Pamiec(2/2, VIEW_MEM=10), a potem osobny Ruch(VIEW_MOTION=11).
+// Kolejnosc jak numeracja na wyswietlaczu: Statystyki (VIEW_STATS=14) -> Pamiec
+// (VIEW_MEM=10) -> Ruch (VIEW_MOTION=11).
+// (v193) SPROSTOWANIE DWOCH RZECZY NARAZ, bo ten komentarz klamal w obie strony.
+// Po pierwsze numer: pisalo tu "VIEW_STATS=13" jeszcze po tym, jak linijki nizej
+// same odnotowaly przesuniecie na 14 — czyli naglowek przeczyl wlasnej historii
+// tuz pod soba. Po drugie "para dotykowa (1/2 -> 2/2)": podwojnego dotkniecia na
+// statystykach juz nie ma, zostalo usuniete na zyczenie wlasciciela. Zaden z tych
+// bledow nie zepsulby dzialania (lista VIEWS obok jest poprawna i przetestowana
+// klikniecie po klikniecie), ale oba wyslalyby czytajacego w zla strone — a to
+// dokladnie ten rodzaj usterki, ktory kosztowal juz w tym projekcie dwie pomylki
+// (komentarz "<240" przezyl podzial sprite'a i ucial druga linie opisu pogody).
 // (v174) STATYSTYKI PRZESUNIETE Z 12 NA 13, bo AUTO weszlo przed nimi (cfg::VIEW_AUTO,
 // patrz Config.h — static_assert wymaga, zeby STATS byl ostatni). Numer 12 od tego
 // wydania znaczy SAMOCHOD.
