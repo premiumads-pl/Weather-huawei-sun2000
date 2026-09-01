@@ -9,6 +9,7 @@
 #include "GasMeter.h"
 #include "RoomHistory.h"
 #include "AirHistory.h"
+#include "GraphBlob.h"  // (v194) wykres mocy ladowania na OLED — klucz "graf1"
 
 namespace {
 Settings gSettings;
@@ -23,12 +24,13 @@ const NvsWriteStat kNvsEmpty{};
 // dlugosci — przestawienia dwoch pozycji nie zlapie nic procz czytania, wiec przy
 // dopisywaniu slotu dopisz go NA KONCU obu tablic, jak w enumie.
 constexpr const char* kNvsKey[NVS_SLOT_COUNT] = {
-    "prof2", "rh3", "burn2", "gas2", "airh", "mtr2", "sen1",
+    "prof2", "rh3", "burn2", "gas2", "airh", "mtr2", "sen1", "graf1",
     "pogoda/*", "otaguard/*"};
 // Rozmiary blobow. Te same liczby pilnuja static_asserty przy kazdej strukturze
 // nizej w tym pliku — gdy ktorys blob zmieni rozmiar, kompilacja padnie TAM,
 // a nie tutaj, wiec ta tablica nie moze sie po cichu rozjechac z rzeczywistoscia.
-constexpr uint16_t kNvsBytes[NVS_SLOT_COUNT] = {292, 872, 148, 128, 52, 32, 424, 0, 0};
+constexpr uint16_t kNvsBytes[NVS_SLOT_COUNT] = {292, 872, 148, 128, 52, 32, 424, 136,
+                                                0, 0};
 
 static_assert(sizeof(kNvsKey) / sizeof(kNvsKey[0]) == NVS_SLOT_COUNT,
               "tablica nazw kluczy NVS rozjechala sie z enumem NvsSlot");
@@ -1284,6 +1286,52 @@ void airHistorySave(const AirHistory& h) {
     return;
   }
   nvsPutBytes(prefs, NVS_SLOT_AIR, "airh", &h, sizeof(AirHistory));
+  prefs.end();
+}
+
+// ------------------------------- (v194) wykres mocy ladowania (OLED) ----------
+// Ten sam wzorzec, co przy "airh" wyzej: caly bufor pod jednym krotkim kluczem,
+// pole wersji w blobie, asercja rozmiaru przy strukturze (GraphBlob.h).
+//
+// KADENCJA ZAPISU: raz na dopisana probke, czyli co 3 minuty — ale TYLKO W TRAKCIE
+// LADOWANIA, bo poza sesja probki w ogole nie powstaja. Realnie to kilkadziesiat
+// zapisow na dobe, a nie 480, i to jest cala roznica miedzy tym blobem a np. "prof2",
+// ktory pisze sie caly dzien.
+//
+// O ZBIEGANIU SIE ZAPISOW (lekcja z 17.08, notatka nvs-i-pamiec.md): wtedy caly cykl
+// potrzebowal 123 wpisow przy 111 DOSTEPNYCH i zapisy wywracaly sie, gdy wypadaly
+// w tej samej chwili — lekarstwem bylo rozsuniecie ich w fazie. Dzis dostepnych jest
+// 4187, a ten blob kosztuje 7, wiec zbieg okresow nie ma jak zabraknac miejsca.
+// Zostawiam to zapisane, zeby nikt nie "naprawial" tego przez rzadszy zapis: notatka
+// wymienia rzadszy zapis wprost jako ruch w zla strone — poszerza okno utraty danych,
+// zamiast je zwezac.
+bool graphBlobLoad(GraphBlob& b) {
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, true)) return false;
+  bool ok = false;
+  if (prefs.getBytesLength("graf1") == sizeof(GraphBlob)) {
+    prefs.getBytes("graf1", &b, sizeof(GraphBlob));
+    // Wersja I zakres licznika sprawdzane OSOBNO, bo znacza co innego: obca wersja
+    // to blob z innego ukladu pol, a cnt > 128 to blob wlasciwej wersji, ale
+    // uszkodzony. Oba konczy sie tak samo (odrzuceniem), lecz mylenie ich w jednym
+    // warunku ukrywaloby, ktory przypadek naprawde zaszedl.
+    ok = (b.ver == 1) && (b.cnt <= 128);
+    if (!ok) {
+      Serial.printf("Wykres OLED: blob odrzucony (ver=%u cnt=%u)\n",
+                    static_cast<unsigned>(b.ver), static_cast<unsigned>(b.cnt));
+    }
+  }
+  prefs.end();
+  return ok;
+}
+
+void graphBlobSave(const GraphBlob& b) {
+  Preferences prefs;
+  if (!prefs.begin(NS_PV, false)) {
+    nvsMark(NVS_SLOT_GRAPH, false);
+    return;
+  }
+  nvsPutBytes(prefs, NVS_SLOT_GRAPH, "graf1", &b, sizeof(GraphBlob));
   prefs.end();
 }
 

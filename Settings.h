@@ -270,6 +270,7 @@ enum NvsSlot : uint8_t {
   NVS_SLOT_AIR,        // "airh"   — historia jakosci powietrza (7 dni)
   NVS_SLOT_METER,      // "mtr2"   — baza licznikow miernika z polnocy
   NVS_SLOT_SENS,       // "sen1"   — kopia statystyk PIR + LDR
+  NVS_SLOT_GRAPH,      // "graf1"  — wykres mocy ladowania na OLED (przezywa restart)
   NVS_SLOT_CFG,        // przestrzen "pogoda"   — zbiorczo (WiFi, MQTT, Viessmann...)
   NVS_SLOT_OTA,        // przestrzen "otaguard" — zbiorczo (trialver/badver/rst/panics)
   NVS_SLOT_COUNT
@@ -370,6 +371,13 @@ void roomHistorySave(const struct RoomHistory& h);
 // Ten sam wzorzec co RoomHistory: caly bufor do NVS pod wlasnym, krotkim kluczem "airh".
 void airHistoryLoad(struct AirHistory& h);
 void airHistorySave(const struct AirHistory& h);
+
+// (v194) Wykres mocy ladowania na OLED — utrwalenie bufora probek, zeby przezyl
+// restart (uzasadnienie i pulapka z zegarem: GraphBlob.h). Load oddaje false, gdy
+// w NVS nie ma nic uzytecznego (brak klucza, zly rozmiar, obca wersja) — wtedy
+// wolajacy zostawia bufor pusty, dokladnie jak przy pierwszym uruchomieniu.
+bool graphBlobLoad(struct GraphBlob& b);
+void graphBlobSave(const struct GraphBlob& b);
 
 // Dzienny log gazu. Bez utrwalania cala weryfikacja licznika byla martwa: dane
 // zbierane co 3 min ginely przy kazdym restarcie, a porownanie z rachunkiem

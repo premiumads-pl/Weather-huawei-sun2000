@@ -38,8 +38,11 @@
 #include <cstdio>
 #include <cstring>
 
+#include <ctime>         // (v194) time() — znacznik zegarowy utrwalanego wykresu
+
 #include "Config.h"
 #include "Format.h"      // fmt1() — polski przecinek dziesietny, wspolny z ekranem TFT
+#include "GraphBlob.h"   // (v194) blob wykresu mocy w NVS ("graf1")
 #include "Log.h"
 #include "MqttClient.h"  // requestAutoMode() / autoModeReqState()
 #include "PlText.h"      // pltxt:: — silnik fontow projektu (dekoder UTF-8, metryki)
@@ -120,6 +123,14 @@ uint8_t gGraphSeq = 0;
 bool gCharging = false;   // trwa sesja (dopisujemy) / skonczyla sie (przygaszamy)
 uint32_t gGraphHighMs = 0;  // millis() ostatniej chwili z moca >= kGraphOnKw
 uint32_t gGraphSampMs = 0;  // millis() ostatniej dopisanej probki
+
+// (v194) ODLOZONA DECYZJA PO ODTWORZENIU WYKRESU Z NVS — patrz GraphBlob.h.
+// Bufor wczytujemy przy inicjalizacji panelu, ale w tej chwili NTP jeszcze nie
+// doszedl i przerwy w czasie NIE DA SIE policzyc. Te trzy zmienne przenosza tamten
+// stan do pierwszego przebiegu graphTick, w ktorym zegar bedzie juz wazny.
+bool gRestorePending = false;    // czekamy na zegar, zeby rozstrzygnac los sesji
+bool gRestoreCharging = false;   // czy w chwili zapisu sesja trwala
+uint32_t gRestoreEpoch = 0;      // czas zegarowy ostatniej zapisanej probki
 
 // (v176) KOLEJKA WIRTUALNYCH NACISNIEC — maska ROL do obsluzenia (bit 0..3).
 // DWA ZADANIA, JEDNA SCIEZKA AKCJI: injectPress() wola zadanie serwera WWW, a
@@ -1357,6 +1368,51 @@ void drawValues(uint8_t scr) {
 void graphTick(const AutoModel& a, uint32_t now, bool fresh) {
   if (gGraph == nullptr || !fresh) return;
 
+  // (v194) DOKONCZENIE ODTWORZENIA Z NVS — pierwszy przebieg, w ktorym zegar jest juz
+  // wazny. Prog 1700000000 (listopad 2023) to ten sam sprawdzian "NTP doszedl", co
+  // w AirHistory::advance() — przed synchronizacja time() oddaje rok 1970.
+  //
+  // ROZSTRZYGAMY JEDNO PYTANIE: czy sesja sprzed restartu trwa dalej. Miara jest
+  // kGraphGapMs, czyli TA SAMA przerwa (10 min), ktora w normalnej pracy oddziela
+  // dwie sesje — a nie nowy prog wymyslony na te okazje. To wazne: gdyby przerwa
+  // "po restarcie" miala inna miare niz przerwa "w trakcie pracy", wykres zachowywalby
+  // sie inaczej po aktualizacji niz po chmurze, przy tej samej dlugosci ciszy.
+  //
+  //   przerwa < 10 min  -> sesja TRWA. Cofamy gGraphHighMs i gGraphSampMs o dlugosc
+  //                        przerwy, dzieki czemu idleLong nizej wypada FALSZ i bufor
+  //                        NIE JEST kasowany, a nastepna probka trafia w rytm.
+  //                        Odjecie ponizej zera jest bezpieczne: wszystkie porownania
+  //                        czasu ida przez roznice na int32_t (patrz nizej), wiec
+  //                        liczy sie wylacznie ODSTEP, a nie sama wartosc.
+  //   przerwa >= 10 min -> sesja SIE SKONCZYLA. Probki zostaja NA EKRANIE (to wciaz
+  //                        prawdziwy, zamkniety przebieg i lepszy niz pusty pas), ale
+  //                        gCharging = false, wiec najblizsze ladowanie zacznie bufor
+  //                        od nowa — czyli dokladnie tak, jak gdyby restartu nie bylo.
+  //
+  // Doklejanie nowych probek do przebiegu sprzed wielu godzin byloby jedynym
+  // nieuczciwym wyjsciem: os czasu nie ma jak pokazac dziury, wiec przerwa
+  // zniknelaby, a dwa odlegle ladowania zlalyby sie w jedno ciagle.
+  if (gRestorePending) {
+    const uint32_t epoch = static_cast<uint32_t>(time(nullptr));
+    if (epoch >= 1700000000UL) {
+      gRestorePending = false;
+      const bool sane = (gRestoreEpoch >= 1700000000UL) && (epoch >= gRestoreEpoch);
+      const uint32_t gapMs = sane ? (epoch - gRestoreEpoch) * 1000UL : 0xFFFFFFFFUL;
+      if (gRestoreCharging && gapMs < kGraphGapMs) {
+        gCharging = true;
+        gGraphHighMs = now - gapMs;
+        if (gGraphHighMs == 0) gGraphHighMs = 1;   // 0 znaczy "nigdy"
+        gGraphSampMs = now - gapMs;
+        LOG("OLED: wykres — sesja trwa dalej (przerwa %lu s)\n",
+            static_cast<unsigned long>(gapMs / 1000UL));
+      } else {
+        gCharging = false;
+        LOG("OLED: wykres — sesja zamknieta, %u probek zostaje do pokazania\n",
+            static_cast<unsigned>(gGraphCnt));
+      }
+    }
+  }
+
   const bool high = (a.kw >= kGraphOnKw);
   // Roznice czasu ZAWSZE przez int32_t — millis() przekreca sie po ~49 dniach,
   // a ten panel ma chodzic miesiacami bez restartu (ta sama zasada, co przy atMs).
@@ -1419,6 +1475,27 @@ void graphTick(const AutoModel& a, uint32_t now, bool fresh) {
   if (static_cast<uint8_t>(v) > gGraphMax) gGraphMax = static_cast<uint8_t>(v);
   ++gGraphSeq;   // (v189) patrz deklaracja: BEZ TEGO wykres zamarza po 6,4 h
   gGraphSampMs = now;
+
+  // (v194) UTRWALENIE PO KAZDEJ DOPISANEJ PROBCE. Zapis siedzi TUTAJ, a nie w
+  // osobnym timerze, i to jest cala jego prostota: probka powstaje najwyzej raz na
+  // 3 minuty i tylko w trakcie sesji, wiec kadencja zapisu wychodzi z natury danych,
+  // a nie z drugiego, niezaleznego zegara, ktory trzeba by z tym pierwszym godzic.
+  // Poza ladowaniem probki nie powstaja w ogole, wiec i zapisow nie ma — realnie to
+  // kilkadziesiat na dobe, nie 480.
+  //
+  // ZNACZNIK CZASU JEST ZEGAROWY (epoch), NIE millis(). Cala reszta tego pliku mierzy
+  // czas od startu, bo interesuja ja ODSTEPY w obrebie jednej sesji pracy — ale ten
+  // jeden znacznik ma przezyc restart, po ktorym millis() rusza od zera. Zapisanie tu
+  // millis() dalo by liczbe nie do porownania z niczym po drugiej stronie restartu.
+  // Gdy NTP jeszcze nie doszedl, idzie 0 i blob sam sie do tego przyzna (GraphBlob.h).
+  GraphBlob b;
+  b.cnt = gGraphCnt;
+  b.max = gGraphMax;
+  b.charging = gCharging ? 1 : 0;
+  const uint32_t epoch = static_cast<uint32_t>(time(nullptr));
+  b.lastEpoch = (epoch >= 1700000000UL) ? epoch : 0;
+  memcpy(b.s, gGraph, kGraphN);
+  graphBlobSave(b);
 }
 
 // ====================== PODPIS TRESCI (kiedy przerysowac) ====================
@@ -2093,6 +2170,30 @@ void begin() {
   gGraph = static_cast<uint8_t*>(heap_caps_malloc(kGraphN, MALLOC_CAP_SPIRAM));
   if (gGraph != nullptr) {
     memset(gGraph, 0, kGraphN);
+
+    // (v194) ODTWORZENIE WYKRESU Z NVS. Do v193 kazdy restart — a wiec KAZDA
+    // aktualizacja OTA — zaczynal dolny pas od zera i przez pierwsze minuty
+    // pokazywal "brak ładowania", chociaz auto ladowalo sie bez przerwy.
+    //
+    // TU TYLKO WCZYTUJEMY PROBKI. Rozstrzygniecie "czy sesja trwa dalej" zapada
+    // PoZNIEJ, w graphTick, i to nie jest komplikacja dla samej komplikacji:
+    // w tej chwili NTP jeszcze nie doszedl (init panelu idzie przed synchronizacja
+    // czasu), wiec time() oddaje rok 1970 i przerwy nie da sie policzyc. Gdybysmy
+    // decydowali teraz, wychodziloby zawsze "sesja skonczona" — a wtedy pierwsza
+    // probka po restarcie uznalaby sie za poczatek NOWEJ sesji i skasowala bufor,
+    // ktory wlasnie odtworzylismy. Zapis przezylby restart i tak nigdy nie trafilby
+    // na ekran. Pelny opis pulapki: GraphBlob.h.
+    GraphBlob b;
+    if (graphBlobLoad(b)) {
+      memcpy(gGraph, b.s, kGraphN);
+      gGraphCnt = b.cnt;
+      gGraphMax = b.max;
+      gRestoreEpoch = b.lastEpoch;
+      gRestoreCharging = (b.charging != 0);
+      gRestorePending = true;
+      LOG("OLED: wykres odtworzony z NVS — %u probek, ladowanie=%u\n",
+          static_cast<unsigned>(b.cnt), static_cast<unsigned>(b.charging));
+    }
   } else {
     LOG("OLED: brak %d B w PSRAM na wykres mocy — panel dziala, wykresu nie ma\n", kGraphN);
   }
