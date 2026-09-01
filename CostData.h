@@ -69,6 +69,34 @@ struct CostModel {
   // Bajt jest darmowy: bez niego struktura ma 12 B, z nim 13 B dopelnione do 16 B,
   // czyli sizeof NIE ROSNIE ani o piksel RAM-u (patrz straznik nizej).
   int8_t tariff = -1;
+
+  // (v192) CZWARTE pole: PRZYCHOD ZE SPRZEDAZY energii od polnocy, W GROSZACH.
+  // Rysowane na ekranie GLOWNYM po LEWEJ od "zakup dziś", w tej samej linii.
+  //
+  // GROSZE NA uint16_t, A NIE ZLOTOWKI NA float — I TO NIE JEST MIKROOPTYMALIZACJA.
+  // Straznik pod ta struktura zapowiedzial wprost, ze czwarte pole 4-bajtowe ma sie
+  // ZATRZYMAC i wymusic decyzje: po `tariff` zostaly DOKLADNIE 3 BAJTY DOPELNIENIA.
+  // float wypchnalby sizeof z 16 B na 20 B w DWOCH kopiach struktury naraz. uint16_t
+  // wchodzi w to dopelnienie, wiec sizeof NIE DRGNAL. Straznik zadzialal drugi raz
+  // z rzedu dokladnie tak, jak byl pomyslany — dlatego progu nadal nie ruszamy.
+  //
+  // BEZ ZNAKU, bo dobowy licznik przychodu nie ma prawa zejsc ponizej zera (to suma
+  // energii ODDANEJ, a nie bilans) — w odroznieniu od pvPln wyzej, ktory zejsc moze
+  // i wlasnie dlatego jest ze znakiem.
+  //
+  // SUFIT: 655,35 zl na dobe. Instalacja o mocy ~10 kWp wyprodukuje najwyzej okolo
+  // 60 kWh dziennie, co przy NAJWYZSZEJ stawce RCEm, jaka pojawila sie na fakturach
+  // (0,55196 zl/kWh netto, styczen), daje maksimum rzedu 41 zl. Zapas ponad
+  // pietnastokrotny; sufit jest fizycznie nieosiagalny, a nie "raczej wystarczy".
+  //
+  // WARTOSC JEST JUZ PO KOREKCIE 0,956 — mnozenie robi Home Assistant, bo wspolczynnik
+  // siedzi w input_number.korekta_rozliczenia i ma byc poprawiany bez wgrywania nowej
+  // wersji firmware'u. Wyswietlacz dostaje liczbe gotowa, tak samo jak `zl`.
+  //
+  // WIEKU NIE MA WLASNEGO i mieć nie może: przychodzi TA SAMA wiadomoscia, co `zl`,
+  // wiec dzieli z nim atMs. Dwie liczby z jednego ladunku nie moga miec dwoch roznych
+  // wiekow (ta sama zasada, co przy pvPln — opis w Config.h przy COST_STALE_MS).
+  uint16_t sellGr = 0;
 };
 
 // Straznik budzetu, nie ozdobnik — ta sama rola, co static_assert przy AutoModel.
@@ -87,6 +115,15 @@ struct CostModel {
 // CO ZOSTALO: 3 BAJTY DOPELNIENIA, i tylko tyle. Kolejne pole zmiesci sie za darmo
 // WYLACZNIE gdy bedzie 1-bajtowe (int8_t/bool/enum : uint8_t); czwarte 4-bajtowe
 // przebije 16 B i ma sie tu ZATRZYMAC dokladnie jak to, przed chwila.
+//
+// (v192) I ZATRZYMALO SIE. Czwarte pole przyszlo jako przychod ze sprzedazy i
+// odruch mowil "float, tak jak zl obok". Prog kazal policzyc: float to 20 B razy
+// dwie kopie. Wiec grosze na uint16_t, ktore weszly W DOPELNIENIE — 4+4+4+1+2 = 15 B,
+// dopelnione do 16 B, sizeof BEZ ZMIAN drugi raz z rzedu. To jest cala wartosc tego
+// progu: nie zabronil dolozyc pola, tylko kazal wybrac dla niego typ swiadomie.
+// CO ZOSTALO TERAZ: 1 BAJT DOPELNIENIA. Piate pole musi byc 1-bajtowe albo przebije
+// 16 B — i wtedy trzeba bedzie odpowiedziec na pytanie, ktorego dotad unikamy: czy
+// ta struktura ma jeszcze rosnac, czy stan domu zasluguje na wlasny, osobny model.
 static_assert(sizeof(CostModel) <= 16,
               "CostModel zyje w dwoch kopiach — powyzej 16 B zaczyna byc widoczny "
               "w budzecie statycznego RAM-u (bariera 76 000 B)");

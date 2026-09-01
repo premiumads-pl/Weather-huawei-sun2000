@@ -675,19 +675,54 @@ void mainPvModule(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv,
   //                     bylo by wprost falszywe, bo Home Assistant wlasnie wyzerowal
   //                     licznik, a my mamy kwote z wczoraj. Sam wiek dostaje col::WARN
   //                     — ten sam kolor "nieswieze", co przy PV i piecu.
+  //
+  // (v192) DRUGI CZLON TEJ LINII: "sprzedaż X zł" przy LEWEJ krawedzi kolumny.
+  // Dwie strony jednego rachunku dobowego stoja naprzeciw siebie i rosna ku sobie:
+  // kupno przy DATA_R, sprzedaz przy DATA_L.
+  //
+  // KROJ ZESZEDL Z f11 NA f10 I TO JEST WARUNEK ISTNIENIA TEGO CZLONU, nie kosmetyka.
+  // Zmierzone w tablicach (tools/szer.py, a nie na oko — na oko pomylilem sie przy
+  // "100 %" o 4 px i przy y=208 o caly sprite):
+  //     f11: "sprzedaż 99,99 zł" 104 px + "zakup dziś 999,99 zł" 111 px = 215 px
+  //     f10: "sprzedaż 99,99 zł"  83 px + "zakup dziś 999,99 zł"  94 px = 177 px
+  // Kolumna ma 186 px (DATA_L 127 .. DATA_R 313). Na f11 czlony NACHODZILYBY na
+  // siebie o 29 px nawet w skrajnym wariancie, a przy realnych kwotach (9,99 i
+  // 39,99) zostawaly 4 px przerwy — czyli tyle, co nic. Na f10 skrajny wariant ma
+  // 9 px zapasu, a realny 21 px. Zmniejszenie kroju POPRAWIA tez hierarchie: to
+  // jest linia kontekstu pod liczbami chwilowymi, wiec ma byc cichsza od nich.
+  //
+  // STRAZNIK NA ZDERZENIE (kolizja) ISTNIEJE MIMO TYCH POMIAROW. Liczby wyzej sa
+  // prawdziwe dzisiaj, dla tych napisow i tego kroju — ale komentarz nie jest
+  // wykonywany, a napis kiedys sie zmieni. Mierzymy wiec OBA czlony w locie tym
+  // samym plex::width(), ktorego uzywa rysowanie, i gdy nie ma 8 px przerwy,
+  // sprzedaz NIE JEST rysowana. Nachodzace na siebie napisy sa gorsze niz brak
+  // jednego z nich, a kupno jest wazniejsze (to wydatek, na ktory mozna zareagowac).
+  //
+  // W STANIE NIESWIEZYM SPRZEDAZY NIE MA W OGOLE. Miejsce po lewej zajmuje wtedy
+  // WIEK ("sprzed 14 min"), ktory jest wazniejszy: po polnocy bez lacznosci obie
+  // kwoty sa wczorajsze, a slowo "dziś" bylo by wprost falszywe. Trzeci czlon i tak
+  // by sie nie zmiescil, wiec wybor jest miedzy wiekiem a sprzedaza — i wygrywa wiek.
   if (cost != nullptr && cost->atMs != 0) {
     char zl[12];
     fmt2(zl, sizeof(zl), cost->zl);
     char line[32];
     if (freshMs(cost->atMs, cfg::COST_STALE_MS)) {
       snprintf(line, sizeof(line), "zakup dziś %s zł", zl);
-      plex::strRight(s, plex::f11(), line, grid::DATA_R, top + 82, col::MUTE);
+      const int bw = plex::strRight(s, plex::f10(), line, grid::DATA_R, top + 82, col::MUTE);
+
+      char sell[32];
+      fmt2(zl, sizeof(zl), static_cast<float>(cost->sellGr) / 100.f);
+      snprintf(sell, sizeof(sell), "sprzedaż %s zł", zl);
+      const int sw = plex::width(plex::f10(), sell);
+      if (grid::DATA_L + sw + 8 <= grid::DATA_R - bw) {
+        plex::str(s, plex::f10(), sell, grid::DATA_L, top + 82, col::MUTE);
+      }
     } else {
       char ago[24];
       agoWords(ago, sizeof(ago), okAgeS(cost->atMs));
-      const int aw = plex::strRight(s, plex::f11(), ago, grid::DATA_R, top + 82, col::WARN);
+      const int aw = plex::strRight(s, plex::f10(), ago, grid::DATA_R, top + 82, col::WARN);
       snprintf(line, sizeof(line), "zakup %s zł", zl);
-      plex::strRight(s, plex::f11(), line, grid::DATA_R - aw - 4, top + 82, col::MUTE);
+      plex::strRight(s, plex::f10(), line, grid::DATA_R - aw - 4, top + 82, col::MUTE);
     }
   }
 

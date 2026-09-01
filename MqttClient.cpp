@@ -511,6 +511,29 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
       else c.tariff = -1;
     }
 
+    // (v192) CZWARTE POLE TEGO LADUNKU: "zl_s" — PRZYCHOD ZE SPRZEDAZY od polnocy,
+    // w ZLOTOWKACH (na strukturze trzymamy grosze — uzasadnienie typu przy polu
+    // sellGr w CostData.h). Ten sam wzorzec i to samo is<float>(), co wyzej.
+    //
+    // WARTOSC PRZYCHODZI JUZ PO KOREKCIE 0,956 — mnozy Home Assistant, bo wspolczynnik
+    // ma byc poprawiany suwakiem, a nie wgrywaniem firmware'u. Tu go NIE STOSUJEMY
+    // drugi raz; gdyby kiedys zniknal z szablonu HA, ekran zawyzy o ~4,6% i to jest
+    // swiadomie wybrany kierunek bledu: liczba zawyzona rzuca sie w oczy przy
+    // porownaniu z faktura, a po cichu zanizona nie rzuca sie nigdy.
+    const bool hasS = doc["zl_s"].is<float>();
+    if (hasS) {
+      // Przyciecie do zakresu SENSOWNEGO, nie do zakresu typu — jak przy `zl`/`pv`.
+      // Dol: ujemny przychod nie istnieje (to suma energii ODDANEJ, nie bilans).
+      // Gora: 655,35 zl to sufit uint16_t w groszach, a nie liczba wzieta z sufitu —
+      // fizyczne maksimum tej instalacji to ~41 zl na dobe (CostData.h). Przyciecie
+      // jest tu po to, zeby smiec z szablonu nie przekrecil sie w male dodatnie
+      // grosze i nie udawal wiarygodnej kwoty.
+      float s = doc["zl_s"].as<float>();
+      if (!(s > 0.f)) s = 0.f;            // lapie takze NaN
+      else if (s > 655.35f) s = 655.35f;
+      c.sellGr = static_cast<uint16_t>(s * 100.f + 0.5f);
+    }
+
     c.atMs = millis();
     if (c.atMs == 0) c.atMs = 1;   // 0 znaczy "nigdy" — patrz ten sam zabieg przy aucie
     if (gAutoMx != nullptr && xSemaphoreTake(gAutoMx, pdMS_TO_TICKS(20)) == pdTRUE) {
@@ -527,11 +550,23 @@ void onMessage(char* topic, uint8_t* payload, unsigned int len) {
       // (-1) — i wlasnie dlatego przeniesienie jest KONIECZNE, a nie kosmetyczne:
       // bez niego swiezy CostModel{} wnosilby -1 przy kazdej wiadomosci bez "t"
       // i plakietka MIGALABY co 60 s miedzy kolorem a pustka.
+      // (v192) `sellGr` idzie ta sama sciezka, co pvPln i tariff — z jednym
+      // zastrzezeniem, ktore trzeba powiedziec wprost, bo brzmi jak sprzecznosc:
+      // przeniesienie chroni przed BRAKIEM POLA, a nie przed POLEM ROWNYM ZERU.
+      // Szablon HA ma tam float(0), wiec gdy licznik sprzedazy jest niedostepny,
+      // przyjdzie jawne 0 i ekran pokaze 0,00 zl. Tak ma byc: o polnocy licznik
+      // NAPRAWDE zeruje sie do zera i przeniesienie starej wartosci zamrozilo by
+      // wczorajszy przychod na calą noc. Cena tego wyboru: przy awarii samego
+      // czujnika zobaczymy zero zamiast ostatniej znanej kwoty — czyli to samo,
+      // co robi `zl` obok, i ta sama zasada, ktora kazala szablonom zwracac `none`
+      // zamiast zera (ha/energia.py): dziura ma wygladac na dziure.
       const int32_t keepPv = gCostRx.pvPln;
       const int8_t keepT = gCostRx.tariff;
+      const uint16_t keepS = gCostRx.sellGr;
       gCostRx = c;
       if (!hasPv) gCostRx.pvPln = keepPv;
       if (!hasT) gCostRx.tariff = keepT;
+      if (!hasS) gCostRx.sellGr = keepS;
       xSemaphoreGive(gAutoMx);
     }
     // Nieudane wziecie mutexu gubi TE JEDNA wiadomosc; nastepna przyjdzie za 60 s,
