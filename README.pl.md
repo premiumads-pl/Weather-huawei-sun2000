@@ -38,7 +38,8 @@ W repozytorium **nie ma** żadnych haseł, adresów IP ani kluczy. Wszystko sied
 w pamięci NVS urządzenia i ustawia się przez panel WWW.
 
 1. Po pierwszym uruchomieniu urządzenie tworzy sieć **`Pogoda-Setup`**
-   (hasło `pogoda123`). Nazwa sieci i adres są pokazane na ekranie.
+   (hasło jest indywidualne dla każdego urządzenia). Nazwa sieci, hasło i adres
+   są pokazane na ekranie.
 2. Połącz się telefonem i otwórz `http://192.168.4.1`.
 3. W panelu:
    - **Wyszukaj sieci bezprzewodowe** → wybierz swoją → wpisz hasło
