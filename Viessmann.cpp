@@ -54,6 +54,28 @@ struct Lock {
   Lock& operator=(const Lock&) = delete;
 };
 
+// (NET-3) OSOBNY mutex, NIE gMx: ensureAccess() go trzyma przez CALY czas
+// odswiezania, WLACZNIE z POST-em przez TLS (do kilkunastu sekund) — dokladnie to,
+// czego gMx robic NIE MOZE (patrz zakaz kilka linijek wyzej: "mutexa NIE WOLNO
+// trzymac podczas postToken()"). Bez tej serializacji dwa zadania, ktore trafia w
+// ensureAccess() prawie jednoczesnie (obie widza jeszcze wazny/wygasajacy gAccess
+// i ten sam refresh token), moga wyslac DWA rownolegle zadania odswiezenia tym
+// samym refresh tokenem. Viessmann rotuje token przy kazdym uzyciu — przy WYKRYCIU
+// PONOWNEGO UZYCIA (typowa ochrona OAuth przed replay) uniewaznia CALA rodzine
+// tokenow, a to konczy sie recznej reautoryzacji nie do naprawienia zdalnie.
+// Trzymajac TEN INNY mutex przez caly ensureAccess(), serializujemy WYLACZNIE
+// wspolzawodnictwo o refresh token — drugi watek, ktory czeka na gRefreshMx, po
+// wejsciu zobaczy JUZ odswiezony gAccess (pod gMx, jak zawsze) i wroci od razu
+// przez wczesniejszy warunek "gAccess wciaz wazny", bez drugiego POST-a.
+SemaphoreHandle_t gRefreshMx = xSemaphoreCreateMutex();
+
+struct RefreshLock {
+  RefreshLock() { if (gRefreshMx != nullptr) xSemaphoreTake(gRefreshMx, portMAX_DELAY); }
+  ~RefreshLock() { if (gRefreshMx != nullptr) xSemaphoreGive(gRefreshMx); }
+  RefreshLock(const RefreshLock&) = delete;
+  RefreshLock& operator=(const RefreshLock&) = delete;
+};
+
 // ArduinoJson w PSRAM: odpowiedz z /features ma ~53 kB, a po sparsowaniu jeszcze
 // wiecej. W SRAM nie ma na to miejsca; w PSRAM to szum (mamy 1,9 MB).
 struct PsramAlloc : ArduinoJson::Allocator {
@@ -234,6 +256,11 @@ void storeTokens(JsonDocument& doc) {
 }
 
 bool ensureAccess() {
+  // (NET-3) Trzymany przez CALA funkcje, POST wlacznie — patrz komentarz przy
+  // gRefreshMx wyzej. To NIE jest gMx: gMx zostaje wolny do kopiowania buforow
+  // (Lock l; nizej) tak jak dotychczas, dzieki czemu inne szybkie operacje na tym
+  // module (np. odczyt circuitTarget()) nie staja na sekundy za kazdym odswiezeniem.
+  RefreshLock rl;
   String body;
   {
     Lock l;

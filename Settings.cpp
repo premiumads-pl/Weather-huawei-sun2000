@@ -354,6 +354,22 @@ void Settings::clampTuning() {
 // PRAWDE (np. jasnosc podbita do minimum).
 bool Settings::saveTuning(uint8_t nStart, uint8_t nEnd, uint16_t dwell,
                           uint8_t bDay, uint8_t bDim, uint8_t bNight, bool autoRot) {
+  // (CORE-2) Clamp NA PARAMETRACH (kopia lokalna — argumenty i tak sa przekazane
+  // przez wartosc) PRZED przypisaniem do pol. Stara kolejnosc (przypisz surowe,
+  // dopiero potem clampTuning()) zostawiala okno, w ktorym pola Settings maja
+  // wartosc SPOZA zakresu (np. nightStartH > 23) — czytelne z innego zadania (patrz
+  // komentarz przy clampTuning() w OledPanel.cpp, ktory zaklada juz przyciete
+  // wartosci). Te same stale, co w clampTuning() — to wciaz JEDNO zrodlo prawdy o
+  // PROGACH (patrz komentarz w Settings.h), nie duplikat: clampTuning() zostaje
+  // nizej jako koncowy, teraz juz idempotentny bezpiecznik.
+  if (nStart > 23) nStart = 23;
+  if (nEnd > 23) nEnd = 23;
+  if (dwell < DWELL_MIN) dwell = DWELL_MIN;
+  if (dwell > DWELL_MAX) dwell = DWELL_MAX;
+  if (bDay < BL_DAY_MIN) bDay = BL_DAY_MIN;
+  if (bDim < BL_DIM_MIN) bDim = BL_DIM_MIN;
+  if (bNight < BL_NIGHT_MIN) bNight = BL_NIGHT_MIN;
+
   nightStartH = nStart;
   nightEndH   = nEnd;
   dwellS      = dwell;

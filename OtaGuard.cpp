@@ -123,14 +123,28 @@ void stopHardTimer() {
 
 // Wołać wyłącznie po udanym claimVerdict().
 void finishConfirm(const char* why) {
-  gState = TrialState::CONFIRMED;
   stopHardTimer();
 
   const esp_err_t e = esp_ota_mark_app_valid_cancel_rollback();
-  diag().otaTrial = 2;
-  diag().otaConfirmAt = millis();
   LOG("OTA: wersja v%d POTWIERDZONA (%s), esp_err=%d\n", FW_VERSION, why,
       static_cast<int>(e));
+
+  // (WEB-7) Znacznik triala i historie porazek kasujemy TYLKO przy ESP_OK. Przy
+  // bledzie zapisu esp_ota NADAL widzi te wersje jako PENDING_VERIFY (mark_valid
+  // nie wszedl) — gdybysmy mimo to skasowali WLASNY znacznik "trialver" w NVS,
+  // kolejny restart (z dowolnego, nawet niezwiazanego powodu) zobaczylby
+  // PENDING_VERIFY BEZ naszego znacznika i zaczalby NOWY okres probny od zera, bez
+  // sladu tego bledu. Powtarzajac sie, to daje ciag wiecznie "swiezych" okresow
+  // probnych, ktore nigdy nie doczekaja realnego potwierdzenia — stad "petla OTA".
+  // Zostajac w TRIAL (gState i diag().otaTrial NIETKNIETE, znacznik w NVS zostaje),
+  // kolejny realny restart urzadzenia dostanie uczciwa, nieskrzywiona probe.
+  if (e != ESP_OK) {
+    return;
+  }
+
+  gState = TrialState::CONFIRMED;
+  diag().otaTrial = 2;
+  diag().otaConfirmAt = millis();
 
   // Werdykt zapadł — znacznik próby jest już niepotrzebny i NIE wolno go zostawić
   // (przy następnym starcie zostałby wzięty za nierozliczoną porażkę).

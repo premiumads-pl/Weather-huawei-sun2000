@@ -29,18 +29,32 @@ inline FontSet font18() {
   return {PlFont18Bitmaps, PlFont18Glyphs, PlFont18Codepoints, PlFont18Count, PlFont18Ascent};
 }
 
+// (UI-1) Bajty kontynuacji MUSZA miec postac 10xxxxxx. Stary kod czytal je
+// bezwarunkowo przez `*p++` — dla urwanego/uszkodzonego UTF-8 (w tym gdy
+// "kontynuacja" jest w rzeczywistosci koncowym '\0' stringa) to CZYTA I PRZESUWA
+// WSKAZNIK POZA TERMINATOR: kolejne wywolanie w petli czytaloby juz pamiec ZA
+// buforem stringa. Przy zlym bajcie zwracamy U+FFFD (znak zastepczy) i NIE
+// PRZESUWAMY p za ten bajt — kolejne wywolanie zobaczy go od nowa (jesli to '\0',
+// petla wolajaca skonczy sie normalnie na tym warunku, bo '\0' tez nie pasuje do
+// wzorca 10xxxxxx i jest lapane przez ten sam check).
 inline int decodeUtf8(const char*& p) {
   const uint8_t c = static_cast<uint8_t>(*p++);
   if (c < 0x80) {
     return static_cast<int>(c);
   }
   if ((c & 0xE0) == 0xC0) {
-    const uint8_t c2 = static_cast<uint8_t>(*p++);
+    const uint8_t c2 = static_cast<uint8_t>(*p);
+    if ((c2 & 0xC0) != 0x80) return 0xFFFD;
+    ++p;
     return ((c & 0x1F) << 6) | (c2 & 0x3F);
   }
   if ((c & 0xF0) == 0xE0) {
-    const uint8_t c2 = static_cast<uint8_t>(*p++);
-    const uint8_t c3 = static_cast<uint8_t>(*p++);
+    const uint8_t c2 = static_cast<uint8_t>(*p);
+    if ((c2 & 0xC0) != 0x80) return 0xFFFD;
+    ++p;
+    const uint8_t c3 = static_cast<uint8_t>(*p);
+    if ((c3 & 0xC0) != 0x80) return 0xFFFD;
+    ++p;
     return ((c & 0x0F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F);
   }
   return '?';
