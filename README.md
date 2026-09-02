@@ -107,21 +107,23 @@ wrong-hued colors, those last two are the first things to flip.
 cp User_Setup.h "$(arduino-cli lib list TFT_eSPI --format json \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["installed_libraries"][0]["library"]["install_dir"])')/User_Setup.h"
 
-# 2. Compile (min_spiffs partitions are required — see below)
+# 2. Compile (the repo's own partitions.csv is required — see below)
 arduino-cli compile \
-  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,PSRAM=enabled" .
+  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=custom,PSRAM=enabled" .
 
 # 3. Flash over USB
 arduino-cli upload -p /dev/cu.usbmodem101 \
-  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,PSRAM=enabled" .
+  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=custom,PSRAM=enabled" .
 ```
 
 Requirements: `arduino-cli`, esp32 board core (`esp32:esp32`, this repo's CI
 pins **3.3.10**), and the libraries `TFT_eSPI`, `ArduinoJson`, `PNGdec` and `PubSubClient`.
 
-**`PartitionScheme=min_spiffs` is not optional.** It gives two ~1.9 MB app
-partitions; the default partition table's app slot is too small for OTA to
-have a second copy to write into, so remote updates would simply fail.
+**`PartitionScheme=custom` is not optional.** It picks up this repo's own
+[`partitions.csv`](partitions.csv) — a 148 KB NVS plus two 1920 KB app
+partitions, no SPIFFS — instead of a stock layout; the default partition
+table's app slot is too small for OTA to have a second copy to write into,
+so remote updates would simply fail.
 
 That command is byte-for-byte what `tools/release.sh` and CI run, so it
 reproduces the published `firmware.bin`. There are deliberately no extra
@@ -137,7 +139,7 @@ Every [GitHub Release](../../releases) ships a ready-to-flash
 image), so it has to be written to an ESP32-S3 that already has a
 bootloader and partition table on it — e.g. a board that was flashed at
 least once with option A, or with any other Arduino/ESP-IDF sketch using
-the same `min_spiffs` partition layout.
+the same `partitions.csv` layout.
 
 ```bash
 pip install esptool

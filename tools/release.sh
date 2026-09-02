@@ -10,10 +10,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 # PartitionScheme=custom (partitions.csv w katalogu szkicu), NIE min_spiffs — od
-# 21.07 urzadzenie ma wlasny uklad bez nieuzywanego SPIFFS: app0/app1 po 1984 kB
-# zamiast 1920 (patrz partitions_nospiffs.csv). Tablica partycji jest juz wgrana
-# przez USB; ten wpis pilnuje tylko, zeby arduino-cli liczylo zajetosc wzgledem
-# WLASCIWEJ partycji. Zostawienie min_spiffs dawaloby falszywy procent zajetosci.
+# 21.07 urzadzenie ma wlasny uklad bez nieuzywanego SPIFFS, a od 17.08 (v2 w
+# partitions.csv) NVS ma 148 kB kosztem partycji aplikacji: app0/app1 po 1920 kB
+# (tyle samo co dawaloby min_spiffs), nie 1984 kB jak w v1 (patrz docs/partitions_nospiffs.csv,
+# archiwalny uklad v1). Tablica partycji jest juz wgrana przez USB; ten wpis pilnuje
+# tylko, zeby arduino-cli liczylo zajetosc wzgledem WLASCIWEJ partycji. Zostawienie
+# min_spiffs dawaloby falszywy procent zajetosci.
 FQBN="esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=custom,PSRAM=enabled"
 NOTES="${1:-Aktualizacja}"
 

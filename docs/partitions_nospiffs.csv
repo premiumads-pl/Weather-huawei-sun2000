@@ -1,3 +1,7 @@
+# ARCHIWALNE — uklad v1 (21.07-17.08.2026), ZASTAPIONY przez ../partitions.csv (v2,
+# NVS 148 kB). Nie jest uzywany przez zaden build ani wgrany na zadne urzadzenie w
+# terenie. Zachowany jako zapis, dlaczego app0/app1 mialy kiedys 1984 kB, a nie 1920.
+#
 # Wlasny uklad partycji: TO SAMO co min_spiffs, ale BEZ nieuzywanego obszaru SPIFFS.
 # Odzyskane 128 kB idzie po polowie do obu partycji aplikacji.
 #

@@ -91,14 +91,15 @@ Skopiuj `User_Setup.h` z tego repo do katalogu biblioteki TFT_eSPI
 
 ```bash
 arduino-cli compile \
-  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,PSRAM=enabled" .
+  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=custom,PSRAM=enabled" .
 
 arduino-cli upload -p /dev/cu.usbmodem101 \
-  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,PSRAM=enabled" .
+  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=custom,PSRAM=enabled" .
 ```
 
-Partycje `min_spiffs` są konieczne — dają dwie partycje aplikacji po 1,9 MB,
-bez tego OTA się nie zmieści.
+`PartitionScheme=custom` jest konieczne — podnosi własną tablicę partycji tego
+repo ([`partitions.csv`](partitions.csv): NVS 148 kB oraz dwie partycje
+aplikacji po 1920 kB, bez SPIFFS), bez tego OTA się nie zmieści.
 
 To dokładnie ta sama komenda, którą uruchamia `tools/release.sh` i CI, więc
 odtwarza opublikowany `firmware.bin` co do bajtu. Celowo nie ma tu żadnych

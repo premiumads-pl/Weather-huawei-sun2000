@@ -12,7 +12,7 @@ Short version:
 # TFT_eSPI needs this repo's User_Setup.h instead of its own default one —
 # copy it into the library's install directory, then:
 arduino-cli compile \
-  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,PSRAM=enabled" .
+  --fqbn "esp32:esp32:esp32s3:CDCOnBoot=cdc,PartitionScheme=custom,PSRAM=enabled" .
 ```
 
 Required: `arduino-cli`, board core `esp32:esp32` (CI pins `3.3.10`),
