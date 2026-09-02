@@ -29,6 +29,96 @@ void setMsg(const char* m) {
 }
 
 // =============================================================================
+// (P1-5, runda 2) Korzenie zaufania dla kanalu OTA — zamiast setInsecure()
+// =============================================================================
+//
+// PRZYCZYNA: setInsecure() nie weryfikowal serwera w ogole. Kontrola SHA-256 obrazu
+// (isSha256Hex() + porownanie w downloadAndFlash()) jest starannie zrobiona, ale
+// porownuje pobrany plik z suma z version.json, ktory przychodzi TYM SAMYM,
+// niezweryfikowanym kanalem TLS — kto przekierowuje ruch (falszywy AP, zatruty DNS,
+// skompromitowany router), poda WLASNY manifest z WLASNA suma i WLASNA binarke,
+// a kontrola SHA-256 przejdzie czysto, bo porownuje ladunek atakujacego z samym soba.
+// Od 01.09.2026 dwa urzadzenia (klucz Tesli w garazu, plytka bramy) aktualizuja sie
+// WYLACZNIE zdalnie po sieci — integralnosc tego kanalu przestala byc hipotetyczna.
+//
+// DWA KORZENIE, NIE JEDEN: cfg::OTA_VERSION_URL/OTA_FIRMWARE_URL wskazuja na github.com,
+// ktory dla /releases/.../download/... ODPOWIADA PRZEKIEROWANIEM (302) na osobna
+// domene CDN zasobow wydania (dzis: release-assets.githubusercontent.com) — a te dwie
+// domeny leza pod DWOMA ROZNYMI urzedami certyfikacji. Sprawdzone zywym polaczeniem
+// 02.09.2026 (openssl s_client -showcerts + openssl verify, oba lancuchy potwierdzone):
+//   github.com                          -> USERTrust ECC Certification Authority (Sectigo)
+//   release-assets.githubusercontent.com -> ISRG Root X1 (Let's Encrypt)
+// setCACert() przyjmuje JEDEN string, ale mbedtls parsuje z niego DOWOLNIE WIELE
+// polaczonych certyfikatow PEM jako niezalezne zaufane korzenie — stad oba w jednym
+// literale nizej, rozdzielone pusta linia (konwencja PEM, nieszkodliwa dla parsera).
+// Certyfikaty samopodpisane (subject == issuer), wazne do 2038 i 2035 — ogromny zapas
+// ponad zycie tego urzadzenia. Zrodlo: Mozilla CA bundle (ten sam zestaw, ktorego
+// uzywa kazda przegladarka i curl), NIE przepisane recznie z pamieci.
+//
+// PINOWANIE KORZENIA (nie liscia/posrednika) to swiadomy wybor odpornosci: certyfikat
+// LISCIA (github.com, *.github.io) rotuje sie co ~90 dni (Let's Encrypt) do rocznie
+// (Sectigo) i zmiana zlamalaby OTA co odnowienie, wymagajac wydania NOWEGO firmware'u
+// przez kanal, ktory wlasnie by nie dzialal. Korzen zmienia sie w praktyce nigdy.
+//
+// KOSZT: ~1,9 kB w .rodata (flash), 0 B w statycznym RAM — string trafia do flasha
+// jak kazdy literal, nie do .bss/.data. Budzet 76 000 B RAM go nie widzi.
+//
+// PODPISYWANIE MANIFESTU (ECDSA) ZOSTAJE NA OSOBNE WYDANIE: uniewaznia wszystkie stare
+// manifesty i wymaga zmiany tools/release.sh (klucz prywatny, podpis przy kazdym
+// wydaniu, weryfikacja podpisu na urzadzeniu PRZED zaufaniem sumie SHA-256) — to jest
+// wlasciwe, docelowe zamkniecie tej dziury, ale poza zakresem tej rundy.
+static const char kOtaTrustAnchors[] PROGMEM = R"CERT(
+-----BEGIN CERTIFICATE-----
+MIICjzCCAhWgAwIBAgIQXIuZxVqUxdJxVt7NiYDMJjAKBggqhkjOPQQDAzCBiDEL
+MAkGA1UEBhMCVVMxEzARBgNVBAgTCk5ldyBKZXJzZXkxFDASBgNVBAcTC0plcnNl
+eSBDaXR5MR4wHAYDVQQKExVUaGUgVVNFUlRSVVNUIE5ldHdvcmsxLjAsBgNVBAMT
+JVVTRVJUcnVzdCBFQ0MgQ2VydGlmaWNhdGlvbiBBdXRob3JpdHkwHhcNMTAwMjAx
+MDAwMDAwWhcNMzgwMTE4MjM1OTU5WjCBiDELMAkGA1UEBhMCVVMxEzARBgNVBAgT
+Ck5ldyBKZXJzZXkxFDASBgNVBAcTC0plcnNleSBDaXR5MR4wHAYDVQQKExVUaGUg
+VVNFUlRSVVNUIE5ldHdvcmsxLjAsBgNVBAMTJVVTRVJUcnVzdCBFQ0MgQ2VydGlm
+aWNhdGlvbiBBdXRob3JpdHkwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAQarFRaqflo
+I+d61SRvU8Za2EurxtW20eZzca7dnNYMYf3boIkDuAUU7FfO7l0/4iGzzvfUinng
+o4N+LZfQYcTxmdwlkWOrfzCjtHDix6EznPO/LlxTsV+zfTJ/ijTjeXmjQjBAMB0G
+A1UdDgQWBBQ64QmG1M8ZwpZ2dEl23OA1xmNjmjAOBgNVHQ8BAf8EBAMCAQYwDwYD
+VR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAwNoADBlAjA2Z6EWCNzklwBBHU6+4WMB
+zzuqQhFkoJ2UOQIReVx7Hfpkue4WQrO/isIJxOzksU0CMQDpKmFHjFJKS04YcPbW
+RNZu9YO6bVi9JNlWSOrvxKJGgYhqOkbRqZtNyWHa0V1Xahg=
+-----END CERTIFICATE-----
+
+-----BEGIN CERTIFICATE-----
+MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
+TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
+cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4
+WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
+ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY
+MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
+h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+
+0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U
+A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW
+T8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH
+B5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC
+B5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv
+KBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn
+OlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn
+jh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw
+qHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI
+rU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV
+HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq
+hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL
+ubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ
+3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK
+NFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5
+ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7Ur
+TkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdC
+jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc
+oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq
+4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA
+mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d
+emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
+-----END CERTIFICATE-----
+)CERT";
+
+// =============================================================================
 // Sha256Stream — przekladka liczaca SHA-256 pobieranego firmware'u W LOCIE
 // =============================================================================
 //
@@ -178,7 +268,9 @@ void otaUiBufferFreed() {
 
 bool Ota::fetchRemoteVersion(OtaManifest& man) {
   YieldingSecureClient client;
-  client.setInsecure();
+  // (P1-5) setCACert(), nie setInsecure() — patrz obszerny komentarz przy
+  // kOtaTrustAnchors wyzej.
+  client.setCACert(kOtaTrustAnchors);
   client.setHandshakeTimeout(15);
   // v157: sprawdzenie wersji to zwykly, maleńki JSON — dostaje ZWYKLY termin (30 s),
   // a NIE luzniejszy termin OTA. Kierunek ryzyka jest tu odwrotny niz przy pobieraniu:
@@ -273,7 +365,10 @@ bool Ota::downloadAndFlash(const OtaManifest& man) {
                 static_cast<unsigned>(ESP.getFreeHeap()));
 
   YieldingSecureClient client;
-  client.setInsecure();
+  // (P1-5) setCACert(), nie setInsecure() — patrz obszerny komentarz przy
+  // kOtaTrustAnchors na poczatku pliku. To pobranie idzie przez TA SAMA domene CDN
+  // (githubusercontent.com), wiec ten sam korzen (ISRG Root X1) ja pokrywa.
+  client.setCACert(kOtaTrustAnchors);
   // v157: termin LUZNIEJSZY (60 s bezczynnosci) i BEZCZYNNOSCIOWY, nie calkowity —
   // 1,8 MB przez TLS przy slabym sygnale legalnie ciagnie sie minutami, a urzadzenie
   // nie ma USB, wiec ubicie POSTEPUJACEGO pobrania byloby awaria nie do naprawienia.
