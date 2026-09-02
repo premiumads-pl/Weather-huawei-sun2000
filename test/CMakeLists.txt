@@ -35,6 +35,7 @@ add_executable(host_tests
   test_format.cpp
   test_weather_data.cpp
   test_backoff_pattern.cpp
+  test_precip_hint.cpp
 )
 
 # Katalog glowny repo (jeden poziom wyzej niz test/) — stad testy wciagaja

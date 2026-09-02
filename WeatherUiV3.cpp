@@ -43,6 +43,8 @@
 #include "RoomData.h"
 #include "RoomHistory.h"   // RoomHistory:: (wspolny wykres temperatur 24 h na ekranie POKOJE)
 #include "RadarData.h"
+#include "RadarClient.h"     // (Blok G) radarLabel() — nazwy poziomow opadu w module OPAD
+#include "PrecipHint.h"      // (Blok G) choosePrecipHint() — radar kontra prognoza
 #include "PvData.h"
 #include "WeatherData.h"
 #include "FlightData.h"
@@ -1087,14 +1089,33 @@ void v3Main(TFT_eSPI& s, const WeatherModel& w, const PvModel& pv, const CostMod
         bestHour = w.hours[i].hourOfDay;
       }
     char hint[24];
-    if (!w.ready) snprintf(hint, sizeof(hint), "jeszcze nie pobrany");
+    // (Blok G, runda 2) "sucho"/"~22:00 · 85%" ponizej odpowiadaja na PROGNOZE (co
+    // najwyzej +12h, WX_HOURS) — deszcz padajacy W TEJ CHWILI nie ma jak na nie
+    // wplynac. Radar (RadarClient.h) widzi TERAZNIEJSZOSC niezaleznie od prognozy,
+    // wiec dostaje GLOS PIERWSZENSTWA przed calym lancuchem ponizej, WLACZNIE z
+    // "jeszcze nie pobrany"/"nieaktualna": radar bywa swiezy, nawet gdy Open-Meteo
+    // milczy (dwa niezalezne zrodla), a wtedy "radar widzi opad" jest cenniejsza
+    // odpowiedzia niz "prognoza sie nie pobrala". choosePrecipHint() (PrecipHint.h)
+    // to czysta, testowana na hoscie logika wyboru; radarTrueAgeS dolicza czas OD
+    // OSTATNIEGO udanego pobrania do wieku klatki w chwili pobrania — patrz
+    // komentarz w PrecipHint.h, dlaczego samo RadarSnapshot::ageSec by myslilo.
+    const uint32_t radarTrueAgeS = w.radarAgeSec + okAgeS(diag().radarOkAt);
+    const PrecipHintKind precipHint = choosePrecipHint(
+        w.radarValid, w.radarLevel, radarTrueAgeS, bestProb, bestHour);
+    if (precipHint == PrecipHintKind::kRadarNow) {
+      snprintf(hint, sizeof(hint), "teraz: %s", radarLabel(w.radarLevel));
+    } else if (!w.ready) {
+      snprintf(hint, sizeof(hint), "jeszcze nie pobrany");
     // (v158) Zamiast slowa "nieaktualna" — WIEK. Slowo mowilo tylko tyle, ze cos jest
     // nie tak; liczba mowi, czy chodzi o kwadrans (siec sie zacina) czy o pol dnia
     // (API padlo albo router stoi). Kropka obok i tak jest juz bursztynowa.
-    else if (!wxFresh()) agoWords(hint, sizeof(hint), wxAgeS());
-    else if (bestProb >= 20 && bestHour >= 0)
+    } else if (!wxFresh()) {
+      agoWords(hint, sizeof(hint), wxAgeS());
+    } else if (precipHint == PrecipHintKind::kForecastPeak) {
       snprintf(hint, sizeof(hint), "~%d:00 · %d%%", bestHour, bestProb);
-    else snprintf(hint, sizeof(hint), "sucho");
+    } else {
+      snprintf(hint, sizeof(hint), "sucho");
+    }
     int rx = grid::DATA_R;
     freshDot(s, rx - 3, 22, wxFreshState(w));
     rx -= 12;
