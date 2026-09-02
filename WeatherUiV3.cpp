@@ -91,12 +91,16 @@ float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : 
 // uzytkownika, a takie w tym repo nie zostaja (patrz notatki przy skasowanych stalych
 // w Config.h). Tu liczymy wylacznie granice miedzy (b) a (c).
 //
-// (P1-1) ARYTMETYKA PRZENIESIONA DO Freshness.h::isFresh() — ta sama, bez zmiany
-// semantyki (wciaz "ze znakiem na int32, 0 = nigdy" — patrz komentarz tam). Powod:
-// OledPanel.cpp mial DWIE wlasne kopie dokladnie tego wzoru, a MqttClient.cpp mial
-// INNY wzor na "czy juz czas" (harmonogram na absolutnym terminie), ktory okazal sie
-// bledny (blokowal reconnect miedzy 24,85 a 49,7 dniem pracy). Jedno miejsce zamiast
-// trzech kopii zmniejsza szanse, ze taka pomylka wroci gdzie indziej. freshMs()
+// (P1-1) ARYTMETYKA PRZENIESIONA DO Freshness.h::isFresh(). Powod: OledPanel.cpp
+// mial DWIE wlasne kopie dokladnie tego wzoru, a MqttClient.cpp mial INNY wzor na
+// "czy juz czas" (harmonogram na absolutnym terminie), ktory okazal sie bledny
+// (blokowal reconnect miedzy 24,85 a 49,7 dniem pracy). Jedno miejsce zamiast
+// trzech kopii zmniejsza szanse, ze taka pomylka wroci gdzie indziej.
+// (poprawka po przegladzie) SEMANTYKA SIE ZMIENILA przy tej okazji: stary wzor tego
+// pliku ("ze znakiem na int32") przy wieku > ~24,85 dnia zwracal "swieze" dla
+// DOWOLNIE starych danych — patrz obszerny komentarz w Freshness.h, dlaczego to byl
+// efekt uboczny, nie zamierzony fail-safe, i jak waskie okno tolerancji na wyscig
+// odczytu (2 s) go usuwa bez zmiany zadnej normalnej granicy swiezosci. freshMs()
 // zostaje jako cienki wrapper, zeby wxFresh() i reszta wywolan nizej nie musialy
 // sie zmieniac.
 bool freshMs(uint32_t okAt, uint32_t staleMs) {
@@ -109,23 +113,27 @@ bool freshMs(uint32_t okAt, uint32_t staleMs) {
 // w calym projekcie). Po zaniku sieci netTask NIE nadpisuje gWeather — ostatnia prognoza zostaje z
 // ready==true, wiec sam `ready` NIE odroznia swiezej prognozy od godzinami nieaktualnej.
 // Trzeba spojrzec na wiek ostatniego udanego pobrania: diag().weatherOkAt (millis) pisze
-// netTask, odczyt uint32 jest atomowy, a ageMs liczymy ZE ZNAKIEM (idiom ago() z
-// Portal.cpp — po ~49 dniach uint32 sie przekreca, ujemny wiek traktujemy jak "swiezy").
+// netTask, odczyt uint32 jest atomowy, a swiezosc liczy isFresh() z Freshness.h (wiek
+// bez znaku, waskie okno tolerancji na wyscig odczytu — patrz komentarz tam).
 // TEN SAM wzor, co interpolacja chmur radaru w pogoda-gdynia.ino.
 bool wxFresh() {
   return freshMs(diag().weatherOkAt, cfg::WEATHER_STALE_MS);
 }
 
 // Wiek DOWOLNEGO stempla millis() w SEKUNDACH (0, gdy stempel jest zerowy, czyli
-// "nigdy nie bylo udanego pobrania"). Ten sam idiom ze znakiem, co freshMs: roznice
-// liczymy na int32, bo uint32 przekreca sie po ~49 dniach pracy, a stemple pisze
-// netTask — inny watek niz rysowanie.
-// (v161) Wydzielone z wxAgeS(), bo tej samej liczby potrzebuja teraz takze ekrany
-// PRAD i OGRZEWANIE (podpis wieku przy starych danych). Jedno miejsce zamiast trzech.
+// "nigdy nie bylo udanego pobrania"). (v161) Wydzielone z wxAgeS(), bo tej samej
+// liczby potrzebuja teraz takze ekrany PRAD i OGRZEWANIE (podpis wieku przy starych
+// danych). Jedno miejsce zamiast trzech.
+// (poprawka po przegladzie) Bez znaku, z tym samym waskim oknem tolerancji na wyscig
+// odczytu z innego watku (kFreshFutureSkewToleranceMs, Freshness.h) co isFresh() —
+// stara wersja rzutowala na int32 i przy wieku > ~24,85 dnia zwracala 0 ("teraz"),
+// mylac dane sprzed miesiaca z danymi sprzed chwili (ten sam blad, co w isFresh()
+// przed poprawka — patrz obszerny komentarz w Freshness.h).
 uint32_t okAgeS(uint32_t okAt) {
   if (okAt == 0) return 0;
-  const int32_t ageMs = static_cast<int32_t>(millis() - okAt);
-  return ageMs > 0 ? static_cast<uint32_t>(ageMs) / 1000u : 0u;
+  const uint32_t ageMs = millis() - okAt;
+  if (ageMs > (0xFFFFFFFFu - kFreshFutureSkewToleranceMs)) return 0;  // z przyszlosci
+  return ageMs / 1000u;
 }
 
 // Wiek pogody w SEKUNDACH (0, gdy nigdy nie pobrano) — do dopisku "sprzed X min"

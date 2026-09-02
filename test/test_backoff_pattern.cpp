@@ -1,22 +1,26 @@
-// Test regresyjny dla POPRAWKI w Bloku B (P1-1), odtworzony jako izolowany,
-// host-testowalny wzorzec — NIE import z MqttClient.cpp, bo ten plik zalezy
-// od PubSubClient/WiFi i nie kompiluje sie na hoscie. Ten test sprawdza, ze
-// sam WZORZEC arytmetyczny jest poprawny na dowolnych wartosciach uint32_t,
-// niezaleznie od pliku zrodlowego.
+// Test regresyjny dla POPRAWKI w Bloku B (P1-1).
+//
+// Dwie różne rzeczy, dwa różne podejścia:
+//  - backoff MQTT (gLastTryAt/gBackoffMs) żyje wyłącznie w MqttClient.cpp, który
+//    zależy od PubSubClient/WiFi i nie kompiluje się na hoście — wzorzec arytmetyczny
+//    jest więc odtworzony tu jako ŚWIADOMY, KONIECZNY duplikat (nie da się inaczej).
+//  - świeżość (isFresh) ma dziś realne, host-kompilowalne źródło w Freshness.h —
+//    ten plik WŁĄCZA je wprost i testuje PRAWDZIWĄ funkcję produkcyjną, żadnej kopii.
+//    (poprawka po przeglądzie: pierwsza wersja tego pliku duplikowała też isFresh()
+//    lokalnie, co znaczyło, że poprawka w Freshness.h nigdy by tego testu nie zabarwiła
+//    na czerwono — patrz historia commitów).
 #include <gtest/gtest.h>
 
 #include <cstdint>
 
+#include "../Freshness.h"
+
 namespace {
 
-// Skopiowany wzorzec naprawy z MqttClient.cpp (P1-1/Blok B).
+// Skopiowany wzorzec naprawy z MqttClient.cpp (P1-1/Blok B) — MUSI zostać duplikatem,
+// bo MqttClient.cpp nie jest host-compilowalny (PubSubClient/WiFi).
 inline bool backoffElapsed(uint32_t now, uint32_t lastTryAt, uint32_t backoffMs) {
   return (now - lastTryAt) >= backoffMs;  // odejmowanie BEZ ZNAKU, zawija sie poprawnie
-}
-
-inline bool isFreshPattern(uint32_t now, uint32_t okAt, uint32_t staleMs) {
-  if (okAt == 0) return false;
-  return static_cast<int32_t>(now - okAt) < static_cast<int32_t>(staleMs);
 }
 
 }  // namespace
@@ -51,44 +55,63 @@ TEST(BackoffElapsedPattern, ExactlyAtBackoffBoundaryIsAllowed) {
 }
 
 // ---------------------------------------------------------------------------
-// "dane sprzed miesiaca nie sa swieze" (a raczej: SA blednie uznane za swieze,
-// i to jest UDOKUMENTOWANY kompromis projektu, nie dziura w tescie).
+// isFresh() — TESTUJE PRAWDZIWY KOD PRODUKCYJNY z Freshness.h, nie kopie.
 //
-// isFreshPattern rzutuje roznice (now - okAt), ktora jest uint32_t, na
-// int32_t. Kiedy ta roznica PRZEKRACZA INT32_MAX (2 147 483 647), rzutowanie
-// (zachowanie zdefiniowane od C++20, a w praktyce od zawsze przy U2 -- co ten
-// kompilator i kazdy realny kompilator implementuje) daje liczbe UJEMNA.
-// Ujemna < dodatnia(staleMs) jest zawsze prawda, wiec funkcja zwraca `true`
-// -- dane sprzed 30 dni wychodza jako "swieze". To jest ZAMIERZONY fail-safe
-// przy dwuznacznosci powyzej ~24,85 dnia (patrz "TRZY STANY SWIEZOSCI" w
-// WeatherUiV3.cpp) -- lepiej pokazac przypadkiem stara wartosc niz ukryc
-// swieza pod falszywym "brak danych" przy bledzie zegara. Test PONIZEJ liczy
-// to naprawde (nie zgaduje) i dokumentuje wynik w asercji.
+// (poprawka po przeglądzie) Pierwsza wersja tego testu duplikowała formułę isFresh()
+// SPRZED poprawki (rzutowanie na int32_t) i asercją `EXPECT_TRUE` na danych sprzed
+// 30 dni UTRWALAŁA błąd zamiast go łapać — brief żądał testu "dane sprzed miesiąca
+// NIE są świeże", a powstała jego dokładna odwrotność. Po poprawce w Freshness.h
+// (wąskie okno tolerancji ~2 s na wyścig odczytu między rdzeniami, zamiast
+// blankietowego "cały wiek > 2^31 ms to świeże") test poniżej sprawdza both kierunki
+// naprawdę: dane sprzed miesiąca są stare, a stempel kilkaset ms w przyszłości
+// (typowy wyścig odczytu) nadal liczy się jako świeży.
 // ---------------------------------------------------------------------------
-TEST(IsFreshPattern, DataFromThirtyDaysAgoOverflowsInt32AndIsTreatedAsFresh) {
+TEST(IsFreshPattern, DataFromThirtyDaysAgoIsCorrectlyStale) {
   const uint32_t now = 40UL * 24UL * 3600UL * 1000UL;   // 40 dni w ms = 3 456 000 000
   const uint32_t okAt = 10UL * 24UL * 3600UL * 1000UL;  // 10 dni w ms =   864 000 000
   const uint32_t staleMs = 40000;                       // 40 s -- dowolny sensowny prog
 
-  // Policzone wprost: diff = now - okAt = 2 592 000 000 (uint32_t).
-  // 2 592 000 000 > INT32_MAX (2 147 483 647), wiec static_cast<int32_t>(diff)
-  // == 2 592 000 000 - 4 294 967 296 == -1 702 967 296 (ujemne).
-  // -1 702 967 296 < 40000 -> true. To NIE jest poprawne wykrycie "swiezosci"
-  // w sensie kalendarzowym -- to jest fail-safe: przy tak duzej, dwuznacznej
-  // roznicy kod woli pokazac dane niz zgasic ekran.
-  EXPECT_TRUE(isFreshPattern(now, okAt, staleMs));
+  // Wiek = 2 592 000 000 ms (30 dni) — daleko poza jakimkolwiek sensownym staleMs
+  // I daleko poza oknem tolerancji na wyscig odczytu (blisko UINT32_MAX). Musi
+  // wyjsc jako NIEswieze.
+  EXPECT_FALSE(isFresh(now, okAt, staleMs));
 }
 
-TEST(IsFreshPattern, RecentDataWithinNormalWindowIsCorrectlyFresh) {
-  // Kontrast: dane sprzed 5 minut, prog swiezosci 1 minuta -- normalny
-  // przypadek, BEZ przepelnienia int32_t, wykryty poprawnie jako nieswiezy.
+TEST(IsFreshPattern, DataOlderThanThresholdIsCorrectlyStaleInNormalWindow) {
+  // Dane sprzed 5 minut, prog swiezosci 1 minuta -- normalny przypadek (bez
+  // zadnego przepelnienia arytmetyki), poprawnie wykryty jako NIEswiezy.
   const uint32_t now = 10UL * 60UL * 1000UL;                // t = 10 min w ms
   const uint32_t okAt = now - 5UL * 60UL * 1000UL;          // 5 min wczesniej
   const uint32_t staleMs = 60UL * 1000UL;                   // prog: 1 minuta
 
-  EXPECT_FALSE(isFreshPattern(now, okAt, staleMs));
+  EXPECT_FALSE(isFresh(now, okAt, staleMs));
+}
+
+TEST(IsFreshPattern, DataWithinStaleThresholdIsFresh) {
+  const uint32_t now = 10UL * 60UL * 1000UL;
+  const uint32_t okAt = now - 30UL * 1000UL;   // 30 s wczesniej
+  const uint32_t staleMs = 60UL * 1000UL;      // prog: 1 minuta
+  EXPECT_TRUE(isFresh(now, okAt, staleMs));
 }
 
 TEST(IsFreshPattern, NeverReceivedIsNeverFresh) {
-  EXPECT_FALSE(isFreshPattern(/*now=*/123456, /*okAt=*/0, /*staleMs=*/60000));
+  EXPECT_FALSE(isFresh(/*now=*/123456, /*okAt=*/0, /*staleMs=*/60000));
+}
+
+// Znacznik kilkaset ms W PRZYSZLOSCI wzgledem `now` — realny wyscig odczytu miedzy
+// rdzeniami (netTask pisze stempel, watek rysujacy lapie wlasne `now` chwile wczesniej
+// albo pozniej). `now - okAt` zawija sie do wartosci bliskiej UINT32_MAX; okno
+// tolerancji (kFreshFutureSkewToleranceMs = 2 s) ma to zlapac i zwrocic "swieze".
+TEST(IsFreshPattern, TimestampSlightlyInFutureFromCrossCoreRaceIsFresh) {
+  const uint32_t now = 1000000;
+  const uint32_t okAt = now + 500;  // 500 ms "w przyszlosci" wzgledem now
+  EXPECT_TRUE(isFresh(now, okAt, /*staleMs=*/60000));
+}
+
+// Kontrast z powyzszym: przyszlosc WIEKSZA niz okno tolerancji (np. zegar realnie sie
+// rozjechal, a nie zwykly wyscig o kilkaset ms) NIE jest juz uznawana za swieza.
+TEST(IsFreshPattern, TimestampFarInFutureBeyondToleranceIsNotFresh) {
+  const uint32_t now = 1000000;
+  const uint32_t okAt = now + 60000;  // 60 s "w przyszlosci" -- poza oknem tolerancji
+  EXPECT_FALSE(isFresh(now, okAt, /*staleMs=*/60000));
 }

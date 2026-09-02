@@ -41,6 +41,7 @@
 #include "AirClient.h"
 #include "AirHistory.h"   // gAirHistory.toJson() -> /api/diag.air_hist (sekcja "Powietrze 7 dni")
 #include "Config.h"
+#include "Freshness.h"  // kFreshFutureSkewToleranceMs — uzyte w apiDiag()::ago()
 #include "Log.h"
 #include "MqttClient.h"
 #include "Ota.h"
@@ -2789,14 +2790,19 @@ void apiDiag() {
   const uint32_t now = millis();
   auto ago = [&](uint32_t at) -> int {
     if (at == 0) return -1;
-    // Signed: `at` bywa SWIEZSZE niz `now`, gdy pisze je inny watek juz PO zlapaniu
-    // `now` w tym watku. Bez tego (now - at) na uint32 przekreca sie w ~4294967
-    // (0xFFFFFFFF/1000). Przyszlosc traktujemy jak "teraz".
-    // Od v101 pirLastAt pisze pirIsr(), a nie loop() — okno na wyprzedzenie zrobilo sie
-    // WIEKSZE, nie mniejsze: przerwanie wchodzi w dowolnym momencie, takze miedzy
-    // millis() powyzej a ta linijka. Ta poprawka jest teraz bardziej potrzebna niz byla.
-    const int32_t d = static_cast<int32_t>(now - at);
-    return d < 0 ? 0 : d / 1000;
+    // `at` bywa SWIEZSZE niz `now`, gdy pisze je inny watek juz PO zlapaniu `now` w
+    // tym watku. Od v101 pirLastAt pisze pirIsr(), a nie loop() — okno na wyprzedzenie
+    // jest WIEKSZE, nie mniejsze: przerwanie wchodzi w dowolnym momencie, takze miedzy
+    // millis() powyzej a ta linijka.
+    // (poprawka po przegladzie) WASKIE okno tolerancji (2 s, Freshness.h) na ten wyscig,
+    // NIE blankietowe rzutowanie na int32 jak dawniej: stara wersja traktowala KAZDY
+    // wiek > ~24,85 dnia jako "0 s temu" (przekroczenie polowy zakresu uint32 wyglada
+    // identycznie jak "z przyszlosci") — wielotygodniowa cisza dowolnego zrodla
+    // (pogoda/PV/radar/piec/loty, patrz ok_ago_s nizej) pokazywalaby sie w panelu jako
+    // "teraz", maskujac realna awarie. Age poza oknem tolerancji liczy sie juz wprost.
+    const uint32_t age = now - at;
+    if (age > (0xFFFFFFFFu - kFreshFutureSkewToleranceMs)) return 0;
+    return static_cast<int>(age / 1000);
   };
 
   JsonDocument j;
