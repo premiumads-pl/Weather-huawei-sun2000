@@ -2298,6 +2298,15 @@ void sendPage() {
   // (patrz esc() nizej w PAGE — glowna linia obrony przed XSS trwalym/odbitym).
   server.sendHeader("Content-Security-Policy",
                      "default-src 'self'; connect-src 'self'; form-action 'self'; "
+                     // style-src Z 'unsafe-inline' — BEZ TEGO PANEL RENDERUJE SIE JAKO GOLY HTML.
+                     // Wpadka v195: byl sam script-src, a style-src dziedziczyl po default-src
+                     // 'self' i przegladarka blokowala CALY blok <style> ORAZ kazdy atrybut
+                     // style=\"...\". Drugi objaw byl mylacy: elementy chowane przez
+                     // style=display:none (np. #oledNone "Nie wykryto modulu OLED") stawaly sie
+                     // WIDOCZNE, wiec panel oglaszal awarie sprzetu, ktorego nic nie bylo.
+                     // Curl tego nie zlapie — CSP egzekwuje przegladarka. Po zmianie CSP
+                     // ZAWSZE otworzyc panel w przegladarce, nie tylko odpytac API.
+                     "style-src 'self' 'unsafe-inline'; "
                      "script-src 'self' 'unsafe-inline'");
   server.send_P(200, "text/html; charset=utf-8", PAGE);
 }
@@ -4634,6 +4643,15 @@ void apiViCallback() {
   // sendHeader MUSI byc PRZED send(), bo send() wysyla i zamyka naglowki.
   server.sendHeader("Content-Security-Policy",
                      "default-src 'self'; connect-src 'self'; form-action 'self'; "
+                     // style-src Z 'unsafe-inline' — BEZ TEGO PANEL RENDERUJE SIE JAKO GOLY HTML.
+                     // Wpadka v195: byl sam script-src, a style-src dziedziczyl po default-src
+                     // 'self' i przegladarka blokowala CALY blok <style> ORAZ kazdy atrybut
+                     // style=\"...\". Drugi objaw byl mylacy: elementy chowane przez
+                     // style=display:none (np. #oledNone "Nie wykryto modulu OLED") stawaly sie
+                     // WIDOCZNE, wiec panel oglaszal awarie sprzetu, ktorego nic nie bylo.
+                     // Curl tego nie zlapie — CSP egzekwuje przegladarka. Po zmianie CSP
+                     // ZAWSZE otworzyc panel w przegladarce, nie tylko odpytac API.
+                     "style-src 'self' 'unsafe-inline'; "
                      "script-src 'self' 'unsafe-inline'");
   server.send(200, "text/html; charset=utf-8", h);
 }
