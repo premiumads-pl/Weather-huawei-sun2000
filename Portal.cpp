@@ -115,7 +115,22 @@ void (*gBlGet)(uint8_t&, uint8_t&) = nullptr;
 char apIpStr[20] = "192.168.4.1";
 
 const char kApSsid[] = "Pogoda-Setup";
-const char kApPass[] = "pogoda123";
+// (WEB-4) Haslo AP juz NIE jest stalym sekretem wpisanym w repo — budowane raz z MAC
+// (eFuse), tym samym wzorcem co gDevId w MqttClient.cpp: "pogoda-%02x%02x%02x" z
+// ostatnich 3 bajtow adresu MAC. WPA2 wymaga >= 8 znakow — "pogoda-" (7) + 6 hex = 13,
+// warunek spelniony. Zamiana nie psuje uzytecznosci: haslo i tak jest pokazywane na
+// TFT wlasciciela przy konfiguracji (ui.drawSetup() w pogoda-gdynia.ino, przez
+// portal::apPass()), wiec wlasciciel je odczyta z ekranu urzadzenia.
+char gApPass[16] = {};   // "pogoda-a1b2c3" — wypelniane leniwie w apPassBuf()
+
+const char* apPassBuf() {
+  if (gApPass[0] == '\0') {
+    uint8_t mac[6] = {};
+    WiFi.macAddress(mac);
+    snprintf(gApPass, sizeof(gApPass), "pogoda-%02x%02x%02x", mac[3], mac[4], mac[5]);
+  }
+  return gApPass;
+}
 
 // ------------------------------------------------------------------ strona ---
 
@@ -382,8 +397,9 @@ try{if(localStorage.getItem('panelTheme')=='dark')document.documentElement.class
        2. w dolnym bloku skryptu panelu (tam, gdzie tabs()/pickView): pobierz GET /api/theme,
           zbuduj przyciski z pola "available" (kazdy wpis ma "v" i "name"), podswietl ten
           rowny polu "theme";
-       3. klikniecie: fetch('/api/theme?v='+v,{method:'POST'}) — MUSI byc POST, GET tego
-          nie zmieni (CSRF, patrz komentarz przy apiTheme);
+       3. klikniecie: post('/api/theme?v='+v) — MUSI byc POST (przez wspolny helper
+          post(), patrz esc()/post() wyzej), GET tego nie zmieni (CSRF, patrz komentarz
+          przy apiTheme i przy csrfGuard());
        4. odpowiedz 400 niesie czytelny powod w polu "err" — pokaz go w #thmsg.
      Cala reszta instrukcji (gdzie dopisac wartosc i gdzie rozgalezic rysowanie) stoi przy polu
      `theme` w Settings.h. -->
@@ -884,7 +900,7 @@ async function pickView(i){
  const nm=[...VIEWS,...VDIAG].find(v=>v[1]===i);
  $('vmsg').textContent=i<0?'Rotacja automatyczna — dokładnie jak na urządzeniu.'
   :('Zatrzymane na ekranie: '+(nm?nm[0]:i)+'. Kliknij „Auto”, żeby wznowić rotację.');
- try{const r=await(await fetch('/api/view?i='+i,{method:'POST'})).json();pin=r.pin;tabs();}catch(e){}
+ try{const r=await(await post('/api/view?i='+i)).json();pin=r.pin;tabs();}catch(e){}
 }
 async function saveTune(){
  $('tunmsg').className='hint';$('tunmsg').textContent='Zapisuję…';
@@ -893,7 +909,7 @@ async function saveTune(){
   +'&blDim='+(+$('bldim').value)+'&blNight='+(+$('blnight').value)
   +'&arot='+($('arot').checked?1:0);
  try{
-  const r=await(await fetch('/api/tuning?'+q,{method:'POST'})).json();
+  const r=await(await post('/api/tuning?'+q)).json();
   // Serwer clampuje — pokazujemy realnie zapisane wartosci (np. jasnosc podbita do minimum).
   $('nstart').value=r.night_start;$('nend').value=r.night_end;$('dwell').value=r.dwell;
   $('blday').value=r.bl_day;$('bldim').value=r.bl_dim;$('blnight').value=r.bl_night;
@@ -903,14 +919,14 @@ async function saveTune(){
    :'Nie udało się zapisać.';
  }catch(e){$('tunmsg').className='hint err';$('tunmsg').textContent='Błąd połączenia';}
 }
-async function tap(n){try{await fetch('/api/tap?n='+n,{method:'POST'});}catch(e){}}
+async function tap(n){try{await post('/api/tap?n='+n);}catch(e){}}
 // --- JASNOSC: pigulki forsowania podswietlenia (v=auto zwalnia; 255/130/45 forsuja) ---
 function highlightBl(v){document.querySelectorAll('#blpills button').forEach(b=>b.classList.toggle('on',b.dataset.bl===String(v)));}
 async function setBl(v){
  highlightBl(v);
  try{
-  if(v==='auto')await fetch('/api/bl?v=auto',{method:'POST'});            // zwolnij forsowanie -> automat LDR
-  else await fetch('/api/bl?v='+v+'&ms=14400000',{method:'POST'});        // ~4 h override, sam wygasa
+  if(v==='auto')await post('/api/bl?v=auto');            // zwolnij forsowanie -> automat LDR
+  else await post('/api/bl?v='+v+'&ms=14400000');        // ~4 h override, sam wygasa
  }catch(e){}
 }
 // --- NAWIGACJA: komputer = pokaz jedna sekcje; telefon = rozwin/zwin akordeon ---
@@ -925,7 +941,8 @@ function toggleSection(s){
  // takze w galezi "zamknieto".
  if(open)onShown(s); else {liveSync();oledSync();}
 }
-function esc(t){return String(t==null?'':t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function esc(t){return String(t==null?'':t).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function post(url,opts){opts=opts||{};opts.method=opts.method||'POST';opts.headers=Object.assign({'X-Requested-With':'panel'},opts.headers||{});return fetch(url,opts);}
 // Lazy: ciezsze sekcje (Obecnosc, Zdrowie) laduja sie przy PIERWSZYM pokazaniu, nie na
 // starcie — zeby nie odpalac kilku /api/diag naraz przy wejsciu na panel.
 let obecLoaded=false,healthLoaded=false,klimatLoaded=false,air7Loaded=false;
@@ -1772,7 +1789,7 @@ async function oledTick(){
  finally{oledBusy=false;}
 }
 async function oledBtn(r){
- try{await fetch('/api/oled/btn?r='+r,{method:'POST'});}catch(e){}
+ try{await post('/api/oled/btn?r='+r);}catch(e){}
  oledTick();   // od razu pokaz skutek, nie czekaj do konca biezacego interwalu
 }
 // --- czujniki BLE ---
@@ -1854,7 +1871,7 @@ function gwStat(d){
 async function saveGw(){
  $('gmsg').textContent='...';
  const hosts=[...document.querySelectorAll('[id^=blegw]')].map(e=>e.value.trim());
- const r=await(await fetch('/api/blegw',{method:'POST',headers:{'Content-Type':'application/json'},
+ const r=await(await post('/api/blegw',{headers:{'Content-Type':'application/json'},
   body:JSON.stringify({hosts:hosts})})).json();
  $('gmsg').className='hint '+(r.ok?'ok':'err');$('gmsg').textContent=r.msg;
  load();   // lista zageszcza sie po stronie urzadzenia — pokaz realny stan, nie wpisany
@@ -1885,18 +1902,18 @@ async function meters(){
 }
 async function addMeter(){
  $('mmsg').textContent='...';
- const r=await(await fetch('/api/meter',{method:'POST',headers:{'Content-Type':'application/json'},
+ const r=await(await post('/api/meter',{headers:{'Content-Type':'application/json'},
   body:JSON.stringify({date:$('mdate').value,m3:parseFloat($('mval').value)})})).json();
  $('mmsg').className='hint '+(r.ok?'ok':'err');$('mmsg').textContent=r.msg;
  if(r.ok){$('mval').value='';meters();}
 }
 async function delMeter(d){
- await fetch('/api/meter?date='+d,{method:'DELETE'});
+ await post('/api/meter?date='+d,{method:'DELETE'});
  meters();
 }
 async function saveBle(mac,i){
  $('bmsg').textContent='Zapisuję…';
- const r=await(await fetch('/api/ble',{method:'POST',headers:{'Content-Type':'application/json'},
+ const r=await(await post('/api/ble',{headers:{'Content-Type':'application/json'},
   body:JSON.stringify({mac:mac,name:$('bn'+i).value,key:$('bk'+i).value.trim()})})).json();
  $('bmsg').className='hint '+(r.ok?'ok':'err');
  $('bmsg').textContent=r.msg;
@@ -1914,7 +1931,7 @@ async function goViAuth(){
 }
 async function viLink(){
  $('vimsg').textContent='...';
- const r=await(await fetch('/api/vi/link',{method:'POST',headers:{'Content-Type':'application/json'},
+ const r=await(await post('/api/vi/link',{headers:{'Content-Type':'application/json'},
   body:JSON.stringify({cid:$('vicid').value.trim()})})).json();
  $('vimsg').className='hint '+(r.ok?'ok':'err');
  $('vimsg').textContent=r.msg;
@@ -1922,7 +1939,7 @@ async function viLink(){
 }
 async function viForget(){
  if(!confirm('Odłączyć piec? Trzeba będzie autoryzować od nowa.'))return;
- await fetch('/api/vi/forget',{method:'POST'});
+ await post('/api/vi/forget');
  location.reload();
 }
 async function viStat(){
@@ -1961,7 +1978,7 @@ async function viStat(){
 }
 async function demo(on){
  $('dmsg').textContent='...';
- const r=await(await fetch('/api/radardemo?on='+on,{method:'POST'})).json();
+ const r=await(await post('/api/radardemo?on='+on)).json();
  $('dmsg').className='hint ok';$('dmsg').textContent=r.msg;
  if(on) pickView(3);   // VIEW_RADAR=3 (dawniej bledne pickView(2) — slot dzis wycofany, patrz Config.h)
 }
@@ -2025,7 +2042,7 @@ async function fails(){
 }
 async function dg(){$('dbg').textContent=await(await fetch('/api/diag')).text();}
 async function lg(){$('dbg').textContent=await(await fetch('/api/log')).text();}
-async function rb(){if(confirm('Restartować?')){await fetch('/api/reboot',{method:'POST'});}}
+async function rb(){if(confirm('Restartować?')){await post('/api/reboot');}}
 async function cd(){
  const r=await(await fetch('/api/coredump')).json();
  $('dbg').textContent=r.present?JSON.stringify(r,null,1)
@@ -2041,7 +2058,7 @@ async function cdget(){
 }
 async function cddel(){
  if(!confirm('Skasować zrzut? To jedyny dowód na to, dlaczego urządzenie padło.'))return;
- await fetch('/api/coredump',{method:'DELETE'});cd();
+ await post('/api/coredump',{method:'DELETE'});cd();
 }
 async function load(){
  const r=await(await fetch('/api/state')).json();
@@ -2080,7 +2097,7 @@ async function scan(){
 function pick(i){$('ssid').value=window._N[i].s;$('pass').focus();}
 async function saveWifi(){
  $('wmsg').textContent='Łączę…';
- const r=await(await fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/json'},
+ const r=await(await post('/api/wifi',{headers:{'Content-Type':'application/json'},
   body:JSON.stringify({ssid:$('ssid').value,pass:$('pass').value})})).json();
  $('wmsg').className='hint '+(r.ok?'ok':'err');
  $('wmsg').textContent=r.msg;
@@ -2097,18 +2114,18 @@ async function geo(){
 }
 async function setLoc(i){
  const l=window._L[i];
- await fetch('/api/loc',{method:'POST',headers:{'Content-Type':'application/json'},
+ await post('/api/loc',{headers:{'Content-Type':'application/json'},
   body:JSON.stringify({city:l.n,lat:l.lat,lon:l.lon})});
  $('locs').innerHTML='';load();
 }
 async function saveInv(){
- const r=await(await fetch('/api/inv',{method:'POST',headers:{'Content-Type':'application/json'},
+ const r=await(await post('/api/inv',{headers:{'Content-Type':'application/json'},
   body:JSON.stringify({mb:$('mb').value,peak:Math.round($('peak').value*1000)})})).json();
  $('imsg').className='hint ok';$('imsg').textContent=r.msg;
 }
 async function saveMqtt(){
  $('qmsg').textContent='Zapisuję…';
- const r=await(await fetch('/api/mqtt',{method:'POST',headers:{'Content-Type':'application/json'},
+ const r=await(await post('/api/mqtt',{headers:{'Content-Type':'application/json'},
   body:JSON.stringify({en:$('mqen').checked,host:$('mqhost').value,
    port:parseInt($('mqport').value)||1883,pre:$('mqpre').value,
    user:$('mquser').value,pass:$('mqpass').value})})).json();
@@ -2152,7 +2169,7 @@ async function upd(){
   let local=d0?d0.fw:null,lastUp=d0?(d0.uptime_s||0):0;
   const base={chk:d0?uat(d0,'checked_ago_s'):-1,ok:d0?uat(d0,'ok_ago_s'):-1};
   let r;
-  try{r=await(await fetch('/api/update',{method:'POST'})).json();}
+  try{r=await(await post('/api/update')).json();}
   catch(e){usay('Nie udało się zlecić sprawdzenia — urządzenie nie odpowiada.','err');return;}
   if(!r.ok){usay(r.msg||'Sprawdzenie nie ruszyło.','err');return;}
   usay(r.msg||'Sprawdzam…');
@@ -2245,7 +2262,7 @@ async function upd(){
 }
 async function fgt(){
  if(!confirm('Usunąć zapisaną sieć Wi-Fi?'))return;
- await fetch('/api/forget',{method:'POST'});location.reload();
+ await post('/api/forget');location.reload();
 }
 // Wpiecie nawigacji: pozycje sidebaru (komputer) i naglowki sekcji (telefon).
 document.querySelectorAll('.navitem').forEach(a=>a.onclick=()=>showSection(a.dataset.sec));
@@ -2271,6 +2288,16 @@ $('mdate').value=new Date().toISOString().slice(0,10);
 
 void sendPage() {
   server.sendHeader("Cache-Control", "no-store");
+  // CSP: panel nie laduje niczego spoza wlasnego pochodzenia (brak CDN-ow, brak
+  // zewnetrznych obrazkow/fontow) i nie wysyla formularzy nigdzie indziej — wiec
+  // "self" wszedzie. 'unsafe-inline' w script-src, bo caly JS panelu jest inline
+  // w PAGE[] (bez tego CSP zablokowalby wlasny <script> strony). To NIE jest ochrona
+  // przed XSS (inline script i tak przechodzi) — to zawezenie miejsc, do ktorych
+  // przegladarka moze wyslac dane, gdyby jednak gdzies wkradlo sie wstrzykniecie
+  // (patrz esc() nizej w PAGE — glowna linia obrony przed XSS trwalym/odbitym).
+  server.sendHeader("Content-Security-Policy",
+                     "default-src 'self'; connect-src 'self'; form-action 'self'; "
+                     "script-src 'self' 'unsafe-inline'");
   server.send_P(200, "text/html; charset=utf-8", PAGE);
 }
 
@@ -4566,10 +4593,28 @@ void apiViCallback() {
   const String err = server.arg("error");
   char msg[80] = {};
 
+  // (XSS odbity) `err` i `code` pochodza z query stringu tego PUBLICZNEGO adresu —
+  // Viessmann normalnie nie odsyla tu dowolnego tekstu, ale nic nie broni komus
+  // wywolac wprost /vicare?error=<dowolny tekst>. Trescia bledu OAuth i tak nie da sie
+  // nic zrobic (to techniczny kod protokolu, nie komunikat dla uzytkownika), wiec
+  // ZAMIAST wklejac ja do HTML nizej (jak dawniej: "%s" z err.c_str()), pokazujemy
+  // staly napis bez zadnej interpolacji. `code` idzie dalej do exchangeCode(), wiec
+  // jego walidujemy pod katem dozwolonych znakow OAuth ([A-Za-z0-9._-]) — cokolwiek
+  // innego traktujemy jak brak kodu, zanim w ogole trafi do sieci czy do komunikatu.
+  bool codeChars = code.length() > 0;
+  for (unsigned int i = 0; codeChars && i < code.length(); ++i) {
+    const char c = code[i];
+    const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                    (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+    if (!ok) codeChars = false;
+  }
+
   if (err.length() > 0) {
-    snprintf(msg, sizeof(msg), "Viessmann odmówił: %s", err.c_str());
+    snprintf(msg, sizeof(msg), "Viessmann odmówił");
   } else if (code.length() == 0) {
     snprintf(msg, sizeof(msg), "Brak kodu w odpowiedzi");
+  } else if (!codeChars) {
+    snprintf(msg, sizeof(msg), "Nieprawidłowy kod");
   } else if (vi::exchangeCode(code.c_str(), viRedirect().c_str(), msg, sizeof(msg))) {
     snprintf(msg, sizeof(msg), "Połączono z piecem. Możesz zamknąć tę kartę.");
   }
@@ -4578,6 +4623,11 @@ void apiViCallback() {
              "font:16px system-ui;padding:40px;text-align:center\"><h2>";
   h += msg;
   h += "</h2><p><a href=\"/\" style=\"color:#2563C4\">Wróć do panelu</a></p>";
+  // CSP: strona OAuth-return, ten sam pas ochronny co sendPage() (patrz tam) —
+  // sendHeader MUSI byc PRZED send(), bo send() wysyla i zamyka naglowki.
+  server.sendHeader("Content-Security-Policy",
+                     "default-src 'self'; connect-src 'self'; form-action 'self'; "
+                     "script-src 'self' 'unsafe-inline'");
   server.send(200, "text/html; charset=utf-8", h);
 }
 
@@ -4664,32 +4714,80 @@ void sendNotFound() {
   sendPage();
 }
 
+// P1-3: obrona przed CSRF na mutujacych trasach. Rejestracja POST/DELETE (patrz
+// komentarze przy poszczegolnych trasach nizej) chroni przed GET-em w <img src=...>,
+// ale NIE przed zwyklym cross-origin <form method=POST> z obcej strony — przegladarka
+// wysyla taki POST bez pytania, bo to nie jest "prosta" metoda CORS-a, ale zwykly
+// formularz i tak przechodzi. Ten straznik wymaga naglowka X-Requested-With, ktorego
+// zwykly <form> nie umie ustawic (fetch() z JS owszem, ale panel dokleja go do KAZDEGO
+// zapytania przez jedna funkcje post() w JS nizej — patrz PAGE). GET/HEAD nie sa tu
+// sprawdzane: to metody bezpieczne (bez skutkow), a niektore trasy obsluguja GET i
+// POST tym samym handlerem (np. /api/theme, /api/view) — GET ma zostac wolny od tego
+// wymogu.
+bool csrfGuard() {
+  const HTTPMethod m = server.method();
+  if (m == HTTP_GET || m == HTTP_HEAD) return true;
+  if (server.header("X-Requested-With") != "panel") {
+    server.send(403, "text/plain", "CSRF");
+    return false;
+  }
+  // Origin bywa nieobecny (curl, stare przegladarki, same-origin w niektorych
+  // trybach) — sprawdzamy go TYLKO gdy przegladarka go faktycznie wyslala.
+  if (server.hasHeader("Origin")) {
+    const String origin = server.header("Origin");
+    const String host = server.hostHeader();
+    // Origin ma postac "http://192.168.4.1", Host to samo "192.168.4.1" (bez portu
+    // przy porcie 80) — porownujemy wiec, czy Origin KONCZY SIE na "://" + Host.
+    if (!origin.endsWith(String("://") + host)) {
+      server.send(403, "text/plain", "CSRF");
+      return false;
+    }
+  }
+  return true;
+}
+
+// Cienki wrapper wokol server.on(): kazda rejestrowana trasa przechodzi najpierw przez
+// csrfGuard() (patrz wyzej), a dopiero potem trafia do wlasciwego handlera. Guard sam
+// przepuszcza GET/HEAD bez zadnego warunku, wiec owiniecie NAWET tras czysto-GET jest
+// bezpieczne — nic sie dla nich nie zmienia.
+void onR(const char* uri, WebServer::THandlerFunction handler) {
+  server.on(uri, [handler]() { if (csrfGuard()) handler(); });
+}
+void onR(const char* uri, HTTPMethod method, WebServer::THandlerFunction handler) {
+  server.on(uri, method, [handler]() { if (csrfGuard()) handler(); });
+}
+
 void routes() {
-  server.on("/", sendPage);
-  server.on("/api/state", apiState);
-  server.on("/api/scan", apiScan);
-  server.on("/api/wifi", HTTP_POST, apiWifi);
-  server.on("/api/geo", apiGeo);
-  server.on("/api/loc", HTTP_POST, apiLoc);
-  server.on("/api/inv", HTTP_POST, apiInv);
-  server.on("/api/mqtt", HTTP_POST, apiMqtt);
-  server.on("/api/update", HTTP_POST, apiUpdate);
-  server.on("/api/forget", HTTP_POST, apiForget);
-  server.on("/api/log", apiLog);
-  server.on("/api/diag", apiDiag);
-  server.on("/api/reboot", HTTP_POST, apiReboot);
+  // Bez tego server.header(...) w csrfGuard() zawsze zwraca pusty string — ESP32
+  // WebServer domyslnie NIE zbiera dowolnych naglowkow zadania. hostHeader() (uzywane
+  // wyzej) NIE wymaga collectHeaders — WebServer.h liczy Host osobno, zawsze.
+  static const char* kCsrfHeaders[] = {"X-Requested-With", "Origin"};
+  server.collectHeaders(kCsrfHeaders, sizeof(kCsrfHeaders) / sizeof(kCsrfHeaders[0]));
+  onR("/", sendPage);
+  onR("/api/state", apiState);
+  onR("/api/scan", apiScan);
+  onR("/api/wifi", HTTP_POST, apiWifi);
+  onR("/api/geo", apiGeo);
+  onR("/api/loc", HTTP_POST, apiLoc);
+  onR("/api/inv", HTTP_POST, apiInv);
+  onR("/api/mqtt", HTTP_POST, apiMqtt);
+  onR("/api/update", HTTP_POST, apiUpdate);
+  onR("/api/forget", HTTP_POST, apiForget);
+  onR("/api/log", apiLog);
+  onR("/api/diag", apiDiag);
+  onR("/api/reboot", HTTP_POST, apiReboot);
   // Zrzut awaryjny. GET /api/coredump = metadane i instrukcja (bezpieczne),
   // GET /api/coredump/raw = surowa kopia pamieci (NIE publikowac — patrz apiCoredumpRaw),
   // DELETE /api/coredump = skasowanie, czyli zwolnienie miejsca na nastepny zrzut.
-  server.on("/api/coredump", HTTP_GET, apiCoredump);
-  server.on("/api/coredump", HTTP_DELETE, apiCoredumpErase);
-  server.on("/api/coredump/raw", HTTP_GET, apiCoredumpRaw);
-  server.on("/api/screen", apiScreen);
+  onR("/api/coredump", HTTP_GET, apiCoredump);
+  onR("/api/coredump", HTTP_DELETE, apiCoredumpErase);
+  onR("/api/coredump/raw", HTTP_GET, apiCoredumpRaw);
+  onR("/api/screen", apiScreen);
   // Skorka: JEDEN handler na obie metody, bo sam rozroznia GET (odczyt) od POST
   // (mutacja) — dokladnie jak /api/view nizej. Rejestracja bez HTTP_* obejmuje obie.
-  server.on("/api/theme", apiTheme);
-  server.on("/api/view", apiView);
-  server.on("/api/tap", HTTP_POST, apiTap);
+  onR("/api/theme", apiTheme);
+  onR("/api/view", apiView);
+  onR("/api/tap", HTTP_POST, apiTap);
   // (v176) Panel OLED. (v178) STAN I OBRAZ SA ROZDZIELONE — patrz apiOled/apiOledImg:
   //   GET  /api/oled     = czysty ODCZYT stanu, kilkaset bajtow JSON-a,
   //   GET  /api/oled/img = surowe 1024 B kopii klatki (application/octet-stream),
@@ -4697,31 +4795,36 @@ void routes() {
   // Podzial na metody jest tu z tego samego powodu, co przy /api/bl nizej: klikniecie
   // MUTUJE stan i konczy sie wyslaniem trybu ladowania auta do Home Assistanta, wiec
   // obca strona nie ma go odpalac przez <img src=".../api/oled/btn?r=ok">.
-  server.on("/api/oled", HTTP_GET, apiOled);
-  server.on("/api/oled/img", HTTP_GET, apiOledImg);
-  server.on("/api/oled/btn", HTTP_POST, apiOledBtn);
-  server.on("/api/tuning", HTTP_POST, apiTuning);
+  onR("/api/oled", HTTP_GET, apiOled);
+  onR("/api/oled/img", HTTP_GET, apiOledImg);
+  onR("/api/oled/btn", HTTP_POST, apiOledBtn);
+  onR("/api/tuning", HTTP_POST, apiTuning);
   // POST, nie GET: MUTUJA podswietlenie, wiec obca strona nie odpali ich przez
   // <img src=".../api/bl?v=255"> (jak przy vi/set). Panel wola je metoda POST.
   // Uwaga: /api/blsweep to tez reczny test wzrokowy — teraz wymaga np. curl -X POST.
-  server.on("/api/bl", HTTP_POST, apiBacklight);
-  server.on("/api/blsweep", HTTP_POST, apiBacklightSweep);
-  server.on("/api/ble", HTTP_GET, apiBleList);
-  server.on("/api/ble", HTTP_POST, apiBleSet);
-  server.on("/api/blegw", HTTP_POST, apiBleGw);
-  server.on("/api/meter", HTTP_GET, apiMeterList);
-  server.on("/api/meter", HTTP_POST, apiMeterAdd);
-  server.on("/api/meter", HTTP_DELETE, apiMeterDel);
-  server.on("/api/radardemo", HTTP_POST, apiRadarDemo);   // MUTUJE tryb radaru -> POST (CSRF)
-  server.on("/api/vi", HTTP_GET, apiViState);
-  server.on("/api/vi/link", HTTP_POST, apiViLink);
-  server.on("/api/vi/forget", HTTP_POST, apiViForget);
+  onR("/api/bl", HTTP_POST, apiBacklight);
+  onR("/api/blsweep", HTTP_POST, apiBacklightSweep);
+  onR("/api/ble", HTTP_GET, apiBleList);
+  onR("/api/ble", HTTP_POST, apiBleSet);
+  onR("/api/blegw", HTTP_POST, apiBleGw);
+  onR("/api/meter", HTTP_GET, apiMeterList);
+  onR("/api/meter", HTTP_POST, apiMeterAdd);
+  onR("/api/meter", HTTP_DELETE, apiMeterDel);
+  onR("/api/radardemo", HTTP_POST, apiRadarDemo);   // MUTUJE tryb radaru -> POST (CSRF)
+  onR("/api/vi", HTTP_GET, apiViState);
+  onR("/api/vi/link", HTTP_POST, apiViLink);
+  onR("/api/vi/forget", HTTP_POST, apiViForget);
   // POST, nie GET: zapytanie GET-em umie wywolac cudza strona otwarta w tej samej
   // sieci (<img src="http://<ip>/api/vi/set?t=70">) i przestawic ogrzewanie.
   // Przegladarka nie wysle POST-a z obcej strony bez zgody urzadzenia.
   // Recznie: curl -X POST "http://<ip>/api/vi/set?t=45"
-  server.on("/api/vi/set", HTTP_POST, apiViSet);
-  server.on("/vicare", apiViCallback);   // tu wraca autoryzacja
+  onR("/api/vi/set", HTTP_POST, apiViSet);
+  // GET, i to JAWNIE: tu wraca zwykle, top-level przekierowanie przegladarki po
+  // autoryzacji Viessmanna — nigdy nie wolane przez JS panelu. Wczesniej rejestracja
+  // bez metody obejmowala takze POST/DELETE/inne; ograniczenie do HTTP_GET nie zmienia
+  // realnego uzycia (przegladarka i tak zawsze wraca tu GET-em), tylko zamyka drzwi,
+  // ktore i tak byly niepotrzebnie otwarte.
+  onR("/vicare", HTTP_GET, apiViCallback);   // tu wraca autoryzacja
   server.onNotFound(sendNotFound);  // captive portal + 404 dla nieznanych /api/
   server.begin();
   started = true;
@@ -4772,12 +4875,12 @@ void setScreenshotHandler(void (*fn)(WiFiClient&)) {
 void beginAp() {
   apMode = true;
   WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(kApSsid, kApPass);
+  WiFi.softAP(kApSsid, apPassBuf());
   delay(300);
   strncpy(apIpStr, WiFi.softAPIP().toString().c_str(), sizeof(apIpStr) - 1);
   dns.start(53, "*", WiFi.softAPIP());
   routes();
-  Serial.printf("Portal AP: %s / %s -> http://%s\n", kApSsid, kApPass, apIpStr);
+  Serial.printf("Portal AP: %s / %s -> http://%s\n", kApSsid, apPassBuf(), apIpStr);
 }
 
 // IDEMPOTENTNE — i to jest teraz CZESCIA KONTRAKTU, a nie szczegolem implementacji.
@@ -4808,7 +4911,7 @@ void loop() {
 
 bool apActive() { return apMode; }
 const char* apSsid() { return kApSsid; }
-const char* apPass() { return kApPass; }
+const char* apPass() { return apPassBuf(); }
 const char* apIp() { return apIpStr; }
 bool wifiJustSaved() { return wifiSaved; }
 void clearWifiSavedFlag() { wifiSaved = false; }
