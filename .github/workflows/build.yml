@@ -102,3 +102,19 @@ jobs:
           name: firmware.bin
           path: build/firmware.bin
           if-no-files-found: error
+
+  # Faza 1: testy jednostkowe URUCHAMIANE NA HOSCIE (zwykly kompilator ubuntu,
+  # NIE arduino-cli, NIE ESP32) dla czystej logiki w naglowkach katalogu
+  # glownego (PvData.h, RoomHistory.h, ...) — patrz test/CMakeLists.txt.
+  # Osobny, niezalezny job obok `build`: nie kompiluje firmware'u i nie
+  # dotyka arduino-cli, wiec nie koliduje z jego krokami ani z barierą RAM-u.
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S test -B test/build
+      - name: Build
+        run: cmake --build test/build
+      - name: Test
+        run: ctest --test-dir test/build --output-on-failure
