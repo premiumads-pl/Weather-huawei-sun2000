@@ -31,6 +31,7 @@
 
 #include "WeatherUi.h"
 #include "ThemeV3.h"
+#include "Freshness.h"        // isFresh() — wzor swiezosci, wspolny z OledPanel.cpp
 #include "Format.h"          // (v175) fmt1(), (v180) fmt2() — wspolne z panelem OLED
 #include "CostData.h"        // (v180) CostModel — koszt zakupu z sieci w module PRAD
 #include "PaybackHist.h"     // (v181) kPaybackHist — historia zwrotu z PV (ekran ZWROT)
@@ -84,19 +85,22 @@ float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : 
 //   (c) wiek >= prog         -> Fresh::STALE    — mamy dane, ale przeterminowane
 // Progi ida WYLACZNIE z cfg::*_STALE_MS (Config.h) — zaden ekran nie ma juz prawa
 // wpisac wlasnej liczby.
-//
-// Wiek liczymy ZE ZNAKIEM na int32: znaczniki to millis() pisany przez netTask,
-// a uint32 przekreca sie po ~49 dniach pracy. Ujemna roznica (chwila po przekrece
-// albo znacznik z przyszlosci przy wyscigu odczytu) ma znaczyc "swieze", a nie
-// "starsze niz wszechswiat" — ten sam idiom, co ago() w Portal.cpp.
 // Stan (a) i (b)/(c) rozdziela sam WOLAJACY — kazdy ekran ma dla "nigdy nie pobrano"
 // wlasny napis ("czekam na dane", "nieodpytywane", "- czekam"), wiec wspolnego
 // freshState() zwracajacego Fresh::UNKNOWN NIE MA: bylby funkcja bez ani jednego
 // uzytkownika, a takie w tym repo nie zostaja (patrz notatki przy skasowanych stalych
 // w Config.h). Tu liczymy wylacznie granice miedzy (b) a (c).
+//
+// (P1-1) ARYTMETYKA PRZENIESIONA DO Freshness.h::isFresh() — ta sama, bez zmiany
+// semantyki (wciaz "ze znakiem na int32, 0 = nigdy" — patrz komentarz tam). Powod:
+// OledPanel.cpp mial DWIE wlasne kopie dokladnie tego wzoru, a MqttClient.cpp mial
+// INNY wzor na "czy juz czas" (harmonogram na absolutnym terminie), ktory okazal sie
+// bledny (blokowal reconnect miedzy 24,85 a 49,7 dniem pracy). Jedno miejsce zamiast
+// trzech kopii zmniejsza szanse, ze taka pomylka wroci gdzie indziej. freshMs()
+// zostaje jako cienki wrapper, zeby wxFresh() i reszta wywolan nizej nie musialy
+// sie zmieniac.
 bool freshMs(uint32_t okAt, uint32_t staleMs) {
-  if (okAt == 0) return false;
-  return static_cast<int32_t>(millis() - okAt) < static_cast<int32_t>(staleMs);
+  return isFresh(millis(), okAt, staleMs);
 }
 
 // Pogoda "swieza": pobrana i nie starsza niz cfg::WEATHER_STALE_MS (40 min = 2,5 kadencji

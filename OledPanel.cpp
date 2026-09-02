@@ -42,6 +42,7 @@
 
 #include "Config.h"
 #include "Format.h"      // fmt1() — polski przecinek dziesietny, wspolny z ekranem TFT
+#include "Freshness.h"   // isFresh() — wzor swiezosci, wspolny z WeatherUiV3.cpp
 #include "GraphBlob.h"   // (v194) blob wykresu mocy w NVS ("graf1")
 #include "Log.h"
 #include "MqttClient.h"  // requestAutoMode() / autoModeReqState()
@@ -1397,7 +1398,18 @@ void graphTick(const AutoModel& a, uint32_t now, bool fresh) {
     if (epoch >= 1700000000UL) {
       gRestorePending = false;
       const bool sane = (gRestoreEpoch >= 1700000000UL) && (epoch >= gRestoreEpoch);
-      const uint32_t gapMs = sane ? (epoch - gRestoreEpoch) * 1000UL : 0xFFFFFFFFUL;
+      // (P1-1) PRZYCIECIE PRZED *1000: gapS to sekundy (epoch), a gapMs ma byc w
+      // milisekundach na uint32_t. Przy przerwie > 49,7 dnia (0xFFFFFFFF / 1000
+      // sekund) samo mnozenie przepelnia i moglo dac MALA liczbe przez przypadek —
+      // czyli "sesja trwa dalej" po miesiacach wylaczenia. Przycinamy do
+      // kMaxGapS PRZED mnozeniem: kazdy gapS powyzej tego progu i tak jest kilkaset
+      // razy wiekszy niz kGraphGapMs (10 min), wiec zaokraglenie w gore do
+      // 0xFFFFFFFF nie zmienia wyniku ponizszego porownania.
+      constexpr uint32_t kMaxGapS = 0xFFFFFFFFUL / 1000UL;
+      const uint32_t gapS = sane ? (epoch - gRestoreEpoch) : 0;
+      const uint32_t gapMs = !sane ? 0xFFFFFFFFUL
+                             : (gapS > kMaxGapS) ? 0xFFFFFFFFUL
+                                                  : gapS * 1000UL;
       if (gRestoreCharging && gapMs < kGraphGapMs) {
         gCharging = true;
         gGraphHighMs = now - gapMs;
@@ -1416,8 +1428,9 @@ void graphTick(const AutoModel& a, uint32_t now, bool fresh) {
   const bool high = (a.kw >= kGraphOnKw);
   // Roznice czasu ZAWSZE przez int32_t — millis() przekreca sie po ~49 dniach,
   // a ten panel ma chodzic miesiacami bez restartu (ta sama zasada, co przy atMs).
-  const bool idleLong = (gGraphHighMs == 0) ||
-                        (static_cast<int32_t>(now - gGraphHighMs) >= static_cast<int32_t>(kGraphGapMs));
+  // (P1-1) Liczone przez isFresh() z Freshness.h (ten sam wzor co w step() wyzej i
+  // w WeatherUiV3.cpp) — "przerwa dluga" to po prostu NIE "swiezo", wiec negacja.
+  const bool idleLong = !isFresh(now, gGraphHighMs, kGraphGapMs);
 
   if (high) {
     if (!gCharging && idleLong) {   // POCZATEK NOWEJ SESJI — czyscimy bufor
@@ -1432,8 +1445,10 @@ void graphTick(const AutoModel& a, uint32_t now, bool fresh) {
   }
 
   if (!gCharging) return;
-  if (gGraphCnt != 0 &&
-      static_cast<int32_t>(now - gGraphSampMs) < static_cast<int32_t>(kGraphStepMs)) {
+  // (P1-1) isFresh() z Freshness.h — patrz komentarz przy idleLong wyzej. gGraphSampMs
+  // realnie nie jest nigdy 0, gdy gGraphCnt != 0 (ustawiane razem, patrz nizej), wiec
+  // szczegolny przypadek "0 = nigdy" w isFresh() jest tu wylacznie bezpiecznikiem.
+  if (gGraphCnt != 0 && isFresh(now, gGraphSampMs, kGraphStepMs)) {
     return;
   }
 
@@ -2227,10 +2242,9 @@ void step(const AutoModel& a, uint32_t now) {
   // Ta sama regula swiezosci, co dla ekranu AUTO na TFT (cfg::AUTO_STALE_MS): dane
   // sa PCHANE co ~15 s, wiec 45 s ciszy znaczy, ze automatyka nie dostarcza.
   // Roznica na int32, bo millis() przekreca sie po ~49 dniach, a atMs pisze INNY
-  // rdzen niz ten, ktory tu liczy.
-  const bool fresh = (a.atMs != 0) &&
-                     (static_cast<int32_t>(now - a.atMs) <
-                      static_cast<int32_t>(cfg::AUTO_STALE_MS));
+  // rdzen niz ten, ktory tu liczy. (P1-1) Liczone teraz przez isFresh() z
+  // Freshness.h, zeby ten sam wzor nie zyl w trzech kopiach — patrz komentarz tam.
+  const bool fresh = isFresh(now, a.atMs, cfg::AUTO_STALE_MS);
 
   // Tryb potwierdzony przez automatyke — liczony RAZ na obieg i zapamietany dla
   // activeMode(), zeby strona WWW czytala dokladnie to samo, z czego bierze sie

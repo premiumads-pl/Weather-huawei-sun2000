@@ -142,7 +142,15 @@ CostModel gCostRx{};
 char gModeReq[8] = {};
 volatile uint8_t gModeReqState = 0;   // 0 nic / 1 czeka / 2 wyslane / 3 blad
 
-uint32_t gNextTryAt = 0;
+// (P1-1) gLastTryAt trzyma CZAS OSTATNIEJ PROBY (nie "kolejny dozwolony termin" jak
+// dawne gNextTryAt) — patrz pelne uzasadnienie przy uzyciu w loop() nizej. Start
+// USTAWIONY W TYL o kBackoffMaxMs, NIE 0: przy starcie millis() tez jest male, wiec
+// "0 jako pierwsza probka" dawaloby PIERWSZEMU polaczeniu sztuczna zwloke do
+// kBackoffMinMs od startu programu, ktorej stary kod (harmonogram na "kolejnym
+// terminie") nie mial. Odejmowanie bez znaku samo sobie radzi z tym "ujemnym"
+// startem — ten sam mechanizm, ktory chroni przed przekreceniem millis() po
+// 49,7 dnia, dziala tu w odwrotna strone i gwarantuje natychmiastowa pierwsza probe.
+uint32_t gLastTryAt = 0u - kBackoffMaxMs;
 uint32_t gBackoffMs = kBackoffMinMs;
 uint32_t gNextDevAt = 0;
 volatile bool gReconfig = false;
@@ -359,7 +367,13 @@ int sendBleDiscovery(int& total) {
 
     for (const Def& d : defs) {
       ++total;
-      char key[16], field[8], name[40];
+      // (OLED-1) name[48], nie [40]: room (do 23 B, Settings::BleCfg::name) + " — "
+      // (5 B, myslnik jest 3-bajtowy UTF-8) + najdluzsza etykieta "wilgotność" (12 B:
+      // 8 znakow ASCII + s/c z ogonkiem po 2 B) + NUL = 41 B. Przy [40] snprintf
+      // ucinal ostatni bajt dwubajtowego "ć" na skrajnie dlugiej nazwie pokoju —
+      // powstawaly niepoprawny UTF-8, HA po cichu odrzucal discovery i encja
+      // wilgotnosci dla tego czujnika nie powstawala, bez zadnego bledu w logu.
+      char key[16], field[8], name[48];
       snprintf(key, sizeof(key), "ble%d_%s", i, d.suffix);
       snprintf(field, sizeof(field), "s%d%s", i, d.suffix);
       snprintf(name, sizeof(name), "%s — %s", room, d.label);
@@ -783,8 +797,9 @@ void makeIds() {
   snprintf(gAvail, sizeof(gAvail), "%s/status", settings().mqttPrefix);
 }
 
+// (P1-1) TYLKO podwaja odstep — NIE dotyka gLastTryAt. Zapis czasu proby nalezy do
+// wolajacego (loop() nizej), bo to on wie, KIEDY faktycznie zaczela sie proba.
 void backoff() {
-  gNextTryAt = millis() + gBackoffMs;
   gBackoffMs = (gBackoffMs >= kBackoffMaxMs / 2) ? kBackoffMaxMs : gBackoffMs * 2;
 }
 
@@ -832,7 +847,13 @@ bool tryConnect() {
   // czekania jeszcze sekundy discovery.
   subscribeTopics();
   sendDiscovery();
-  gNextDevAt = 0;  // od razu wyslij telemetrie urzadzenia
+  // (P1-1) millis(), NIE 0: przy uptime > 24,85 dnia static_cast<int32_t>(millis() - 0)
+  // jest UJEMNY, wiec sprawdzenie w loop() (`millis() - gNextDevAt >= 0`) wypadaloby
+  // falszywie i publishDevice() nie ruszyloby az do 49,7 dnia (dokladnie ten sam bug,
+  // co przy backoffie — 0 jako sentynel "od razu" myli sie z prawdziwym stemplem 0).
+  // millis() ustawia "termin" na TERAZ, wiec sprawdzenie wypada prawdziwe od razu,
+  // niezaleznie od aktualnego uptime.
+  gNextDevAt = millis();  // od razu wyslij telemetrie urzadzenia
   return true;
 }
 
@@ -996,7 +1017,10 @@ void loop() {
     gReconfig = false;
     teardown(true);
     gBackoffMs = kBackoffMinMs;
-    gNextTryAt = 0;
+    // (P1-1) 0 jest tu bezpieczne (w odroznieniu od gNextDevAt wyzej), bo ponizsze
+    // sprawdzenie liczy UPLYW czasu (odejmowanie bez znaku), nie porownuje adresu w
+    // przyszlosci: millis() - 0 to po prostu millis(), niemal zawsze >= gBackoffMs.
+    gLastTryAt = 0;
     diag().mqttOkAt = 0;
   }
 
@@ -1012,9 +1036,20 @@ void loop() {
     return;
   }
 
-  if (static_cast<int32_t>(millis() - gNextTryAt) < 0) {
+  // (P1-1) Uplyw czasu OD OSTATNIEJ PROBY, odejmowanie BEZ ZNAKU — nie "czy minelismy
+  // absolutny termin w przyszlosci" jak dawniej. Stary wzor (gNextTryAt = millis() +
+  // backoff, sprawdzane przez static_cast<int32_t>(millis() - gNextTryAt) < 0) mial
+  // ukryty sentynel: gNextTryAt == 0 mialo znaczyc "wolno od razu", ale po ~24,85 dnia
+  // uptime static_cast<int32_t>(millis()) samo z siebie jest UJEMNE, wiec ten sam
+  // warunek dawal "jeszcze nie czas" az do przekrecenia millis() przy 49,7 dnia —
+  // reconnect byl zablokowany na ~25 dni. Odejmowanie bez znaku nie ma tego problemu:
+  // (millis() - gLastTryAt) zawija sie poprawnie niezaleznie od aktualnego uptime,
+  // dopoki sam odstep miedzy probami miesci sie w 32 bitach (miesci sie z ogromnym
+  // zapasem — max backoff to 5 minut).
+  if (millis() - gLastTryAt < gBackoffMs) {
     return;  // backoff — broker moze sobie lezec, urzadzenie dziala dalej
   }
+  gLastTryAt = millis();
   tryConnect();
 }
 
