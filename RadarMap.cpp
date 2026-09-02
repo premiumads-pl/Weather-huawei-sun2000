@@ -143,10 +143,17 @@ int pngLine(PNGDRAW* d) {
   static uint16_t rgb[kTilePx];
   static uint8_t alpha[kTilePx];
 
-  // Szerokosc byla pilnowana (x < kTilePx), wysokosc nie — a gTile ma 256 wierszy.
-  // Adres prosi o /256/, wiec dzis przychodzi 256x256; to jest jednak zaufanie do
-  // zdalnego serwera, nie kontrakt lokalny. Wyzszy kafelek pisalby poza bufor
-  // w PSRAM, czyli cicha korupcja sterty. (RadarClient sprawdza draw->y od dawna.)
+  // Szerokosc byla pilnowana (x < kTilePx) TYLKO w petli odczytu ponizej — wysokosc
+  // wcale, a gTile ma 256 wierszy. Adres prosi o /256/, wiec dzis przychodzi
+  // 256x256; to jest jednak zaufanie do zdalnego serwera, nie kontrakt lokalny.
+  // Wyzszy kafelek pisalby poza bufor w PSRAM, czyli cicha korupcja sterty.
+  // (RadarClient sprawdza draw->y od dawna.) (P1-2) Od teraz openRAM()+decode()
+  // odrzuca kafelek o zlym rozmiarze WCZESNIEJ (patrz wywolanie pngLine() we
+  // fetch() nizej w pliku) — ponizsze to DRUGA linia obrony: getLineAsRGB565()/
+  // getAlphaMask() pisza `d->iWidth` pikseli do rgb[]/alpha[], KTORE MAJA ROZMIAR
+  // STALY [kTilePx], wiec szerszy kafelek przepelnilby je juz w PIERWSZYM wierszu —
+  // zanim zewnetrzny check zdazylby cokolwiek odrzucic.
+  if (d->iWidth > kTilePx) return 0;
   if (d->y < 0 || d->y >= kTilePx) return 1;
 
   // MUSI byc LITTLE_ENDIAN — patrz obszerny komentarz w RadarClient.cpp. Skrotowo:
@@ -577,7 +584,17 @@ bool fetch() {
         memset(gTile, 0, kTilePx * kTilePx);
         bool decoded = false;
         if (gPng->openRAM(png, len, pngLine) == PNG_SUCCESS) {
-          decoded = gPng->decode(nullptr, 0) == PNG_SUCCESS;
+          // (P1-2) getWidth()/getHeight() nie byly pytane ani razu — gTile i bufory
+          // wierszowe w pngLine() maja rozmiar STALY [kTilePx], a serwer kafelkow nie
+          // jest kontraktem lokalnym (patrz komentarz przy pngLine nizej). Kafelek
+          // innego rozmiaru odrzucamy PRZED decode().
+          if (gPng->getWidth() == kTilePx && gPng->getHeight() == kTilePx) {
+            decoded = gPng->decode(nullptr, 0) == PNG_SUCCESS;
+          } else {
+            LOG("Radar mapa: kafel x=%d y=%d ma rozmiar %dx%d zamiast %dx%d\n", tx, ty,
+                gPng->getWidth(), gPng->getHeight(), kTilePx, kTilePx);
+            ++diag().radarBadTile;
+          }
           gPng->close();
         }
         gPng->~PNG();

@@ -187,6 +187,11 @@ struct Diag {
   int radarFrame = -1;        // ktora klatka animacji radaru jest rysowana
   int radarFrameMin = 0;      // jej przesuniecie czasowe (min)
   uint32_t radarSkips = 0;   // ile razy radar odpuścił z braku pamięci
+  // (P1-2) Serwer kafelków nigdy nie był pytany o getWidth()/getHeight() przed
+  // dekodowaniem — bufory na piksele mają rozmiar STAŁY [kTile]/[kTilePx], więc
+  // kafelek szerszy niż oczekiwano nadpisałby je przy pierwszym wierszu. Licznik,
+  // nie tylko LOG(): to zdarzenie ma być widoczne w /api/diag bez grzebania w logu.
+  uint16_t radarBadTile = 0; // ile razy odrzucono kafelek o innym rozmiarze niż 256x256
 
   // --- OTA: okres próbny i rollback (patrz OtaGuard.h) ---
   uint8_t otaTrial = 0;      // 0 = stabilna, 1 = próbna, 2 = potwierdzona

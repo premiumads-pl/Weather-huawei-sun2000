@@ -56,6 +56,15 @@ uint8_t levelFromRgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
 }
 
 int pngDraw(PNGDRAW* draw) {
+  // (P1-2) DRUGA LINIA OBRONY, obok sprawdzenia getWidth()/getHeight() w fetch()
+  // nizej: line[]/alpha[] maja STALY rozmiar [kTile], a getLineAsRGB565()/
+  // getAlphaMask() pisza do nich `draw->iWidth` pikseli — SZERSZY kafelek
+  // przepelnilby je juz przy PIERWSZYM wierszu, zanim zewnetrzny check w fetch()
+  // zdazylby cokolwiek odrzucic (openRAM() nie zna jeszcze wymiarow, decode()
+  // poznaje je i wola ten callback w jednym tchu). Zwrot 0 przerywa dekodowanie.
+  if (draw->iWidth > kTile) {
+    return 0;
+  }
   if (draw->y < gWantY - kRadiusPx || draw->y > gWantY + kRadiusPx) {
     return 1;
   }
@@ -349,11 +358,35 @@ bool RadarClient::fetch(RadarSnapshot& out) {
     strncpy(out.errorMsg, "Radar: zły PNG", sizeof(out.errorMsg) - 1);
     return false;
   }
-  png->decode(nullptr, 0);
+  // (P1-2) getWidth()/getHeight() nie byly pytane ani razu — line[]/alpha[] w
+  // pngDraw() maja rozmiar STALY [kTile] (256), a serwer kafelkow nie jest
+  // kontraktem lokalnym, tylko zaufaniem do zdalnej uslugi (patrz identyczna uwaga
+  // przy RadarMap.cpp). Kafelek innego rozmiaru odrzucamy PRZED decode(), zanim
+  // callback w ogole dostanie pierwszy wiersz.
+  if (png->getWidth() != kTile || png->getHeight() != kTile) {
+    LOG("Radar: kafelek %dx%d zamiast %dx%d — odrzucony\n", png->getWidth(),
+        png->getHeight(), kTile, kTile);
+    ++diag().radarBadTile;
+    releasePng();
+    free(gPng);
+    gPng = nullptr;
+    strncpy(out.errorMsg, "Radar: zły rozmiar kafelka", sizeof(out.errorMsg) - 1);
+    return false;
+  }
+  // (P1-2) Wynik decode() byl dotad ignorowany: nieudane dekodowanie (np. urwany
+  // strumien, uszkodzony kafelek) zostawia gBestLevel na tym, co zdazyly policzyc
+  // CZESCIOWO wykonane wywolania pngDraw() — i tak niepelny wynik szedl dalej jako
+  // out.valid=true, czyli mowil "poziom 0/bez opadu" zamiast uczciwego bledu.
+  const int rc = png->decode(nullptr, 0);
   png->close();
   releasePng();
   free(gPng);
   gPng = nullptr;
+  if (rc != PNG_SUCCESS) {
+    LOG("Radar: decode() padł (%d)\n", rc);
+    strncpy(out.errorMsg, "Radar: dekodowanie padło", sizeof(out.errorMsg) - 1);
+    return false;
+  }
 
   out.level = gBestLevel;
   const time_t now = time(nullptr);
