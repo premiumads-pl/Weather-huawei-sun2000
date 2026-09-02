@@ -4250,7 +4250,8 @@ void apiOledImg() {
 // (<img src="http://<ip>/api/oled/btn?r=ok">) i przegladarka wysle je sama, bez pytania
 // o zgode. Na koncu takiego klikniecia stoi WYBOR TRYBU LADOWANIA AUTA wyslany do Home
 // Assistanta, wiec to jest ostatnia rzecz, ktora ma prawo odpalic sie przypadkiem.
-// Recznie: curl -X POST "http://<ip>/api/oled/btn?r=down"
+// Recznie: curl -X POST -H "X-Requested-With: panel" "http://<ip>/api/oled/btn?r=down"
+// (naglowek od P1-3/csrfGuard() — bez niego straznik CSRF odrzuci zapytanie 403-ka)
 void apiOledBtn() {
   // ROLE, NIE NUMERY KLAWISZY. Mapowanie "rola -> pin" siedzi w JEDNYM miejscu
   // (cfg::BTN_* w Config.h) i wciaz moze sie zmienic po tescie przyciskow na sprzecie.
@@ -4801,7 +4802,8 @@ void routes() {
   onR("/api/tuning", HTTP_POST, apiTuning);
   // POST, nie GET: MUTUJA podswietlenie, wiec obca strona nie odpali ich przez
   // <img src=".../api/bl?v=255"> (jak przy vi/set). Panel wola je metoda POST.
-  // Uwaga: /api/blsweep to tez reczny test wzrokowy — teraz wymaga np. curl -X POST.
+  // Uwaga: /api/blsweep to tez reczny test wzrokowy — teraz wymaga np.
+  // curl -X POST -H "X-Requested-With: panel" (bez naglowka straznik CSRF odrzuci 403-ka).
   onR("/api/bl", HTTP_POST, apiBacklight);
   onR("/api/blsweep", HTTP_POST, apiBacklightSweep);
   onR("/api/ble", HTTP_GET, apiBleList);
@@ -4816,8 +4818,9 @@ void routes() {
   onR("/api/vi/forget", HTTP_POST, apiViForget);
   // POST, nie GET: zapytanie GET-em umie wywolac cudza strona otwarta w tej samej
   // sieci (<img src="http://<ip>/api/vi/set?t=70">) i przestawic ogrzewanie.
-  // Przegladarka nie wysle POST-a z obcej strony bez zgody urzadzenia.
-  // Recznie: curl -X POST "http://<ip>/api/vi/set?t=45"
+  // Przegladarka wysle taki POST bez pytania (stad dodatkowy straznik CSRF, patrz
+  // csrfGuard() nizej) — sam POST bronil tylko przed wektorem <img>/GET powyzej.
+  // Recznie: curl -X POST -H "X-Requested-With: panel" "http://<ip>/api/vi/set?t=45"
   onR("/api/vi/set", HTTP_POST, apiViSet);
   // GET, i to JAWNIE: tu wraca zwykle, top-level przekierowanie przegladarki po
   // autoryzacji Viessmanna — nigdy nie wolane przez JS panelu. Wczesniej rejestracja
