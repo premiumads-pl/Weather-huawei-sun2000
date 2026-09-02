@@ -2085,7 +2085,7 @@ async function load(){
 }
 async function scan(){
  $('nets').innerHTML='<li>Skanuję…</li>';
- const r=await(await fetch('/api/scan')).json();
+ const r=await(await post('/api/scan')).json();
  // XSS: SSID (n.s) to do 32 DOWOLNYCH bajtow z eteru. NIGDY nie trafia w pozycje kodu.
  // Wzorem geo()/setLoc(): w HTML idzie tylko przez esc() jako TEKST, a klik przekazuje
  // numeryczny indeks; pick() czyta oryginalny SSID z tablicy (window._N), wiec do
@@ -2105,8 +2105,8 @@ async function saveWifi(){
 }
 async function geo(){
  $('locs').innerHTML='<li>Szukam…</li>';
- const r=await(await fetch('/api/geo?q='+encodeURIComponent($('q').value))).json();
- if(r.err){$('locs').innerHTML='<li class=err>'+r.err+'</li>';return}
+ const r=await(await post('/api/geo?q='+encodeURIComponent($('q').value))).json();
+ if(r.err){$('locs').innerHTML='<li class=err>'+esc(r.err)+'</li>';return}
  $('locs').innerHTML=r.map((l,i)=>`<li onclick="setLoc(${i})">
    <span>${esc(l.n)}<br><span class=sig>${esc(l.a)}</span></span>
    <span class=b>${l.lat.toFixed(2)}, ${l.lon.toFixed(2)}</span></li>`).join('')
@@ -4772,9 +4772,15 @@ void routes() {
   server.collectHeaders(kCsrfHeaders, sizeof(kCsrfHeaders) / sizeof(kCsrfHeaders[0]));
   onR("/", sendPage);
   onR("/api/state", apiState);
-  onR("/api/scan", apiScan);
+  // POST, nie GET (poprawka po przeglądzie): apiScan() trzyma scanLock() i woła
+  // blokujące WiFi.scanNetworks(false, true) na do 8 s — zwykły GET (np.
+  // <img src=".../api/scan">) potrafiłby zająć radio urządzenia z obcej strony w tej
+  // samej sieci. apiGeo() dostaje ten sam traktament: to zapytanie do zewnętrznego
+  // API (Open-Meteo), więc GET pozwoliłby obcej stronie generować ruch i koszt po
+  // stronie tamtej usługi bez wiedzy właściciela.
+  onR("/api/scan", HTTP_POST, apiScan);
   onR("/api/wifi", HTTP_POST, apiWifi);
-  onR("/api/geo", apiGeo);
+  onR("/api/geo", HTTP_POST, apiGeo);
   onR("/api/loc", HTTP_POST, apiLoc);
   onR("/api/inv", HTTP_POST, apiInv);
   onR("/api/mqtt", HTTP_POST, apiMqtt);
