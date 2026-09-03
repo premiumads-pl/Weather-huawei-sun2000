@@ -939,6 +939,7 @@ static bool connectWifi() {
 // ------------------------------------------------------------ zadanie sieci --
 
 static void netTask(void*) {
+  uint32_t nextClockAt = 0;   // (Blok I, runda 3) ponawianie NTP — patrz uzycie nizej
   uint32_t nextWeatherAt = 0;
   uint32_t nextPvAt = 0;
   uint32_t nextFlightAt = 0;
@@ -1148,6 +1149,44 @@ static void netTask(void*) {
       // wcześniej nie przeżyła okresu próbnego.
       ota.checkAndUpdate(otaAsked);  // przy sukcesie restartuje urządzenie
       nextOtaAt = millis() + cfg::OTA_CHECK_MS;
+    }
+
+    // ---- zegar (NTP): ponawiaj do skutku, nie raz przy laczeniu ----
+    // (Blok I, runda 3) Przyczyna ustalona na zywo, nie domniemana: connectWifi()
+    // probuje NTP TYLKO RAZ, przez 10 s, w trakcie laczenia z WiFi — i to okno
+    // CELOWO zostaje NIETKNIETE (normalny restart ma zegar natychmiast, ekran nie
+    // mruga --:--, patrz connectWifi() wyzej w pliku). Ale gdy router/internet
+    // jeszcze nie wstal (zanik pradu: ESP32 wstaje w sekundy, router potrzebuje
+    // 1-2 min), okno mija BEZ ZADNEGO ponowienia — configTime() nie jest wolane
+    // NIGDY WIECEJ. Zweryfikowane na urzadzeniu: uptime 92 min bez zegara przy w
+    // pelni dzialajacym internecie (pogoda pobrana 797 s wczesniej, radar 191 s,
+    // falownik 15 s — kazde z nich ma WLASNY harmonogram w tym pliku i wraca samo),
+    // NTP z sieci odpowiada w 28 ms (nic go nie blokuje), restart naprawia
+    // natychmiast. Zegar byl jedynym zrodlem bez ZADNEGO harmonogramu ponawiania.
+    //
+    // UMYSLNIE PO BLOKU OTA, NIE PRZED: OTA stoi jako pierwszy blok sieciowy w
+    // obiegu (patrz obszerny komentarz nad nim — urzadzenie jest TYLKO-OTA, wiec
+    // sprawdzenie aktualizacji jest jedyna droga naprawy CZEGOKOLWIEK) i ten blok
+    // nie ma tej gwarancji naruszac choc o jedna linijke, nawet jesli sam jest
+    // nieblokujacy. Koszt przesuniecia: przy dokladnie tym samym obiegu, w ktorym
+    // zegar wraca po awarii, OTA zobaczy to o jeden obieg netTask pozniej (rzedu
+    // milisekund-sekund) — bez znaczenia przy harmonogramie co cfg::OTA_CHECK_MS.
+    //
+    // Gdy zegar juz jest wazny (diag().clockOkAt != 0), ten blok juz nic nie robi —
+    // raz zdobyty czas nie znika sam z siebie, wiec nie ma czego ponawiac (patrz
+    // cfg::EPOCH_VALID_MIN, Config.h). Dopoki nie jest wazny, ponawiamy co 60 s —
+    // NIEBLOKUJACO: sam configTime() nie czeka na odpowiedz, tylko konfiguruje
+    // SNTP; ewentualna odpowiedz nadchodzi asynchronicznie, miedzy obiegami
+    // netTask, dokladnie jak przy pierwszej probie w connectWifi().
+    if (diag().clockOkAt == 0) {
+      if (time(nullptr) >= cfg::EPOCH_VALID_MIN) {
+        diag().clockOkAt = millis();
+        LOG("Zegar: NTP OK\n");
+      } else if (static_cast<int32_t>(now - nextClockAt) >= 0) {
+        configTime(0, 0, "pool.ntp.org", "time.google.com");
+        LOG("Zegar: NTP nie odpowiedzial jeszcze — ponawiam\n");
+        nextClockAt = millis() + 60000;
+      }
     }
 
     // ---- MQTT: utrzymanie sesji + telemetria urzadzenia ----

@@ -8,6 +8,15 @@
 
 namespace cfg {
 
+// (Blok K, runda 3) Prog "zegar systemowy jest wazny" — bez NTP time(nullptr)
+// oddaje epoch bliski zeru (1 stycznia 1970), a 1700000000 (14.11.2023) jest
+// dawno w przeszlosci, wiec kazdy PRAWDZIWY odczyt NTP wypada nad tym progiem.
+// TA SAMA liczba wystepuje dzis ~59 razy jako literal w kodzie (raport z 1.09,
+// P3) — stala tu wprowadzona przy okazji Blokow I/J (runda 3, zegar po zaniku
+// pradu), UZYTA tylko w miejscach, ktore te bloki dotykaja. Reszta 59 wystapien
+// CELOWO nietknieta: masowa zamiana to osobna zmiana o innym profilu ryzyka.
+constexpr uint32_t EPOCH_VALID_MIN = 1700000000;
+
 // ---------- Aktualizacje OTA (publiczne repo, bez tokenu) ----------
 constexpr const char* OTA_VERSION_URL =
     "https://github.com/premiumads-pl/Weather-huawei-sun2000/releases/latest/download/"

@@ -93,6 +93,12 @@ inline const char* netStageName(uint8_t s) {
 
 // --- migawka stanu dla GET /api/diag ---
 struct Diag {
+  // (Blok I, runda 3) Chwila PIERWSZEGO zaobserwowanego "zegar juz wazny" (>=
+  // cfg::EPOCH_VALID_MIN) w tej sesji — millis(), ten sam idiom co reszta *OkAt.
+  // 0 = zegar nigdy nie byl wazny od startu. Dotad nie bylo ZADNEGO pola, po
+  // ktorym dalo by sie to zdiagnozowac zdalnie (patrz komentarz przy petli
+  // ponawiania NTP w netTask()).
+  uint32_t clockOkAt = 0;
   uint32_t weatherOkAt = 0;
   uint32_t pvOkAt = 0;
   uint32_t radarOkAt = 0;
@@ -149,6 +155,13 @@ struct Diag {
   // czytalby STARE otaRemote jako swiezy wynik. Panel porownuje oba stemple: swiezy
   // otaCheckedAt bez ruchu na otaOkAt = proba byla i sie nie udala.
   uint32_t otaCheckedAt = 0;
+  // (Blok J, runda 3) true, gdy OSTATNIA próba OTA w ogóle nie ruszyła, bo zegar
+  // nie był ważny (setCACert(), P1-5/Blok H, sprawdza notBefore/notAfter certyfikatu
+  // względem zegara systemowego — bez zegara każdy certyfikat jest "jeszcze
+  // nieważny"). CELOWO nie rusza otaCheckedAt: dzięki temu checked_ago_s/ok_ago_s
+  // nadal odróżniają "sprawdzone i nic nie ma" od "nie sprawdzone wcale", a to
+  // pole dokłada TRZECI, jednoznaczny stan zamiast zgadywania z ich różnicy.
+  bool otaNoClock = false;
   uint32_t wifiConnects = 0;
   uint32_t minHeap = 0xFFFFFFFF;
   uint32_t stackNet = 0;   // zapas stosu netTask (B)
