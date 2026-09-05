@@ -19,6 +19,7 @@
 #include "AutoData.h"
 #include "CostData.h"
 #include "PvData.h"
+#include "Viessmann.h"
 #include "WeatherData.h"
 
 namespace mqttha {
@@ -92,6 +93,14 @@ void publishPv(const PvModel& pv, bool ok);
 // Tylko po udanym pobraniu prognozy.
 void publishBle();
 void publishWeather(const WeatherModel& w);
+
+// (v197) Piec Viessmann. Wolac WYLACZNIE po udanym odczycie ViCare — inaczej niz
+// przy publishPv(), gdzie nieudany odczyt niesie tresc ("moce 0 W, status Offline"),
+// tutaj kazde pole jest albo pomiarem, albo cisza: nieudany odczyt nie ma czego
+// powiedziec, a zera podlozylyby falszywy reset pod liczniki `total_increasing`.
+// Pola bez pokrycia we flagach has* ZNIKAJA z ladunku zamiast isc jako zero —
+// pelne uzasadnienie przy publishBoiler() w MqttClient.cpp.
+void publishBoiler(const vi::Model& m);
 
 // Panel WWW / konsola zmienily konfiguracje — zerwij polaczenie i zestaw od nowa
 // (discovery poleci ponownie, bo prefix albo broker mogly sie zmienic).

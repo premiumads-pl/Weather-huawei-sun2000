@@ -626,17 +626,17 @@ bool fetch(Model& out) {
     } else if (strcmp(name, "heating.circuits.0.operating.programs.normal") == 0) {
       if (propF(f, "temperature", v)) { m.circuitTargetC = v; m.hasCircuitTarget = true; }
     } else if (strcmp(name, "heating.gas.consumption.summary.dhw") == 0) {
-      if (propF(f, "currentDay", v)) { m.gasDhwM3 = v; m.hasGas = true; }
+      if (propF(f, "currentDay", v)) { m.gasDhwM3 = v; m.hasGas = true; m.hasGasDhw = true; }
     } else if (strcmp(name, "heating.gas.consumption.summary.heating") == 0) {
-      if (propF(f, "currentDay", v)) { m.gasHeatM3 = v; m.hasGas = true; }
+      if (propF(f, "currentDay", v)) { m.gasHeatM3 = v; m.hasGas = true; m.hasGasHeat = true; }
     } else if (strcmp(name, "heating.heat.production.summary.dhw") == 0) {
       if (propF(f, "currentDay", v)) { m.heatDhwKwh = v; m.hasHeat = true; }
     } else if (strcmp(name, "heating.heat.production.summary.heating") == 0) {
       if (propF(f, "currentDay", v)) { m.heatHeatKwh = v; m.hasHeat = true; }
     } else if (strcmp(name, "heating.power.consumption.summary.dhw") == 0) {
-      if (propF(f, "currentDay", v)) m.powerKwh += v;
+      if (propF(f, "currentDay", v)) { m.powerDhwKwh = v; m.powerKwh += v; m.hasPowerDhw = true; }
     } else if (strcmp(name, "heating.power.consumption.summary.heating") == 0) {
-      if (propF(f, "currentDay", v)) m.powerKwh += v;
+      if (propF(f, "currentDay", v)) { m.powerHeatKwh = v; m.powerKwh += v; m.hasPowerHeat = true; }
     } else if (strcmp(name, "tcu.wifi") == 0) {
       if (propF(f, "strength", v)) { m.wifiRssi = static_cast<int>(v); m.hasWifiRssi = true; }
     } else {

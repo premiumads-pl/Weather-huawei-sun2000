@@ -271,6 +271,38 @@ const Ent kEnts[] = {
     {"wx_desc", "Pogoda", "wx", "desc", nullptr, nullptr, nullptr,
      "mdi:weather-partly-cloudy", false},
 
+    // --- piec Viessmann (chmura ViCare, publikowane co 3 min) ---
+    // Nazwy zaczynaja sie od "Piec", zeby encje sortowaly sie razem w HA.
+    {"pc_supply", "Piec zasilanie CO", "pc", "sup", "temperature", "°C", "measurement",
+     nullptr, false},
+    {"pc_mod", "Piec modulacja palnika", "pc", "mod", nullptr, "%", "measurement",
+     "mdi:fire", false},
+    // Godziny i starty to liczniki ZYCIOWE palnika, nie dobowe â i jedyne dane
+    // o piecu ODPORNE NA ALIASING kadencji 3 minut: roznica miedzy dwoma odpytami
+    // mowi, ile palnik chodzil, nawet jesli ANI RAZU nie zlapalismy go w akcji
+    // (pelny wywod przy Model w Viessmann.h).
+    {"pc_burner_h", "Piec godziny palnika", "pc", "bh", "duration", "h",
+     "total_increasing", nullptr, false},
+    {"pc_burner_s", "Piec starty palnika", "pc", "bs", nullptr, nullptr,
+     "total_increasing", "mdi:restart", false},
+    // Gaz i prad to liczniki DOBOWE (ViCare `currentDay`) â zeruja sie o polnocy.
+    // `total_increasing` jest tu wlasciwa klasa WLASNIE dlatego: HA traktuje zejscie
+    // do zera jako reset licznika i sumuje dalej poprawnie. Klasa `gas` z jednostka
+    // m3 pozwala wpiac gaz do panelu Energia obok pradu i fotowoltaiki.
+    {"pc_gas_heat", "Piec gaz CO", "pc", "gh", "gas", "m³", "total_increasing",
+     nullptr, false},
+    {"pc_gas_dhw", "Piec gaz CWU", "pc", "gd", "gas", "m³", "total_increasing",
+     nullptr, false},
+    // Prad pieca â JEDYNE jego zuzycie, ktore pokrywa fotowoltaika. Gazu nie pokryje.
+    {"pc_el_heat", "Piec prąd CO", "pc", "eh", "energy", "kWh", "total_increasing",
+     nullptr, false},
+    {"pc_el_dhw", "Piec prąd CWU", "pc", "ed", "energy", "kWh", "total_increasing",
+     nullptr, false},
+    {"pc_target", "Piec nastawa obiegu", "pc", "tgt", "temperature", "°C", "measurement",
+     nullptr, false},
+    {"pc_mode", "Piec tryb obiegu", "pc", "mode", nullptr, nullptr, nullptr,
+     "mdi:radiator", false},
+
     // --- samo urzadzenie (kategoria diagnostyczna) ---
     {"dev_temp", "Temperatura ESP32", "dev", "cpu", "temperature", "°C", "measurement",
      nullptr, true},
@@ -1190,6 +1222,123 @@ void publishPv(const PvModel& pv, bool ok) {
   // niz wyslac polowe ladunku, ktorej HA nie sparsuje.
   if (n > 0 && n < cap) {
     pubState("pv", p, n);
+  }
+}
+
+// (v197) Tryb obiegu to JEDYNE pole tekstowe pieca, ktore trafiloby do naszego
+// JSON-a wprost z odpowiedzi Viessmanna. Mapa, a NIE przepisanie napisu: cudzy
+// tekst w naszym ladunku to cudzy cudzyslow w naszym JSON-ie. Mapa zamyka te droge
+// raz na zawsze i przy okazji daje polskie nazwy. Nieznany tryb ma isc jako "Inny",
+// a nie zniknac — surowa wartosc i tak zostaje w /api/diag do diagnozy.
+const char* circuitModeLabel(const char* mode) {
+  if (strcmp(mode, "standby") == 0) return "Czuwanie";
+  if (strcmp(mode, "heating") == 0) return "Grzanie";
+  if (strcmp(mode, "dhw") == 0) return "CWU";
+  if (strcmp(mode, "dhwAndHeating") == 0) return "CWU i grzanie";
+  if (strcmp(mode, "forcedNormal") == 0) return "Wymuszony";
+  if (strcmp(mode, "forcedReduced") == 0) return "Obnizony";
+  return "Inny";
+}
+
+// (v197) PIEC -> HOME ASSISTANT.
+//
+// Do v196 firmware czytal ViCare co 3 minuty i nie publikowal z tego ANI JEDNEGO
+// pola. Home Assistant nie mial o piecu zadnej encji, wiec caly sezon grzewczy
+// przechodzilby bez sladu w statystykach dlugoterminowych — a danych, ktorych sie
+// nie zebralo, nie da sie odzyskac (ta sama lekcja co przy panelu Energia:
+// "historii przed 26.08 nie ma").
+//
+// KAZDE POLE POD WLASNA FLAGA has*. Model oddaje 0 zarowno wtedy, gdy piec przyslal
+// zero, jak i wtedy, gdy cechy w ogole nie bylo w odpowiedzi. Pole bez pokrycia
+// ZNIKA z ladunku — dokladnie tak, jak `gin`/`gout` w publishPv(): MQTT sensor pusty
+// ladunek IGNORUJE i zostawia encje na poprzednim stanie.
+//
+// DLA CZTERECH LICZNIKOW TO JEST KRYTYCZNE, nie kosmetyczne. `gh`/`gd`/`eh`/`ed` sa
+// `total_increasing`, a licznik jest DOBOWY i zeruje sie o polnocy. HA to obsluguje,
+// bo spadek total_increasing traktuje jako reset. Ale zero wyslane W SRODKU DOBY,
+// dlatego ze cecha nie doszla, wyglada dla HA dokladnie tak samo jak ten reset:
+// reszta doby zostanie doliczona DRUGI RAZ do statystyki dlugoterminowej, a naprawa
+// to reczne grzebanie w tabeli `statistics`, nie restart urzadzenia.
+//
+// ROZLICZENIE BAJTOW (najgorszy przypadek, wartosci na granicach typow):
+//   {"sup":-3276.8 ....................................................  14 B
+//   ,"mod": + int32 na granicy ("-2147483648") ........................  18 B
+//   ,"bh":  + %.1f ("999999.9") .......................................  16 B
+//   ,"bs":  + uint32 ("4294967295") ...................................  16 B
+//   ,"gh":  ,"gd":  ,"eh":  ,"ed":  + %.2f ("99999.99") x4 ............  60 B
+//   ,"tgt": + %.1f ....................................................  14 B
+//   ,"mode":" + najdluzsza etykieta "CWU i grzanie" + " ................  23 B
+//   } .................................................................   1 B
+//                                                              RAZEM   162 B
+// Pakiet: 1 B naglowka + 2 B dlugosci + 2 B dlugosci tematu + 32 B tematu
+// (23 znaki maks. prefiksu + "/pc/state") + 162 B = 199 B, czyli 39% kBufSize.
+// Najwiekszym pakietem zostaje dalej retained config encji (430 B) — bufora NIE
+// ruszamy. Bufor lokalny 224 B stoi na stosie netTaska, nie w statyku.
+void publishBoiler(const vi::Model& m) {
+  if (!settings().hasMqtt() || gCli == nullptr || !gCli->connected()) {
+    return;
+  }
+
+  char p[224];
+  const int cap = static_cast<int>(sizeof(p));
+  int n = addf(p, cap, 0, "{");
+  bool any = false;
+
+  if (m.hasSupplyTemp) {
+    n = addf(p, cap, n, "\"sup\":%.1f", m.supplyTempC);
+    any = true;
+  }
+  if (m.hasModulation) {
+    n = addf(p, cap, n, any ? ",\"mod\":%d" : "\"mod\":%d", m.modulationPct);
+    any = true;
+  }
+  if (m.hasBurnerHours) {
+    n = addf(p, cap, n, any ? ",\"bh\":%.1f" : "\"bh\":%.1f", m.burnerHours);
+    any = true;
+  }
+  if (m.hasBurnerStarts) {
+    n = addf(p, cap, n, any ? ",\"bs\":%lu" : "\"bs\":%lu",
+             static_cast<unsigned long>(m.burnerStarts));
+    any = true;
+  }
+  if (m.hasGasHeat) {
+    n = addf(p, cap, n, any ? ",\"gh\":%.2f" : "\"gh\":%.2f", m.gasHeatM3);
+    any = true;
+  }
+  if (m.hasGasDhw) {
+    n = addf(p, cap, n, any ? ",\"gd\":%.2f" : "\"gd\":%.2f", m.gasDhwM3);
+    any = true;
+  }
+  if (m.hasPowerHeat) {
+    n = addf(p, cap, n, any ? ",\"eh\":%.2f" : "\"eh\":%.2f", m.powerHeatKwh);
+    any = true;
+  }
+  if (m.hasPowerDhw) {
+    n = addf(p, cap, n, any ? ",\"ed\":%.2f" : "\"ed\":%.2f", m.powerDhwKwh);
+    any = true;
+  }
+  if (m.hasCircuitTarget) {
+    n = addf(p, cap, n, any ? ",\"tgt\":%.1f" : "\"tgt\":%.1f", m.circuitTargetC);
+    any = true;
+  }
+  if (m.circuitMode[0] != '\0') {
+    n = addf(p, cap, n, any ? ",\"mode\":\"%s\"" : "\"mode\":\"%s\"",
+             circuitModeLabel(m.circuitMode));
+    any = true;
+  }
+
+  // Pusty ladunek "{}" nie niesie nic, a kosztuje pakiet co 3 minuty i nadpisuje
+  // retained wiadomosc. Odczyt bez ANI JEDNEJ znanej cechy to nie jest stan pieca.
+  if (!any) {
+    return;
+  }
+  n = addf(p, cap, n, "}");
+
+  // addf() przy przepelnieniu zwraca dlugosc >= cap i zostawia bufor obciety —
+  // ten warunek jest wiec takze bramka na uciety JSON. Lepiej nie wyslac nic niz
+  // wyslac polowe ladunku, ktorej HA nie sparsuje.
+  if (n > 0 && n < cap) {
+    pubState("pc", p, n);
   }
 }
 

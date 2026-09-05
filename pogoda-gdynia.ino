@@ -1570,6 +1570,15 @@ static void netTask(void*) {
         gasHistorySave(gasSnap);
         LOG("Gaz: zamknieta doba, log zapisany");
       }
+      // (v197) Piec do Home Assistanta — POZA mutexem, tak samo jak publishPv()
+      // i publishWeather(): publikacja idzie po sieci, a gLock trzyma rdzen 1
+      // rysujacy 30 klatek na sekunde.
+      //
+      // TYLKO po udanym odczycie. Inaczej niz przy PV, gdzie nieudany odczyt niesie
+      // tresc ("moce 0 W, status Offline"), tutaj kazde pole jest albo pomiarem,
+      // albo cisza — a zera podlozylyby falszywy reset pod liczniki dobowe.
+      if (ok) mqttha::publishBoiler(tmp);
+
       nextViAt = millis() + (ok ? 180000UL : 120000UL);
     }
 

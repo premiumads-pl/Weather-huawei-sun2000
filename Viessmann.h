@@ -56,7 +56,13 @@ struct Model {
   float gasHeatM3 = 0.f;
   float heatDhwKwh = 0.f;
   float heatHeatKwh = 0.f;
-  float powerKwh = 0.f;         // prąd zżarty przez sam piec
+  float powerKwh = 0.f;         // prąd zżarty przez sam piec — SUMA obu ponizszych
+  // (v197) API oddaje prad OSOBNO dla CWU i dla CO; do v196 firmware sumowal je
+  // w `powerKwh` i nikt tej sumy nie czytal. Rozdzielone, bo to JEDYNE zuzycie
+  // pieca, ktore da sie pokryc z fotowoltaiki — gaz nie — wiec ma prawo trafic
+  // do panelu Energia jako urzadzenie, obok serwera.
+  float powerDhwKwh = 0.f;
+  float powerHeatKwh = 0.f;
 
   int wifiRssi = 0;
 
@@ -87,6 +93,18 @@ struct Model {
   bool hasBurnerStarts = false;
   bool hasCircuitTarget = false;
   bool hasGas = false;
+  // (v197) `hasGas` znaczy "przyszly JAKIES dane o gazie" i tak jest uzywane przez
+  // ekran pieca oraz /api/diag — sekcja gazu ma sens, gdy jest cokolwiek. Do MQTT
+  // to za malo. Liczniki CWU i CO to DWIE OSOBNE cechy API i moga przyjsc
+  // niezaleznie, a obie encje w HA sa `total_increasing`. Zero wyslane za brakujaca
+  // cecha wyglada dla HA jak przekrecenie licznika: reszta doby zostanie doliczona
+  // DRUGI RAZ do statystyki dlugoterminowej, a naprawa to grzebanie w tabeli
+  // `statistics`. Dokladnie ta sama lekcja, co przy hasBurnerHours/hasBurnerStarts
+  // wyzej: DWIE FLAGI, NIE JEDNA.
+  bool hasGasDhw = false;
+  bool hasGasHeat = false;
+  bool hasPowerDhw = false;
+  bool hasPowerHeat = false;
   bool hasHeat = false;
   bool hasWifiRssi = false;
 
