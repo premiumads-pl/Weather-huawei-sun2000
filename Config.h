@@ -302,7 +302,30 @@ constexpr uint32_t VIEW_HOLD_MS = 9000;
 constexpr uint32_t TRANSITION_MS = 340;
 constexpr uint32_t ENTER_ANIM_MS = 550;
 constexpr uint32_t ALERT_SHOW_MS = 6500;
+// Odstep z v197: uzywany JUZ TYLKO w trybie awaryjnym, gdy czujnik ruchu jest
+// niewiarygodny (patrz PIR_SANE_MAX_PER_MIN nizej).
 constexpr uint32_t ALERT_COOLDOWN_MS = 10UL * 60UL * 1000UL;
+
+// (v198) PLANSZA ALERTU WCHODZI DO WIDOWNI, NIE DO ZEGARA.
+// Uzasadnienie i decyzje wlasciciela: claude/plansze-alertow-obecnosc.md.
+// Do v197 warunkiem bylo "zmienil sie ALBO minelo 10 min", czyli 6,5 s na 600 s =
+// 1,1% czasu — i to niezaleznie od tego, czy ktokolwiek byl w lazience.
+constexpr uint32_t ALERT_EMPTY_MS = 90000;   // brak ruchu tyle -> pomieszczenie puste
+constexpr uint32_t ALERT_ENTER_MS = 5000;    // zwloka od wejscia do planszy
+
+// DWIE KLASY ODSTEPU, bo alerty nie sa tym samym zjawiskiem. Wiazanie z obecnoscia
+// podnosi trafialnosc z 1,1% czasu do niemal KAZDEGO wejscia, wiec odstepy musialy
+// wzrosnac, a nie tylko sie przesunac: przy dawnych 10 minutach ten sam komunikat
+// witalby przy kazdym wejsciu przez caly tydzien i przestalby byc czytany.
+constexpr uint32_t ALERT_GAP_ACUTE_MS = 60UL * 60UL * 1000UL;         // burza, ulewa, awaria
+constexpr uint32_t ALERT_GAP_SLOW_MS = 12UL * 60UL * 60UL * 1000UL;   // silny wiatr
+
+// BEZPIECZNIK CZUJNIKA RUCHU. Zwykle "fail-open" wykrywa czujnik MARTWY — a ten psuje
+// sie ODWROTNIE: za dnia melduje do 8000 zbocz na sekunde (claude/pir-falszywe-
+// wyzwolenia.md, 183 mln zbocz przez 70 dni). Bez tego progu automat uznalby, ze ktos
+// jest w lazience non stop od 3:00 do 20:00, a stan "pusto" nie nastapilby ani razu.
+// 60 zbocz na minute = czesciej niz raz na sekunde; ruch czlowieka tyle nie daje.
+constexpr uint32_t PIR_SANE_MAX_PER_MIN = 60;
 constexpr uint32_t FRAME_ACTIVE_MS = 33;
 constexpr uint32_t FRAME_IDLE_MS = 50;   // 20 fps na statycznym ekranie (pasek odliczania)
 

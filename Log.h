@@ -266,6 +266,12 @@ struct Diag {
   // pokazywaloby ujemne albo 49-dniowe bzdury. Do RTC ida tylko RÓŻNICE czasu
   // (szerokosci, przerwy, sumy), ktore restart znosi bez szkody.
   volatile uint32_t pirLastAt = 0;  // millis() ostatniego zbocza W GORE (0 = od startu nic)
+  // (v198) Wiarygodnosc czujnika ruchu i stan pomieszczenia — do /api/diag i do ekranu
+  // "RUCH / SWIATLO". Bez pokazania tego nikt za pol roku nie odgadnie, czemu plansze
+  // alertow wchodza po staremu co 10 minut zamiast przy wejsciu.
+  uint32_t pirPerMin = 0;      // zbocza w gore w ostatnim pelnym oknie minutowym
+  bool pirTrusted = false;     // false az do pierwszego zmierzonego okna
+  uint8_t roomState = 0;       // 0 = pusto, 1 = wejscie, 2 = obecny
 };
 
 Diag& diag();

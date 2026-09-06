@@ -873,6 +873,19 @@ AlertKind lastAlertKind = AlertKind::NONE;
 // liczbie pozycji AlertKind — czyli tablica wygladala na zapasowa, a byla pelna.
 uint32_t lastAlertAt[static_cast<int>(AlertKind::COUNT)] = {};
 
+// (v198) OBECNOSC W POMIESZCZENIU. PIR mierzy RUCH, nie obecnosc — ktos stojacy
+// nieruchomo przestaje wyzwalac — wiec "pusto" to BRAK RUCHU PRZEZ cfg::ALERT_EMPTY_MS,
+// a nie odczyt chwilowy pinu.
+enum class RoomState : uint8_t { PUSTO = 0, WEJSCIE, OBECNY };
+RoomState gRoom = RoomState::PUSTO;
+uint32_t gRoomEnterAt = 0;
+bool gAlertDoneThisVisit = false;
+
+// Okno minutowe do liczenia tempa zbocz. gPir.rises jest KUMULACYJNE i przezywa OTA
+// (RTC), wiec wiarygodnosc liczymy z PRZYROSTU, nie z wartosci.
+uint32_t gPirWinAt = 0;
+uint32_t gPirWinBase = 0;
+
 static void setBootMsg(const char* m) {
   strncpy(gBootMsg, m, sizeof(gBootMsg) - 1);
   gBootMsg[sizeof(gBootMsg) - 1] = '\0';
@@ -1895,6 +1908,30 @@ static void webTask(void*) {
 
 // ---------------------------------------------------------------- alerty ----
 
+// (v198) Cisza nocna liczona Z ZEGARA, nie z jasnosci. Swiadomie NIE uzywamy
+// ui.isNightNow(): tamto pyta takze o poziom podswietlenia, wiec zaciemniona w dzien
+// lazienka wchodzilaby w cisze. Wlasciciel ustalil okno GODZINOWE.
+// Bez waznego czasu z NTP zwracamy false — cisza ma byc decyzja, a nie skutkiem
+// nieznanej godziny. (Stala 1700000000 jak w reszcie tego pliku; cfg::EPOCH_VALID_MIN
+// przyjdzie razem z poprawka zegara z galezi przegladu kodu.)
+static bool alertNightNow() {
+  const time_t t = time(nullptr);
+  if (t < 1700000000) return false;
+  struct tm lt{};
+  localtime_r(&t, &lt);
+  const int h = lt.tm_hour;
+  const int s = settings().nightStartH;
+  const int e = settings().nightEndH;
+  if (s == e) return false;             // okno zerowe = brak ciszy
+  return (s < e) ? (h >= s && h < e) : (h >= s || h < e);
+}
+
+// Minimalny odstep miedzy planszami TEGO SAMEGO rodzaju — dwie klasy, bo burza mija
+// w godziny, a silny wiatr stoi caly dzien.
+static uint32_t alertGapMs(AlertKind k) {
+  return (k == AlertKind::WIND) ? cfg::ALERT_GAP_SLOW_MS : cfg::ALERT_GAP_ACUTE_MS;
+}
+
 static Alert buildAlert(const WeatherModel& w, const PvModel& pv) {
   Alert a{};
 
@@ -1915,8 +1952,6 @@ static Alert buildAlert(const WeatherModel& w, const PvModel& pv) {
   int stormIn = -1;
   int rainIn = -1;
   float maxWind = w.current.windKmh;
-  float minTemp = w.current.tempC;
-  float maxTemp = w.current.tempC;
   float maxRain = 0.f;
 
   for (int i = 0; i < WX_HOURS; ++i) {
@@ -1926,8 +1961,6 @@ static Alert buildAlert(const WeatherModel& w, const PvModel& pv) {
     if (s.data.precipMm >= 4.f && rainIn < 0) rainIn = s.offsetHours;
     if (s.data.precipMm > maxRain) maxRain = s.data.precipMm;
     if (s.data.windKmh > maxWind) maxWind = s.data.windKmh;
-    if (s.data.tempC < minTemp) minTemp = s.data.tempC;
-    if (s.data.tempC > maxTemp) maxTemp = s.data.tempC;
   }
 
   if (w.current.weatherCode >= 95 || stormIn >= 0) {
@@ -1961,23 +1994,16 @@ static Alert buildAlert(const WeatherModel& w, const PvModel& pv) {
     return a;
   }
 
-  if (minTemp <= -2.f) {
-    a.kind = AlertKind::FROST;
-    strncpy(a.title, "Mróz", sizeof(a.title) - 1);
-    snprintf(a.text, sizeof(a.text), "Do %.0f°C w ciągu 12 h", minTemp);
-    a.color = col::T_FREEZE;
-    a.iconCode = 71;
-    return a;
-  }
-
-  if (maxTemp >= 30.f) {
-    a.kind = AlertKind::HEAT;
-    strncpy(a.title, "Upał", sizeof(a.title) - 1);
-    snprintf(a.text, sizeof(a.text), "Do %.0f°C - pij wodę", maxTemp);
-    a.color = col::T_HOT;
-    a.iconCode = 0;
-    return a;
-  }
+  // (v198) MROZ i UPAL USUNIETE — decyzja wlasciciela z 05.09.2026.
+  // Powod: temperature widac na ekranie glownym i na krzywej 12 h, a po zwiazaniu
+  // planszy z obecnoscia te dwa alerty witalyby przy KAZDYM wejsciu do lazienki
+  // przez caly mrozny albo upalny tydzien. Alert, ktory sie ignoruje, jest gorszy
+  // od alertu, ktorego sie nie widuje.
+  //
+  // POZYCJE FROST/HEAT ZOSTAJA W ENUMIE AlertKind — celowo. lastAlertAt[] jest
+  // indeksowane wprost wartoscia enuma i ma rozmiar AlertKind::COUNT; wyrzucenie
+  // pozycji przenumerowaloby pozostale bez zadnego ostrzezenia od kompilatora.
+  // Dwa nieuzywane slots to 8 bajtow. Przywrocenie alertu to jedna galaz tutaj.
 
   return a;
 }
@@ -2777,13 +2803,68 @@ void loop() {
   ledShowGrid(uiPv.data.gridPowerW, uiPv.online, blLevel == 0);
 
   // --- alerty ---
+  //
+  // (v198) PLANSZA WCHODZI DO WIDOWNI, NIE DO ZEGARA. Do v197 warunkiem bylo
+  // "zmienil sie ALBO minelo 10 min" — czyli 6,5 s widocznosci na 600 s, 1,1% czasu,
+  // niezaleznie od tego, czy ktokolwiek byl w lazience. Wlasciciel zglosil to wprost:
+  // "na nie trudno trafic". Cala specyfikacja i jego decyzje:
+  // claude/plansze-alertow-obecnosc.md.
+
+  // Tempo zbocz PIR w oknie minutowym — jedyny sposob odroznienia ruchu czlowieka
+  // od oscylacji wejscia. Liczymy PRZYROST kumulacyjnego gPir.rises.
+  if (gPirWinAt == 0) {
+    gPirWinAt = now;
+    gPirWinBase = gPir.rises;
+  } else if (now - gPirWinAt >= 60000UL) {
+    diag().pirPerMin = gPir.rises - gPirWinBase;
+    gPirWinBase = gPir.rises;
+    gPirWinAt = now;
+    diag().pirTrusted = (diag().pirPerMin <= cfg::PIR_SANE_MAX_PER_MIN);
+  }
+
+  // Stan pomieszczenia. Wyjscie kasuje "obsluzono ta wizyte", wiec ponowne wejscie
+  // pokaze plansze jeszcze raz — o to prosil wlasciciel.
+  {
+    const uint32_t pirAt = diag().pirLastAt;
+    const bool ruch = (pirAt != 0) && (now - pirAt < cfg::ALERT_EMPTY_MS);
+    if (!ruch) {
+      gRoom = RoomState::PUSTO;
+      gAlertDoneThisVisit = false;
+    } else if (gRoom == RoomState::PUSTO) {
+      gRoom = RoomState::WEJSCIE;
+      gRoomEnterAt = pirAt;   // moment WEJSCIA, nie moment zauwazenia go w klatce
+    }
+    diag().roomState = static_cast<uint8_t>(gRoom);
+  }
+
   const Alert a = buildAlert(uiWeather, uiPv);
   if (a.kind != AlertKind::NONE) {
     const int idx = static_cast<int>(a.kind);
-    const bool changed = (a.kind != lastAlertKind);
-    const bool cooled =
-        (lastAlertAt[idx] == 0) || (now - lastAlertAt[idx] >= cfg::ALERT_COOLDOWN_MS);
-    if (changed || cooled) {
+    bool pokaz = false;
+
+    if (alertNightNow()) {
+      // Cisza nocna. NIE KOLEJKUJEMY: alert jest STANEM, nie zdarzeniem, wiec jesli
+      // burza trwa nad ranem, buildAlert() zwroci ja przy pierwszym wejsciu po
+      // nightEndH. Kolejka dolozylaby zasadzke o poranku i drugi stan do pilnowania.
+      pokaz = false;
+    } else if (!diag().pirTrusted) {
+      // BEZPIECZNIK: czujnik klamie (albo jeszcze nie zmierzylismy pierwszego okna).
+      // Wracamy do zachowania z v197, zeby awaria falownika nie zginela w ciszy.
+      // To NIE jest zwykle fail-open — ten czujnik nie umiera, on melduje ruch bez
+      // przerwy, wiec bez tej galezi "pusto" nie nastapiloby ani razu przez caly dzien.
+      pokaz = (a.kind != lastAlertKind) || (lastAlertAt[idx] == 0) ||
+              (now - lastAlertAt[idx] >= cfg::ALERT_COOLDOWN_MS);
+    } else if (gRoom == RoomState::WEJSCIE && !gAlertDoneThisVisit &&
+               now - gRoomEnterAt >= cfg::ALERT_ENTER_MS) {
+      pokaz = (lastAlertAt[idx] == 0) || (now - lastAlertAt[idx] >= alertGapMs(a.kind));
+      // Wizyta jest OBSLUZONA niezaleznie od tego, czy plansza poszla. Inaczej przy
+      // zablokowanym odstepie probowalibysmy w kazdej klatce az do konca wizyty.
+      gAlertDoneThisVisit = true;
+      gRoom = RoomState::OBECNY;
+      diag().roomState = static_cast<uint8_t>(gRoom);
+    }
+
+    if (pokaz) {
       lastAlertAt[idx] = now;
       lastAlertKind = a.kind;
       ui.raiseAlert(a, now);

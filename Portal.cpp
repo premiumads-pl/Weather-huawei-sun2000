@@ -3636,6 +3636,12 @@ void apiDiag() {
   }
   sen["pir"] = d.pirState;
   sen["pir_last_s"] = ago(d.pirLastAt);
+  // (v198) Wiarygodnosc czujnika i stan pomieszczenia. Bez tego nikt za pol roku nie
+  // odgadnie, czemu plansze alertow wchodza po staremu co 10 minut zamiast przy wejsciu:
+  // decyduje o tym prog PIR_SANE_MAX_PER_MIN, a nie awaria logiki alertow.
+  sen["pir_per_min"] = d.pirPerMin;
+  sen["pir_trusted"] = d.pirTrusted;
+  sen["room"] = d.roomState == 0 ? "pusto" : (d.roomState == 1 ? "wejscie" : "obecny");
 
   // --- PIR: pomiar zachowania AM312 (liczniki z ISR, PRZEZYWAJA OTA) ---
   // Po co akurat te pola — patrz PirRtc w Log.h. Skrot: log to okno ~6 minut, a pytanie
