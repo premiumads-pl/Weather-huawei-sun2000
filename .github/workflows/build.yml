@@ -47,7 +47,8 @@ jobs:
             "TFT_eSPI@2.5.43" \
             "ArduinoJson@7.4.3" \
             "PNGdec@1.1.6" \
-            "PubSubClient@2.8"
+            "PubSubClient@2.8" \
+            "JPEGENC@1.1.0"
 
       # TFT_eSPI is configured by overwriting its User_Setup.h, not via
       # build flags. tools/release.sh assumes this has already been done
