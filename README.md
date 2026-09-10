@@ -17,9 +17,9 @@ buttons, no app, updates itself over Wi-Fi.
 
 This started as a weather clock and grew into a small home dashboard: it
 polls a weather API, talks Modbus TCP to a solar inverter, decodes radar
-tiles, and tracks nearby air traffic — all on a $5 microcontroller with no
-PSRAM and a screen buffer that has to fight the network stack for every
-free byte of RAM. If you like squeezing embedded systems until they beg for
+tiles, and tracks nearby air traffic, all on a $5 microcontroller where the
+big buffers live in 2 MB of PSRAM and every byte of static RAM is still
+rationed against a hard 76 000 B budget. If you like squeezing embedded systems until they beg for
 mercy, this repo has some fun corners for you (see [Known
 limitations](#known-limitations) and the [issue tracker](../../issues)).
 
@@ -313,9 +313,12 @@ tagged [`good first issue`](../../issues?q=is%3Aissue+is%3Aopen+label%3A%22good+
 
 ## Known limitations
 
-- **No PSRAM, ~320 KB total RAM, and a screen buffer that eats most of
-  it.** Free heap has been observed as low as ~1 KB under load (TLS +
-  JSON parsing at the same time); see `GET /api/diag` on a running device.
+- **~320 KB of internal SRAM and a static-RAM budget capped at 76 000 B.**
+  The board *does* have 2 MB of QSPI PSRAM, measured on a live device
+  (`GET /api/diag` reports `"psram": 2097152`), and the screen sprite and the
+  13 radar frames live there. What stays scarce is internal SRAM: free heap has
+  been observed as low as ~1 KB under load (TLS + JSON parsing at the same
+  time); see `GET /api/diag` on a running device.
   There's a safety net (OTA frees the screen buffer and retries if heap is
   critically low) but it's a genuinely tight fit, not a comfortable one.
 - **RainViewer only serves zoom ≤ 7** for the tile endpoint this project

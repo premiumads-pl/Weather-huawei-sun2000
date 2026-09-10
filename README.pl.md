@@ -170,8 +170,11 @@ oznaczonych jest jako [`good first issue`](../../issues?q=is%3Aissue+is%3Aopen+l
 
 ## Znane ograniczenia
 
-- **Brak PSRAM, bardzo ciasny RAM** — wolny heap bywa niski w praktyce
-  (obserwowane ~1 kB pod obciążeniem TLS+JSON). Zobacz `GET /api/diag`.
+- **Ciasny RAM wewnętrzny (~320 kB) i twardy budżet 76 000 B RAM statycznego.**
+  Płytka MA 2 MB PSRAM, zmierzone na żywym urządzeniu (`GET /api/diag` zwraca
+  `"psram": 2097152`), i to tam siedzą bufor ekranu oraz klatki radaru. Ciasno
+  jest w SRAM-ie wewnętrznym: wolny heap bywa niski w praktyce (obserwowane
+  ~1 kB pod obciążeniem TLS+JSON). Zobacz `GET /api/diag`.
 - **RainViewer obsługuje tylko zoom ≤ 7.** Od 8 w górę zwraca kafelek z napisem
   „Zoom Level Not Supported" — antyaliasowany tekst wygląda w danych jak echo opadu.
   Nie podnosić zoomu bez ponownej weryfikacji.

@@ -8,8 +8,11 @@ re-reads. The full original text is still in git history
 
 What happened to each section:
 
-- **Memory (two-band rendering, 132 KB → 66 KB buffer)** — tracked as an
-  issue, currently the top engineering priority.
+- ~~**Memory (two-band rendering, 132 KB → 66 KB buffer)**, tracked as an issue,
+  currently the top engineering priority.~~ **Closed, verified 2026-09-10:** the
+  board has 2 MB of PSRAM, the screen sprite lives there, and `WeatherUi.h` has
+  carried `BAND_N = 1` since the PSRAM discovery. The scarce resource is internal
+  SRAM against the 76 000 B static budget, not the frame buffer.
 - **Remote diagnostics (`/api/log`, `/api/diag`, `/api/reboot`)** — this
   was already done (the old file said so in its own heading); it's just
   documented in the [README](README.md#remote-diagnostics) now instead of

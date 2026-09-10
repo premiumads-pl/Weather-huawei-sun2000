@@ -6,6 +6,13 @@ Mapa dla kogoś, kto wraca do projektu po pół roku. Odpowiada na jedno pytanie
 Sprzęt: ESP32-S3 + ST7789 320×240, 2 MB PSRAM. Urządzenie wisi w łazience,
 **bez USB**. Jedyna droga do niego: panel WWW i OTA z GitHub Releases. Repo jest publiczne.
 
+> **DOKUMENT HISTORYCZNY (nota dopisana przy v198, 10.09.2026).** Ten plik opisuje
+> stan z v93, czyli sprzed ponad stu wydań, i część opisanych tu mechanizmów już
+> nie istnieje: `gRadarWantMem` został usunięty, globalny `Preferences` również, a
+> zdanie „MQTT publikuje tylko 4 czujniki" jest nieaktualne. Kolejność bloku OTA
+> też się zmieniła. Traktuj to jako zapis historyczny, nie jako opis dzisiejszego
+> kodu: przy każdym szczególe sprawdzaj w kodzie.
+
 Stan na v93 (`Version.h`). ~9,8 tys. linii kodu + ~4,7 tys. wygenerowanych danych
 (`WeatherIcons.h`, `PlFont*.h`, `MapData*.h` — dane, nie kod, nie czytaj ich).
 
