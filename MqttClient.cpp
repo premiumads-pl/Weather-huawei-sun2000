@@ -302,6 +302,15 @@ const Ent kEnts[] = {
      nullptr, false},
     {"pc_mode", "Piec tryb obiegu", "pc", "mode", nullptr, nullptr, nullptr,
      "mdi:radiator", false},
+    // (v199) CWU. Bez temperatury zasobnika nie da sie ani zweryfikowac
+    // harmonogramu CWU, ani zobaczyc, ile kosztuje strata postojowa — a to jest
+    // latem JEDYNE, na co piec pali gaz (obieg stoi w Czuwaniu).
+    {"pc_dhw_temp", "Piec CWU temperatura", "pc", "dhw", "temperature", "°C",
+     "measurement", "mdi:water-thermometer", false},
+    {"pc_dhw_target", "Piec CWU nastawa", "pc", "dtg", "temperature", "°C",
+     "measurement", nullptr, false},
+    {"pc_dhw_mode", "Piec CWU tryb", "pc", "dmd", nullptr, nullptr, nullptr,
+     "mdi:water-boiler", false},
 
     // --- samo urzadzenie (kategoria diagnostyczna) ---
     {"dev_temp", "Temperatura ESP32", "dev", "cpu", "temperature", "°C", "measurement",
@@ -1240,6 +1249,18 @@ const char* circuitModeLabel(const char* mode) {
   return "Inny";
 }
 
+// Tryb CWU. Wartosci wg Viessmann.h: comfort | eco | off (balanced wystepuje na
+// czesci modeli). Nieznanej wartosci NIE zwijamy do "Inny" jak przy obiegu —
+// oddajemy ja surowa, zeby nowy tryb byl w HA WIDOCZNY zamiast zniknac pod
+// wspolna etykieta. Pole dhwMode ma 12 bajtow, wiec surowa wartosc sie miesci.
+const char* dhwModeLabel(const char* mode) {
+  if (strcmp(mode, "off") == 0) return "Wylaczona";
+  if (strcmp(mode, "eco") == 0) return "Eco";
+  if (strcmp(mode, "comfort") == 0) return "Komfort";
+  if (strcmp(mode, "balanced") == 0) return "Zrownowazona";
+  return mode;
+}
+
 // (v197) PIEC -> HOME ASSISTANT.
 //
 // Do v196 firmware czytal ViCare co 3 minuty i nie publikowal z tego ANI JEDNEGO
@@ -1319,6 +1340,25 @@ void publishBoiler(const vi::Model& m) {
   }
   if (m.hasCircuitTarget) {
     n = addf(p, cap, n, any ? ",\"tgt\":%.1f" : "\"tgt\":%.1f", m.circuitTargetC);
+    any = true;
+  }
+  // (v199) CWU. Te trzy pola byly czytane z ViCare od dawna (Viessmann.cpp,
+  // heating.dhw.*), ale nie opuszczaly urzadzenia inaczej niz przez GET /api/vi.
+  // Najgorszy przypadek ladunku po dolozeniu ich to ~183 B przy buforze 224 B,
+  // wiec zapas zostaje; gdyby kiedys doszly kolejne pola, TO jest miejsce, w
+  // ktorym trzeba przeliczyc bufor, bo addf() przy przepelnieniu tnie JSON i
+  // caly pakiet przepada po cichu (bramka n < cap nizej).
+  if (m.hasDhwTemp) {
+    n = addf(p, cap, n, any ? ",\"dhw\":%.1f" : "\"dhw\":%.1f", m.dhwTempC);
+    any = true;
+  }
+  if (m.hasDhwTarget) {
+    n = addf(p, cap, n, any ? ",\"dtg\":%.1f" : "\"dtg\":%.1f", m.dhwTargetC);
+    any = true;
+  }
+  if (m.dhwMode[0] != '\0') {
+    n = addf(p, cap, n, any ? ",\"dmd\":\"%s\"" : "\"dmd\":\"%s\"",
+             dhwModeLabel(m.dhwMode));
     any = true;
   }
   if (m.circuitMode[0] != '\0') {
