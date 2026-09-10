@@ -166,6 +166,30 @@ if ! python3 -c "import json,sys; json.load(open('build/version.json'))" 2>/dev/
 fi
 
 # --- commit + tag + release ---
+
+# Bezpiecznik: co wchodzi do publicznego repo.
+# Nizej jest `git add -A`, a zaraz po nim `git push`, wiec kazdy nowy plik,
+# ktorego .gitignore nie lapie, trafia publicznie w tej samej sekundzie.
+# Tak omal nie wyjechal katalog "Claude outputs/" (przeglad 10.09.2026).
+NOWE=$(git ls-files --others --exclude-standard)
+if [ -n "$NOWE" ]; then
+  echo "Nowe pliki, ktore wejda do publicznego repo:"
+  printf '%s\n' "$NOWE" | sed 's/^/    + /'
+fi
+WRAZLIWE='^(claude/|CLAUDE\.md$|Claude outputs/|audyt/|\.env$|.*\.log$|.*\.key$|.*\.pem$)'
+PODEJRZANE=$(printf '%s\n' "$NOWE" | grep -E "$WRAZLIWE" || true)
+if [ -n "$PODEJRZANE" ] && [ "${RELEASE_ALLOW_EXTRA:-0}" != "1" ]; then
+  echo ""
+  echo "!!! STOP: to sa dokumenty robocze albo sekrety, nie kod. NIE publikuje:"
+  printf '%s\n' "$PODEJRZANE" | sed 's/^/    /'
+  echo ""
+  echo "Napraw .gitignore albo przenies te pliki pod claude/."
+  echo "Swiadome obejscie: RELEASE_ALLOW_EXTRA=1 ./tools/release.sh ..."
+  echo "Cofam wersje na ${CUR}."
+  sed -i '' "s/#define FW_VERSION ${NEW}/#define FW_VERSION ${CUR}/" Version.h
+  exit 1
+fi
+
 git add -A
 git commit -m "v${NEW}: ${NOTES}" || echo "(brak zmian w kodzie)"
 git push origin main
