@@ -85,7 +85,8 @@ landscape 320×240, SPI 27 MHz (HSPI), TFT_eSPI.
 ## Budowanie
 
 Wymagane: `arduino-cli`, rdzeń `esp32:esp32` (CI trzyma się `3.3.10`), oraz
-biblioteki `TFT_eSPI`, `ArduinoJson` i `PNGdec` (dekoder PNG kafelków radaru).
+biblioteki `TFT_eSPI`, `ArduinoJson`, `PNGdec` (dekoder PNG kafelków radaru),
+`PubSubClient` (MQTT) oraz `JPEGENC` (zrzuty ekranu przez panel WWW).
 
 Skopiuj `User_Setup.h` z tego repo do katalogu biblioteki TFT_eSPI
 (nadpisuje domyślną konfigurację — sterownik, piny, `TFT_BGR`, `TFT_INVERSION_OFF`).
@@ -167,6 +168,71 @@ reset          # kasuje zapisane WiFi
 Zgłoszenia błędów i pull requesty mile widziane — zobacz
 [CONTRIBUTING.md](CONTRIBUTING.md) oraz [Issues](../../issues). Kilka spraw
 oznaczonych jest jako [`good first issue`](../../issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22).
+
+## MQTT / Home Assistant
+
+Opcjonalne, **domyślnie wyłączone**. Włącza się w panelu WWW w sekcji
+**MQTT / Home Assistant**: adres brokera, port (domyślnie `1883`), opcjonalny
+użytkownik i hasło oraz prefiks tematów (domyślnie `pogoda-gdynia`). Hasło do
+brokera siedzi w NVS i **nigdy** nie wraca przez `/api/state`: panel dostaje
+wyłącznie flagę „hasło jest ustawione".
+
+Po połączeniu urządzenie publikuje konfiguracje MQTT Discovery (retained, na
+`homeassistant/sensor/<device-id>/<encja>/config`) **raz na połączenie**, wszystkie
+ze wspólnym blokiem `device`. Dzięki temu w Home Assistancie widać jedno
+urządzenie z 22 encjami, a nie 22 luźne encje.
+
+| Grupa | Encje |
+|---|---|
+| **PV** | moc AC, moc DC, produkcja dzisiaj (`total_increasing`), produkcja całkowita, bilans sieci (dodatni = oddaję, ujemny = pobieram), pobór domu, temperatura falownika, status falownika |
+| **Pogoda** | temperatura, temperatura odczuwalna, wilgotność, ciśnienie, wiatr, zachmurzenie, indeks UV, opad (mm/h), stan pogody |
+| **Urządzenie** (diagnostyka) | temperatura ESP32, wolna sterta, czas pracy, RSSI Wi-Fi, wersja firmware |
+
+Stany idą zgrupowane, po jednym retained JSON-ie na temat (`<prefiks>/pv/state`,
+`<prefiks>/wx/state`, `<prefiks>/dev/state`), a rozbiera je `value_template` po
+stronie HA. To trzyma liczbę pakietów nisko: PV co 30 s, pogoda co 15 min,
+telemetria urządzenia co 60 s.
+
+Dostępność jedzie przez `<prefiks>/status` (`online` / `offline`, retained) z
+Last Will, więc gdy wyświetlacz zniknie z sieci, HA oznacza encje jako niedostępne.
+
+### Jedyny temat, który urządzenie SUBSKRYBUJE (od v174)
+
+`<prefiks>/auto/stan` to stan auta (Tesla), publikowany przez Home Assistanta
+mniej więcej co 15 s i rysowany na ekranie **AUTO** (`/api/view?i=12`). To jedyny
+temat przychodzący, subskrypcja jest odtwarzana po każdym reconnekcie. Ładunek to
+jeden płaski obiekt JSON, wszystkie pola wymagane, jeśli nie zaznaczono inaczej:
+
+```json
+{"soc":95,"km":389,"kw":2.5,"a":4,"kwh":13.5,"tryb":"PV",
+ "stan":"laduje","kabel":1,"limit":100,"sl":2.6,"si":10.9}
+```
+
+`soc` procent baterii, `km` zasięg, `kw` moc ładowania, `a` żądany prąd (A),
+`kwh` energia dodana w tej sesji, `tryb` dokładnie jedna z wartości `OFF`, `PV`,
+`PV+MIN`, `MAX` (kolor kafelka trybu jest kontraktem z pierścieniem WLED w
+garażu), `stan` jedna z `laduje` / `czeka` / `stoi` / `spi` / `brak` (ASCII
+celowo, to pole techniczne, wyświetlacz sam mapuje je na polski), `kabel` 0/1
+czy kabel wpięty, `limit` docelowy procent naładowania, `sl` / `si` kWh oddane
+dziś do auta ze słońca i z sieci.
+
+Wiadomość, której nie da się sparsować albo w której brakuje `soc`, `tryb` lub
+`stan`, jest odrzucana w całości i na ekranie zostaje poprzedni stan. Jeśli przez
+45 s (2,5 × kadencja 15 s) nic nie przyjdzie, ekran AUTO wypada z rotacji. Nadal
+da się go przypiąć z panelu i wtedy sam o tym mówi.
+
+Gdy broker jest nieosiągalny, urządzenie pracuje normalnie: próby połączenia mają
+krótkie timeouty i backoff od 5 s do 5 min, a awarię widać na ekranie statystyk
+i w `GET /api/diag`.
+
+Te same ustawienia z konsoli szeregowej:
+
+```
+mqtt <host> [port]        # ustawia brokera i włącza publikowanie
+mqtt off
+mqttauth <user> <pass>    # "-" jako hasło czyści hasło
+mqttprefix <prefiks>
+```
 
 ## Znane ograniczenia
 
