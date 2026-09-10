@@ -6,6 +6,7 @@
 #include <Update.h>
 #include <cctype>     // isxdigit() — walidacja pola "sha256"
 #include <cstring>
+#include <ctime>      // time() — strażnik zegara przed próbą OTA, patrz Blok J
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <mbedtls/sha256.h>   // ta sama biblioteka, co w Viessmann.cpp (PKCE)
@@ -561,6 +562,24 @@ bool Ota::checkAndUpdate(bool manual) {
     Serial.println("OTA: sprawdzanie juz trwa — pomijam");
     return false;
   }
+
+  // (Blok J, runda 3) Sprzezenie wprowadzone przez Blok H (P1-5, v195), ktorego
+  // autor briefu tamtej rundy nie przewidzial: setCACert() sprawdza notBefore/
+  // notAfter certyfikatu WZGLEDEM ZEGARA SYSTEMOWEGO (setInsecure() pomijal to
+  // razem z reszta walidacji). Bez zegara (np. po zaniku pradu — patrz Blok I)
+  // KAZDY certyfikat wyglada na "jeszcze niewazny" i polaczenie TLS pada — objaw
+  // mylaco cichy, nieodrozniony od zwyklego "brak nowej wersji". Zamiast probowac
+  // i dostac niejasny blad TLS, nie probujemy wcale i mowimy to wprost.
+  // otaCheckedAt CELOWO nietkniety: dzieki temu checked_ago_s/ok_ago_s nadal
+  // odrozniaja "sprawdzone i nic nie ma" od "nie sprawdzone wcale" (patrz komentarz
+  // przy tych polach w Portal.cpp), a otaNoClock (Log.h) doklada TRZECI, jednoznaczny
+  // stan widoczny w /api/diag zamiast zmuszania czytelnika do zgadywania z ich roznicy.
+  if (time(nullptr) < cfg::EPOCH_VALID_MIN) {
+    LOG("OTA odlozone: brak czasu z NTP\n");
+    diag().otaNoClock = true;
+    return false;
+  }
+  diag().otaNoClock = false;
 
   // KLUCZOWE dla rollbacku: dopóki BIEŻĄCA wersja nie jest potwierdzona, nie wolno
   // nic wgrywać. Nowy obraz poszedłby na drugą partycję — czyli nadpisałby JEDYNĄ

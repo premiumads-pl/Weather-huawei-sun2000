@@ -2824,6 +2824,18 @@ void apiDiag() {
   j["psram"] = ESP.getPsramSize();
   j["cpu_temp"] = temperatureRead();
 
+  // (Blok I, runda 3) Dotad NIE BYLO zadnego pola opisujacego stan zegara — awarie
+  // (92 min bez zegara po zaniku pradu, przy w pelni dzialajacym internecie) dalo
+  // sie zdiagnozowac tylko wnioskujac z ekranu i z braku innych objawow. `valid` to
+  // LIVE sprawdzenie (nie zapamietany stan) tym samym progiem, ktorego uzywa reszta
+  // kodu (cfg::EPOCH_VALID_MIN — patrz Config.h). `since_s` to wiek PIERWSZEGO
+  // zaobserwowanego "juz wazny" w tej sesji (diag().clockOkAt, ustawiane raz w
+  // netTask()) — -1, dopoki zegar nigdy nie byl wazny od startu (ten sam sentynel,
+  // co reszta *_ago_s w tej funkcji).
+  JsonObject clk = j["clock"].to<JsonObject>();
+  clk["valid"] = time(nullptr) >= cfg::EPOCH_VALID_MIN;
+  clk["since_s"] = ago(d.clockOkAt);
+
   // JEDEN obiekt "wifi" — drugie j["wifi"].to<JsonObject>() zastapiloby go nowym,
   // pustym (tak wlasnie ginely ssid/ip/connects). Nazwa sieci TAK, hasla NIGDY.
   JsonObject w = j["wifi"].to<JsonObject>();
@@ -3493,6 +3505,12 @@ void apiDiag() {
   // znaczy "proba byla i sie nie powiodla" — inaczej panel czytalby stare `remote`
   // jako swiezy wynik i po nieudanym sprawdzeniu oglaszal "masz najnowsza wersje".
   o["ok_ago_s"] = ago(d.otaOkAt);
+  // (Blok J, runda 3) true, gdy OSTATNIA próba w ogóle nie ruszyła, bo zegar
+  // (patrz "clock" wyżej) nie był ważny — setCACert() (P1-5) i tak by odrzucił
+  // certyfikat jako "jeszcze nieważny". checked_ago_s CELOWO nie rusza się w tym
+  // przypadku (patrz Ota.cpp::checkAndUpdate()), więc bez tego pola "nie sprawdzone
+  // wcale" i "sprawdzone, nic nie ma" wyglądałyby identycznie.
+  o["no_clock"] = d.otaNoClock;
   // Okres próbny po aktualizacji (patrz OtaGuard.h).
   o["trial"] = d.otaTrial == 1 ? "probna" : (d.otaTrial == 2 ? "potwierdzona" : "stabilna");
   o["trial_active"] = otaTrialActive();
