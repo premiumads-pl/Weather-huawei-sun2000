@@ -39,3 +39,15 @@ audyt/PRZEGLAD-KODU-2026-09-01.md
 audyt/PRZEGLAD-PRACY-CC-2026-09-02.md
 audyt/przeglad-2026-09-01/
 audyt/BRIEF-CC-2026-09-03-zegar.md
+
+# Dokumenty robocze projektu — prywatne, repozytorium jest publiczne.
+# NIE usuwac tej linii: release.sh robi `git add -A`.
+claude/
+
+# Instrukcje robocze dla Claude Code. Zostaja w korzeniu (Claude Code czyta je
+# stamtad), ale NIE publikujemy ich. Zeby opublikowac, skasuj te linie.
+/CLAUDE.md
+
+# Katalog tworzony przez narzedzia. Uwaga: to NIE jest to samo co claude/,
+# dopasowanie jest doslowne i rozroznia wielkosc liter.
+Claude outputs/
