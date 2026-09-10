@@ -265,7 +265,7 @@ Settings& settings();
 enum NvsSlot : uint8_t {
   NVS_SLOT_PROF = 0,   // "prof2"  — profil doby PV
   NVS_SLOT_ROOMS,      // "rh3"    — historia czujnikow BLE (24 h)
-  NVS_SLOT_BURN,       // "burn2"  — profil doby palnika
+  NVS_SLOT_BOILH,      // "boilh1" — historia temperatury zasilania (24 h)
   NVS_SLOT_GAS,        // "gas2"   — dzienny log gazu (120 dni)
   NVS_SLOT_AIR,        // "airh"   — historia jakosci powietrza (7 dni)
   NVS_SLOT_METER,      // "mtr2"   — baza licznikow miernika z polnocy
@@ -385,8 +385,10 @@ void graphBlobSave(const struct GraphBlob& b);
 void gasHistoryLoad(struct GasHistory& g);
 void gasHistorySave(const struct GasHistory& g);
 
-// Profil doby palnika. Do v98 gBurner byl JEDYNYM profilem bez utrwalania — PV,
-// pokoje i gaz maja swoje — i dokladnie dlatego "wykres pieca nie pamieta po
-// resecie, a wykres fotowoltaiki pamieta". Zadnej innej przyczyny w tym nie ma.
-void burnerHistoryLoad(struct BurnerHistory& b);
-void burnerHistorySave(const struct BurnerHistory& b);
+// (v199) Historia temperatury zasilania kotla: OKNO RUCHOME 24 h (BoilerHistory).
+// Zastapila profil doby palnika, ktory zniknal razem z wykresem na ekranie PIEC.
+// Utrwalanie jest tu z tego samego powodu, co przy pokojach i PV: bez niego wykres
+// po kazdym restarcie startuje pusty i potrzebuje doby, zeby znowu cos pokazac.
+// Zapisuje sie razem z pokojami, co 10 minut (blok BLE w netTask).
+void boilerHistoryLoad(struct BoilerHistory& b);
+void boilerHistorySave(const struct BoilerHistory& b);

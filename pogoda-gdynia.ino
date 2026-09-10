@@ -40,6 +40,7 @@
 #include "GasMeter.h"
 #include "Viessmann.h"
 #include "RoomHistory.h"
+#include "BoilerHistory.h"
 #include "AirHistory.h"
 #include "Touch.h"
 
@@ -76,8 +77,8 @@ RoomHistory gRooms{};
 AirHistory gAirHistory{};   // 7-dniowa historia jakosci powietrza (srednie dobowe) — patrz AirHistory.h
 vi::Model gVi{};
 vi::Model uiVi{};
-BurnerHistory gBurner{};
-BurnerHistory uiBurner{};
+BoilerHistory gBoilerHist{};
+BoilerHistory uiBoilerHist{};
 GasHistory gGas{};
 RoomHistory uiRooms{};
 FlightModel gFlights{};
@@ -1041,10 +1042,6 @@ static void netTask(void*) {
         struct tm tmv{};
         localtime_r(&tt, &tmv);
         xSemaphoreTake(gLock, portMAX_DELAY);
-        const bool burnerRolled = (gBurner.day >= 0 && gBurner.day != tmv.tm_yday);
-        if (burnerRolled) {
-          gBurner.reset(tmv.tm_yday);
-        }
         const bool pvRolled = (gHist.day >= 0 && gHist.day != tmv.tm_yday);
         if (pvRolled) {
           gHist.reset(tmv.tm_yday);
@@ -1056,10 +1053,9 @@ static void netTask(void*) {
         // >= 0, bo profil ISTNIEJE, tylko jest (zgodnie z prawda) pusty. Ten guard
         // odsiewa co innego: day == -1, czyli "nie bylo jeszcze ANI JEDNEGO odczytu",
         // kiedy nadpisanie NVS skasowaloby profil odtworzony przy starcie.
-        // Wczorajszej doby i tak nie umiemy pokazac — obie struktury trzymaja jedna.
-        if (burnerRolled) {
-          LOG("Piec: nowa doba — profil palnika wyzerowany (bez czekania na odpyt)");
-        }
+        // (v199) Dotyczy juz TYLKO profilu PV. Profil doby palnika zniknal razem
+        // z wykresem na ekranie PIEC, a historia temperatury zasilania, ktora go
+        // zastapila, jest oknem RUCHOMYM — o polnocy nie dzieje sie z nia nic.
         if (pvRolled) {
           LOG("PV: nowa doba — profil produkcji wyzerowany (bez czekania na falownik)");
         }
@@ -1519,20 +1515,21 @@ static void netTask(void*) {
         diag().viHasGas = tmp.hasGas;
         if (tmp.hasGas) diag().viGasDayM3 = tmp.gasDhwM3 + tmp.gasHeatM3;
 
-        // Profil doby palnika + wlasny log zuzycia gazu. Log jest wlasny, bo
-        // liczniki miesieczne/roczne pieca sa zepsute (currentMonth < lastSevenDays,
-        // currentYear = 5.3 m3 po 4 latach) — ufamy tylko currentDay.
+        // Historia temperatury zasilania + wlasny log zuzycia gazu. Log jest
+        // wlasny, bo liczniki miesieczne/roczne pieca sa zepsute (currentMonth <
+        // lastSevenDays, currentYear = 5.3 m3 po 4 latach) — ufamy tylko currentDay.
+        //
+        // (v199) Kalendarz zniknal stad razem z profilem doby palnika: obie zyjace
+        // tu struktury licza slot wprost z epoch, wiec localtime_r nie jest juz do
+        // niczego potrzebny i przestal sie wykonywac co 3 minuty bez celu.
         const time_t tt = time(nullptr);
         if (tt > 1700000000) {
-          struct tm tmv{};
-          localtime_r(&tt, &tmv);
-          // Do historii wpisujemy TYLKO to, co model potwierdza flaga. Bez tego
-          // brak cechy "heating.burners.0" w odpowiedzi API zapisywal "palnik nie
-          // pracowal" w slocie, w ktorym pracowal — a to jest zapis TRWALY, ktory
-          // potem klamie na wykresie doby. Zero jest tu nieodroznialne od pomiaru.
-          if (tmp.hasBurnerState) {
-            gBurner.push(tmv.tm_yday, tmv.tm_hour, tmv.tm_min,
-                         tmp.hasModulation ? tmp.modulationPct : 0, tmp.burnerActive);
+          // (v199) Historia temperatury zasilania — okno ruchome 24 h na ekranie
+          // PIEC. advance() przewija bufor i czysci sloty, ktore urzadzenie
+          // przespalo; push() wpisuje WYLACZNIE pomiar potwierdzony flaga, bo zero
+          // bez flagi bylby zapisem TRWALYM, ktory potem klamie na wykresie.
+          if (gBoilerHist.advance(static_cast<uint32_t>(tt))) {
+            gBoilerHist.push(tmp.hasSupplyTemp, tmp.supplyTempC);
           }
           if (tmp.hasGas) {
             const uint32_t prevDay = gGas.lastDay;
@@ -1639,6 +1636,7 @@ static void netTask(void*) {
         if (static_cast<int32_t>(millis() - nextRoomSaveAt) >= 0) {
           RoomHistory snap = gRooms;
           AirHistory airSnap = gAirHistory;   // ta sama kadencja 10 min, jeden mutex, snapshot
+          BoilerHistory boilSnap = gBoilerHist;   // (v199) okno ruchome zasilania, ta sama kadencja
           xSemaphoreGive(gLock);
           // Dwa bloby (1736 B + ~52 B) co 10 min. Zapis do NVS to kasowanie i zapis
           // sektora flash — dziesiatki ms, a przy przenoszeniu strony przez
@@ -1648,6 +1646,7 @@ static void netTask(void*) {
           gNetStage.stageNow = NET_STAGE_NVS;
           roomHistorySave(snap);          // NVS poza mutexem — zapis trwa
           airHistorySave(airSnap);        // 7-dniowa historia powietrza (klucz "airh", ~52 B)
+          boilerHistorySave(boilSnap);    // (v199) 24 h temperatury zasilania (klucz "boilh1", 296 B)
           nextRoomSaveAt = millis() + 600000;
           xSemaphoreTake(gLock, portMAX_DELAY);
         }
@@ -1754,15 +1753,15 @@ static void netTask(void*) {
     // trzymaja JEDNA dobe, ktora jest kasowana o polnocy, wiec jedyne, co moze je
     // uratowac przed restartem, to zapis W TRAKCIE doby.
     //
-    // DLACZEGO PALNIK NIE ZAPISUJE SIE "RAZ NA DOBE PRZY ZMIANIE day", JAK GAZ:
+    // DLACZEGO PV NIE ZAPISUJE SIE "RAZ NA DOBE PRZY ZMIANIE day", JAK GAZ:
     // bo dla tej struktury to nie dziala. GasHistory to bufor 120 dni — zamknieta
     // doba zostaje w nim na zawsze, wiec zapis na przewinieciu dnia utrwala gotowa
-    // sume. BurnerHistory ma tylko biezaca dobe i BurnerHistory::reset() zeruje
-    // wszystkie 144 sloty przy zmianie tm_yday. Zapis dokladnie w tym momencie
-    // wpisalby do NVS PUSTY profil, a restart o 14:00 odtworzylby z niego zero —
-    // czyli ten sam objaw, ktory naprawiamy ("wykres pieca nie pamieta po resecie").
-    // PvHistory ma to samo ograniczenie i z tego samego powodu zapisuje sie co 5 min.
-    // To jest CALY powod, dla ktorego "fotowoltaika pamieta, a piec nie".
+    // sume. PvHistory ma tylko biezaca dobe i reset() zeruje wszystkie sloty przy
+    // zmianie tm_yday. Zapis dokladnie w tym momencie wpisalby do NVS PUSTY profil,
+    // a restart o 14:00 odtworzylby z niego zero.
+    // (v199) Historia temperatury zasilania NIE jedzie na tym zegarze: jest oknem
+    // ruchomym, wiec nie ma polnocy, ktorej trzeba by uciekac. Zapisuje sie razem
+    // z pokojami, co 10 minut, w bloku BLE nizej.
     //
     // Koszt: 296 B blobu (struktura na stosie ma 292 — reszta to `ver` i wyrownanie)
     // co 5 min, obok istniejacych 584 B (PV) w tym samym takcie i
@@ -1781,17 +1780,6 @@ static void netTask(void*) {
         xSemaphoreGive(gLock);
         if (snap.day >= 0) {
           pvHistorySave(snap);
-        }
-      }
-      {
-        xSemaphoreTake(gLock, portMAX_DELAY);
-        BurnerHistory snap = gBurner;
-        xSemaphoreGive(gLock);
-        // day < 0 = nie bylo jeszcze ANI JEDNEGO odczytu pieca (piec wylaczony,
-        // brak autoryzacji, same bledy). Pusty profil nadpisalby ten z NVS
-        // i skasowal to, co wlasnie odtworzylismy przy starcie.
-        if (snap.day >= 0) {
-          burnerHistorySave(snap);
         }
       }
       nextStoreAt = millis() + cfg::PV_STORE_MS;
@@ -2109,12 +2097,12 @@ void setup() {
   uiRooms = gRooms;
   ui.setRoomHistory(&uiRooms);
   gasHistoryLoad(gGas);   // 120 dni logu gazu — bez tego weryfikacja licznika nie ma z czym porownywac
-  burnerHistoryLoad(gBurner);   // profil doby palnika — dotad ginal przy KAZDYM restarcie
-  uiBurner = gBurner;           // zeby wykres mial dane JUZ w pierwszej klatce, przed pierwszym odpytem pieca
+  boilerHistoryLoad(gBoilerHist);   // (v199) 24 h temperatury zasilania — okno ruchome
+  uiBoilerHist = gBoilerHist;      // zeby wykres mial dane JUZ w pierwszej klatce, przed pierwszym odpytem pieca
   ui.setBoiler(&uiVi);
-  ui.setBurnerHistory(&uiBurner);
+  ui.setBoilerHistory(&uiBoilerHist);
   // Bez wczytywania z NVS: jakosc powietrza NIE ma tu historii do odtworzenia
-  // (w odroznieniu od gHist/gRooms/gGas/gBurner wyzej) — to biezacy odczyt, jak
+  // (w odroznieniu od gHist/gRooms/gGas/gBoilerHist wyzej) — to biezacy odczyt, jak
   // pogoda/PV, wiec pierwsza probka po prostu poczeka na pierwszy udany fetch.
   ui.setAir(&uiAir);
   // (v174) Auto — jak wyzej: bez wczytywania z NVS, bo to biezacy stan, a nie
@@ -2648,7 +2636,7 @@ void loop() {
   uiHist = gHist;
   uiRooms = gRooms;
   uiVi = gVi;
-  uiBurner = gBurner;
+  uiBoilerHist = gBoilerHist;
   uiFlights = gFlights;
   uiAir = gAir;
   xSemaphoreGive(gLock);

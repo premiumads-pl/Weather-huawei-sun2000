@@ -112,8 +112,8 @@ class WeatherUi {
   // do jednego widoku, zasmiecaloby cztery sygnatury.
   void setRoomHistory(const struct RoomHistory* rh) { rooms_ = rh; }
   void setBoiler(const vi::Model* b) { boiler_ = b; }
-  void setBurnerHistory(const struct BurnerHistory* h) { burner_ = h; }
-  // Jakosc powietrza (v117) — ten sam wzorzec co rooms_/boiler_/burner_ powyzej:
+  void setBoilerHistory(const struct BoilerHistory* h) { boilerHist_ = h; }
+  // Jakosc powietrza (v117) — ten sam wzorzec co rooms_/boiler_/boilerHist_ powyzej:
   // wskaznik do kopii aktualizowanej przez loop() pod gLock, a NIE parametr w
   // render()/drawView() — ekran POWIETRZE nie potrzebuje watku danych az tak
   // centralnego jak pogoda/PV/loty (brak prefetchu, brak wplywu na inne widoki).
@@ -251,7 +251,7 @@ class WeatherUi {
   uint8_t view_ = 0;
   const struct RoomHistory* rooms_ = nullptr;
   const vi::Model* boiler_ = nullptr;
-  const struct BurnerHistory* burner_ = nullptr;
+  const struct BoilerHistory* boilerHist_ = nullptr;
   const struct AirModel* air_ = nullptr;
   const struct AutoModel* auto_ = nullptr;   // (v174) stan Tesli z MQTT (ekran AUTO)
   const struct CostModel* cost_ = nullptr;   // (v180) koszt zakupu z sieci (modul PRAD)

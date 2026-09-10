@@ -50,7 +50,8 @@
 #include "FlightData.h"
 #include "BleSensors.h"
 #include "RadarMap.h"
-#include "GasMeter.h"        // BurnerHistory
+#include "GasMeter.h"        // GasHistory
+#include "BoilerHistory.h"   // BoilerHistory — okno ruchome 24 h na ekranie PIEC
 #include "Log.h"             // Diag, gPir, gLdr, diag()
 #include "Settings.h"        // settings()
 #include "Viessmann.h"       // vi::Model, vi::daysLeft()
@@ -2861,9 +2862,9 @@ void v3HomeBottom(TFT_eSPI& tft, const RoomModel* rmp) {
 }
 
 // ============================================================ OGRZEWANIE =======
-// Makieta 15. Pelnojasne tlo, CWU + wykres palnika.
+// Makieta 15. Pelnojasne tlo, CWU + wykres temperatury zasilania (ruchome 24 h).
 
-void v3Boiler(TFT_eSPI& s, const vi::Model* bp, const BurnerHistory* bhp) {
+void v3Boiler(TFT_eSPI& s, const vi::Model* bp, const BoilerHistory* bhp) {
   s.fillRect(0, 0, grid::W, 206, col::BG);
 
   // (v161) STAN (a): NIGDY nie bylo udanego odczytu. Do v160 netTask przy KAZDYM
@@ -2982,33 +2983,125 @@ void v3Boiler(TFT_eSPI& s, const vi::Model* bp, const BurnerHistory* bhp) {
     plex::strRight(s, plex::f13(), tr, grid::DATA_R, 68, cSec);
   }
 
-  // Wykres palnika (modulacja doby).
-  plex::str(s, plex::f11(), "PALNIK DZIŚ", grid::MARGIN, 120, col::SECOND);
+  // (v199) WYKRES TEMPERATURY ZASILANIA — OKNO RUCHOME 24 H.
+  //
+  // Forma jest CELOWO ta sama, co na ekranie POKOJE: identyczna geometria obszaru,
+  // te same podpisy osi ("teraz" po prawej, godziny wstecz), ta sama gruba linia
+  // z przerwami na brakach. Jeden wykres czyta sie tu tak samo jak drugi.
+  //
+  // ZASTAPIL PROFIL DOBY PALNIKA i to nie jest kosmetyka. Tamten byl doba
+  // KALENDARZOWA, wiec o 00:05 byl pusty, i byl zafalszowany aliasingiem: piec
+  // odpytujemy co 3 minuty, sloty mialy 10 minut, a cykl CWU bywa krotszy niz
+  // odstep miedzy odpytami (pelny wywod przy Model w Viessmann.h). Temperatura
+  // zasilania opada powoli i miedzy dwoma odpytami nie znika, wiec przy tej samej
+  // kadencji mowi prawde. Latem, gdy obieg stoi w Czuwaniu, ten wykres pokazuje
+  // wprost pile dogrzewania CWU — czyli to, na co piec faktycznie palił gaz.
+  static const BoilerHistory kEmptyBh{};
+  const BoilerHistory& bh = bhp ? *bhp : kEmptyBh;
+
+  // Geometria 1:1 z ekranem POKOJE: 26 px z lewej na etykiety °C, baza 188,
+  // podpisy godzin na 199 (jeszcze w sprite, ktory konczy sie na 206).
+  const int plotX0 = grid::MARGIN + 26;
+  const int plotX1 = grid::DATA_R;
+  const int plotY0 = 132;
+  const int plotY1 = 188;
+
+  float hmin = 1e9f, hmax = -1e9f;
+  int samples = 0;
+  // lastSlot == 0 znaczy "ta historia nigdy nie ruszyla" — tak wyglada kEmptyBh
+  // i instancja przed pierwszym advance(). Wartosciowa inicjalizacja daje w t10
+  // ZERA, a nie NO_T, wiec bez tego warunku pusty wykres narysowalby plaska linie
+  // na 0 stopniach zamiast powiedziec, ze danych nie ma.
+  for (int k = 0; bh.lastSlot != 0 && k < BoilerHistory::SLOTS; ++k) {
+    const int16_t v = bh.t10[k];
+    if (v == BoilerHistory::NO_T) continue;
+    const float t = v / 10.f;
+    if (t < hmin) hmin = t;
+    if (t > hmax) hmax = t;
+    ++samples;
+  }
+
+  plex::str(s, plex::f11(), "ZASILANIE · RUCHOME 24 H", grid::MARGIN, 120, col::SECOND);
   {
-    // "teraz: ..." WYLACZNIE przy swiezym odczycie — patrz decyzja per pole wyzej.
-    const char* st = (viOld || !b.hasBurnerState)
-                         ? "brak odczytu"
-                         : (b.burnerActive ? "teraz: włączony" : "teraz: wyłączony");
-    plex::strRight(s, plex::f13(), st, grid::DATA_R, 120,
-                   (!viOld && b.burnerActive) ? col::PV : col::MUTE);
+    char rng[32];
+    if (samples >= 2) snprintf(rng, sizeof(rng), "min %.0f° · max %.0f°", hmin, hmax);
+    else snprintf(rng, sizeof(rng), "zbieram dane");
+    plex::strRight(s, plex::f13(), rng, grid::DATA_R, 120, col::MUTE);
   }
-  const int cx = grid::MARGIN, cy = 130, cw = grid::W - 2 * grid::MARGIN, ch = 44;
-  const int base = cy + ch;
-  s.drawFastHLine(cx, base, cw, col::LINE);
-  static const BurnerHistory kEmptyBh{};
-  const BurnerHistory& bh = bhp ? *bhp : kEmptyBh;
-  const int pk = bh.peak();
-  for (int i = 0; i < BurnerHistory::SLOTS; ++i) {
-    if (!bh.filled[i] || bh.mod[i] == 0) continue;
-    const int x = cx + (i * cw) / BurnerHistory::SLOTS;
-    int hh = static_cast<int>((ch - 2) * (bh.mod[i] / static_cast<float>(pk > 0 ? pk : 100)));
-    if (hh < 1) hh = 1;
-    s.drawFastVLine(x, base - hh, hh, col::PV);
+
+  // Os Y obejmuje TAKZE biezacy odczyt, zeby swiezy skok poza dotychczasowy zakres
+  // nie wyszedl poza obszar wykresu.
+  float tmin = hmin, tmax = hmax;
+  if (b.hasSupplyTemp) {
+    if (b.supplyTempC < tmin) tmin = b.supplyTempC;
+    if (b.supplyTempC > tmax) tmax = b.supplyTempC;
   }
-  for (int hh = 0; hh <= 24; hh += 6) {
-    char hb[4];
-    snprintf(hb, sizeof(hb), "%d", hh);
-    plex::strCenter(s, plex::f10(), hb, cx + (hh * cw) / 24, base + 11, col::MUTE);
+  if (tmin > tmax) { tmin = 40.f; tmax = 60.f; }   // brak jakichkolwiek liczb
+
+  // Zakres pieca jest DUZO szerszy niz pokojowy (tu 20-80 °C, tam 18-25 °C), wiec
+  // podzialka co 1° dalaby kilkadziesiat linii. Krok 5° do rozpietosci 20°, dalej 10°.
+  // Dol wyrownany w dol do wielokrotnosci kroku, gora w gore — inaczej skrajne
+  // podzialki nie trafialyby w krawedzie obszaru.
+  int yLo = static_cast<int>(floorf(tmin - 1.f));
+  int yHi = static_cast<int>(ceilf(tmax + 1.f));
+  if (yHi - yLo < 10) { const int need = 10 - (yHi - yLo); yLo -= need / 2; yHi += need - need / 2; }
+  const int step = (yHi - yLo <= 20) ? 5 : 10;
+  const int rem = ((yLo % step) + step) % step;
+  if (rem != 0) yLo -= rem;
+  if ((yHi - yLo) % step) yHi += step - ((yHi - yLo) % step);
+  auto yOf = [&](float t) {
+    return plotY1 - static_cast<int>((t - yLo) / static_cast<float>(yHi - yLo) * (plotY1 - plotY0) + 0.5f);
+  };
+
+  for (int tv = yLo; tv <= yHi; tv += step) {
+    const int y = yOf(static_cast<float>(tv));
+    s.drawFastHLine(plotX0, y, plotX1 - plotX0, col::LINE);
+    char lbl[8];
+    snprintf(lbl, sizeof(lbl), "%d°", tv);
+    plex::strRight(s, plex::f10(), lbl, plotX0 - 3, y + 3, col::MUTE);
+  }
+
+  {
+    const time_t now = time(nullptr);
+    const bool clockOk = now > 1700000000;
+    for (int th = 24; th >= 0; th -= 6) {
+      const int x = plotX1 - static_cast<int>((th / 24.f) * (plotX1 - plotX0) + 0.5f);
+      if (th != 0 && th != 24) s.drawFastVLine(x, plotY0, plotY1 - plotY0, col::LINE);
+      char hb[8];
+      if (th == 0) snprintf(hb, sizeof(hb), "teraz");
+      else if (clockOk) {
+        const time_t moment = now - static_cast<time_t>(th) * 3600;
+        struct tm tmv{};
+        localtime_r(&moment, &tmv);
+        snprintf(hb, sizeof(hb), "%d", tmv.tm_hour);
+      } else {
+        snprintf(hb, sizeof(hb), "−%dh", th);
+      }
+      if (th == 0) plex::strRight(s, plex::f10(), hb, plotX1, plotY1 + 11, col::MUTE);
+      else if (th == 24) plex::str(s, plex::f10(), hb, plotX0, plotY1 + 11, col::MUTE);
+      else plex::strCenter(s, plex::f10(), hb, x, plotY1 + 11, col::MUTE);
+    }
+  }
+
+  // Dziura (NO_T, np. przerwa w zasilaniu albo milczace API pieca) PRZERYWA linie —
+  // nie laczymy w poprzek luki. Grubosc 2 px z tego samego powodu, co na ekranie
+  // POKOJE: cienka linia na tanim, zaparowanym ST7789 z 2 m ginela. Kolor bez zmian
+  // wzgledem poprzedniego wykresu na tym ekranie — nie wprowadzam nowego znaczenia
+  // koloru obok kontraktu energii z v167/v174.
+  if (samples >= 2) {
+    int px = -1, py = -1;
+    for (int k = 0; k < BoilerHistory::SLOTS; ++k) {   // k=0 najstarsza -> lewa krawedz
+      const int16_t v = bh.t10[bh.idx(k)];
+      if (v == BoilerHistory::NO_T) { px = -1; continue; }
+      const int x = plotX0 + (k * (plotX1 - plotX0)) / (BoilerHistory::SLOTS - 1);
+      const int y = yOf(v / 10.f);
+      if (px >= 0) { s.drawLine(px, py, x, y, col::PV); s.drawLine(px, py + 1, x, y + 1, col::PV); }
+      px = x; py = y;
+    }
+  } else {
+    // Osie juz stoja (z biezacego odczytu), wiec ekran nigdy nie jest pusty.
+    plex::strCenter(s, plex::f13(), "wykres pojawi się po zebraniu danych",
+                    (plotX0 + plotX1) / 2, (plotY0 + plotY1) / 2, col::MUTE);
   }
 }
 
@@ -3666,7 +3759,7 @@ void WeatherUi::drawV3(TFT_eSPI& spr, uint8_t view, int ox, float t, const Weath
       v3Home(spr, roomModel_, rooms_, nowMs);
       break;
     case cfg::VIEW_BOILER:
-      v3Boiler(spr, boiler_, burner_);
+      v3Boiler(spr, boiler_, boilerHist_);
       break;
     case cfg::VIEW_AIR:
       v3Air(spr, air_);

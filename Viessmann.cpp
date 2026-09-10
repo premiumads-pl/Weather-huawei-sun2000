@@ -606,8 +606,8 @@ bool fetch(Model& out) {
     } else if (strcmp(name, "heating.boiler.sensors.temperature.commonSupply") == 0) {
       if (propF(f, "value", v)) { m.supplyTempC = v; m.hasSupplyTemp = true; }
     } else if (strcmp(name, "heating.burners.0") == 0) {
-      // Brakujace "active" dawalo false, czyli "palnik nie pracuje" — a to leci
-      // do BurnerHistory i zapisuje sie w profilu doby.
+      // Brakujace "active" dawalo false, czyli "palnik nie pracuje" — a to szlo
+      // na ekran jako pomiar. Flaga hasBurnerState odroznia brak cechy od pomiaru.
       JsonVariantConst a = f["properties"]["active"]["value"];
       if (a.is<bool>()) { m.burnerActive = a.as<bool>(); m.hasBurnerState = true; }
     } else if (strcmp(name, "heating.burners.0.modulation") == 0) {
@@ -651,8 +651,7 @@ bool fetch(Model& out) {
   // online = true, valid = true ze swiezym okAt. Ekran PIEC pokazywal wtedy CWU 0,0 C,
   // cel 0 C, zasilanie 0,0 C, palnik off, gaz 0,0 m3 — z zielona kropka i bez slowa
   // o bledzie. Wyglada dokladnie jak wychlodzony, wylaczony piec; zima to jest
-  // komunikat "kotlownia stoi" postawiony na niczym. Do tego BurnerHistory zapisywala
-  // "palnik nie pracowal" w slocie, w ktorym pracowal.
+  // komunikat "kotlownia stoi" postawiony na niczym.
   // CWU to naglowek tego ekranu. Jesli nie doszla, reszta nie jest warta pokazania —
   // lepiej uczciwy blad niz wiarygodne zero.
   if (!m.hasDhwTemp) {

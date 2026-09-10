@@ -8,6 +8,7 @@
 #include "PvData.h"
 #include "GasMeter.h"
 #include "RoomHistory.h"
+#include "BoilerHistory.h"
 #include "AirHistory.h"
 #include "GraphBlob.h"  // (v194) wykres mocy ladowania na OLED — klucz "graf1"
 
@@ -1489,156 +1490,73 @@ void gasHistorySave(const GasHistory& g) {
   prefs.end();
 }
 
-// ------------------------------------------- profil doby palnika (144 sloty) --
-// Ostatni profil bez utrwalania. PV zapisuje sie co 5 minut, pokoje co 10, gaz raz
-// na dobe — a palnik nie zapisywal sie NIGDY. Wykres pieca gasl przy kazdym
-// restarcie i to jest cala tajemnica "fotowoltaika pamieta, piec nie".
+// ------------------------------ historia temperatury zasilania (144 sloty) --
+// (v199) Zastapila profil doby palnika ("burn2"), ktory zniknal razem z wykresem
+// na ekranie PIEC. Slot NVS jest TEN SAM (przemianowany na NVS_SLOT_BOILH), bo to
+// ta sama pozycja w diagnostyce zapisow — zmienia sie tylko tresc i klucz.
 //
-// FILLED IDZIE DO BLOBU NA ZAPAS — DZIS BEZ OBSERWOWALNEGO SKUTKU.
-// Przy PV odtwarzamy filled z danych (`filled[i] = watts[i] > 0 || load[i] > 0`).
-// Tu daloby sie tak samo i nikt by nie zauwazyl: jedyny konsument to drawGasChart
-// (WeatherUi.cpp:2323), ktory pomija slot warunkiem `!h.filled[s] || h.mod[s] == 0` —
-// a `mod[s] == 0` i tak pomija ten sam slot, push() zas ustawia filled wszedzie, gdzie
-// mod > 0. Czyli `!filled[s]` jest dzis warunkiem MARTWYM. peak() nie jest wolane wcale.
-// NIE SZUKAJ TU LOGIKI, KTORA TO WYKORZYSTUJE — nie ma jej.
-//
-// Pole zostaje na potrzeby PLANOWANEGO wykresu: mod == 0 znaczy "palnik zmierzony,
-// stal", i to jest pelnoprawny pomiar, ktory przeprojektowany wykres bedzie chcial
-// odroznic od "nie bylo odczytu" (bez tego cala noc bez odpytow wyglada identycznie
-// jak noc, w ktora piec stal). (v169) Od tego wydania to pole nie kosztuje w NVS
-// ANI JEDNEGO BAJTU: mieszka jako wartownik 255 w bajcie modulacji (patrz nizej).
-//
-// Ten sam wzorzec, co przy "gas2" i "prof2": wlasny klucz, pole `ver` w blobie,
-// asercja rozmiaru. Rozmiary blobow w przestrzeni "pvday" sa rozne (prof2 = 292,
-// rh3 = 872, gas2 = 128, burn2 = 148), wiec pomylka o klucz nie ma jak przejsc
-// przez kontrole getBytesLength().
+// KLUCZ NOWY, NIE PODMIENIONA TRESC STAREGO: "burn2" ma 148 B, ten blob 296 B,
+// wiec kontrola getBytesLength() i tak by go odrzucila. Nowy klucz jest jednak
+// uczciwszy — stary blob zostaje w NVS nietkniety az do naturalnego skasowania i
+// nie ma ryzyka, ze jakas starsza wersja firmware wczyta nasz blob jako swoj.
 namespace {
 
-// (v169) `filled` NIE MA JUZ WLASNEJ TABLICY — MIESZKA W WARTOSCI MODULACJI.
-// Komentarz wyzej mowi, po co to pole istnieje (planowany wykres ma odroznic
-// "palnik zmierzony, stal" od "nie bylo odczytu") i ta informacja zostaje w calosci.
-// Zmienia sie sposob zapisu: modulacja ma zakres 0..100, wiec 155 wartosci bajtu
-// stalo pustych. Kod 255 znaczy "NIE BYLO ODCZYTU" i zastepuje cala 144-bajtowa
-// tablice filled[].
-//
-// DLACZEGO NIE MASKA BITOWA: sprawdzone, nie zgadniete. Maska 18 B daje blob 166 B,
-// a to nadal SZESC rozpoczetych blokow po 32 B, czyli 8 wpisow NVS. Wartownik w
-// bajcie modulacji daje 148 B = piec blokow = 7 wpisow. Jeden wpis roznicy przesadza
-// o tym, czy suma cyklu miesci sie w polowie dostepnej puli — a informacji nie tracimy
-// ani na jotę, w odroznieniu od odtwarzania filled z `mod > 0` (tak robi PvHistory,
-// i tam wlasnie ginie roznica miedzy "zmierzone zero" a "brak pomiaru").
-constexpr uint8_t BURN_MOD_NONE = 255;
-
-struct BurnerBlob {
+struct BoilerBlob {
   uint16_t ver;
-  int16_t day;                            // tm_yday (0..365)
-  // 0..100 = zmierzona modulacja w procentach, 255 = nie bylo odczytu w tym slocie
-  uint8_t mod[BurnerHistory::SLOTS];
+  uint16_t head;
+  uint32_t lastSlot;
+  int16_t t10[BoilerHistory::SLOTS];
 };
-constexpr uint16_t BURN_VER = 2;
-constexpr const char* K_BURN = "burn2";
+constexpr uint16_t BOILH_VER = 1;
+constexpr const char* K_BOILH = "boilh1";
 
-static_assert(sizeof(BurnerBlob) == 148,
-              "zmienil sie uklad profilu palnika - podbij klucz NVS na \"burn3\", "
+static_assert(sizeof(BoilerBlob) == 296,
+              "zmienil sie uklad historii zasilania - podbij klucz NVS na \"boilh2\", "
               "inaczej stary blob wczyta sie jako nowy (cicha korupcja)");
-
-// --- uklad v1 ("burn1", 296 B) — TYLKO DO MIGRACJI --------------------------
-struct BurnerBlobV1 {
-  uint16_t ver;
-  int32_t day;
-  uint8_t mod[BurnerHistory::SLOTS];
-  uint8_t filled[BurnerHistory::SLOTS];
-};
-static_assert(sizeof(BurnerBlobV1) == 296, "uklad v1 profilu palnika mial 296 B");
-constexpr const char* K_BURN_V1 = "burn1";
 
 }  // namespace
 
-void burnerHistoryLoad(BurnerHistory& h) {
-  h.reset(-1);
+void boilerHistoryLoad(BoilerHistory& h) {
+  h.reset();
   Preferences prefs;
   if (!prefs.begin(NS_PV, true)) {
     return;
   }
-  BurnerBlob b{};
-  bool migrated = false;
-  bool ok = prefs.getBytesLength(K_BURN) == sizeof(b) &&
-            prefs.getBytes(K_BURN, &b, sizeof(b)) == sizeof(b) && b.ver == BURN_VER &&
-            b.day >= 0;
-  // (v169) MIGRACJA Z "burn1": ten profil zyje jedna dobe, wiec strata boli mniej niz
-  // przy gazie — ale to nadal wykres, ktory wlasciciel wlasnie oglada, a przepisanie
-  // kosztuje kilkanascie linii. `filled` znika jako tablica i wchodzi w wartownika.
-  if (!ok && prefs.getBytesLength(K_BURN_V1) == sizeof(BurnerBlobV1)) {
-    BurnerBlobV1 v1{};
-    if (prefs.getBytes(K_BURN_V1, &v1, sizeof(v1)) == sizeof(v1) && v1.ver == 1 &&
-        v1.day >= 0) {
-      b = BurnerBlob{};
-      b.ver = BURN_VER;
-      b.day = static_cast<int16_t>(v1.day);
-      for (int i = 0; i < BurnerHistory::SLOTS; ++i) {
-        b.mod[i] = v1.filled[i] != 0 ? (v1.mod[i] > 100 ? 100 : v1.mod[i])
-                                     : BURN_MOD_NONE;
-      }
-      ok = true;
-      migrated = true;
-    }
-  }
-  if (ok) {
-    // Przez petle, nie memcpy: `filled` w BurnerHistory to bool[], a bool o wartosci
-    // innej niz 0/1 (choćby ze smiecia w NVS) to zachowanie niezdefiniowane. Przy
-    // okazji rozpakowujemy wartownika 255 z powrotem na pare (mod, filled).
-    for (int i = 0; i < BurnerHistory::SLOTS; ++i) {
-      const uint8_t v = b.mod[i];
-      h.filled[i] = v <= 100;
-      h.mod[i] = h.filled[i] ? v : 0;
-    }
-    h.day = b.day;
-    // (v168) LOG(): profil palnika to RODZENSTWO profilu PV — ten sam blad zapisu
-    // uderzy w oba, a "wykres pieca pusty po restarcie" jest dokladnie tym objawem,
-    // ktory v166 mial zamknac. Bez wpisu w /api/log nie da sie stwierdzic, czy
-    // wrocil, bo urzadzenie nie ma USB.
-    LOG("Piec: wczytano z NVS profil palnika — dzien %d\n", static_cast<int>(b.day));
-  } else {
-    LOG("Piec: BRAK profilu palnika w NVS — wykres pieca startuje pusty\n");
-  }
-  const bool legacy = prefs.isKey(K_BURN_V1);
+  BoilerBlob b{};
+  const bool ok = prefs.getBytesLength(K_BOILH) == sizeof(b) &&
+                  prefs.getBytes(K_BOILH, &b, sizeof(b)) == sizeof(b) &&
+                  b.ver == BOILH_VER &&
+                  b.head < BoilerHistory::SLOTS;   // head jest bez znaku, dolnej granicy nie ma po co sprawdzac
   prefs.end();
-  // (v169) Nowy blob NAJPIERW, kasowanie starego POTEM — patrz pvHistoryLoad.
-  if (migrated) {
-    burnerHistorySave(h);
+  if (ok) {
+    for (int i = 0; i < BoilerHistory::SLOTS; ++i) h.t10[i] = b.t10[i];
+    h.head = static_cast<int16_t>(b.head);
+    h.lastSlot = b.lastSlot;
+    // Daty NIE sprawdzamy tutaj i to jest swiadome: przy starcie NTP jeszcze nie
+    // odpowiedzial. Przewinieciem okna zajmuje sie advance() w netTask, gdzie
+    // zegar jest juz pewny — i to ono wyczysci sloty, ktore urzadzenie przespalo.
+    LOG("Piec: wczytano z NVS historie zasilania — slot %lu\n",
+        static_cast<unsigned long>(b.lastSlot));
+  } else {
+    LOG("Piec: BRAK historii zasilania w NVS — wykres startuje pusty\n");
   }
-  if (legacy) {
-    Preferences w;
-    if (w.begin(NS_PV, false)) {
-      w.remove(K_BURN_V1);
-      w.end();
-    }
-  }
-  // Profil ze WCZORAJ zostaje tu CELOWO nietkniety i CELOWO nie sprawdzamy daty:
-  // przy starcie NTP jeszcze nie odpowiedzial, wiec tm_yday bylby z 1970 i skasowalby
-  // dobry profil. Kasowanie doby jest osobno, w netTask, gdzie zegar jest juz pewny —
-  // patrz pogoda-gdynia.ino, "polnoc: profil doby palnika przestaje byc dzis".
-  // NIE polega ono na push(): push() przychodzi tylko po udanym odpycie pieca, wiec
-  // przy milczacym API wczorajszy profil wisialby na ekranie jako "dzis" godzinami.
 }
 
-void burnerHistorySave(const BurnerHistory& h) {
+void boilerHistorySave(const BoilerHistory& h) {
   Preferences prefs;
   if (!prefs.begin(NS_PV, false)) {
-    nvsMark(NVS_SLOT_BURN, false);
+    nvsMark(NVS_SLOT_BOILH, false);
     return;
   }
-  BurnerBlob b{};
-  b.ver = BURN_VER;
-  b.day = static_cast<int16_t>(h.day);
-  for (int i = 0; i < BurnerHistory::SLOTS; ++i) {
-    // Przyciecie do 100 nie jest ozdoba: bez niego modulacja 255 z uszkodzonego
-    // odczytu zapisalaby sie jako wartownik "brak pomiaru" i slot zniknalby z wykresu.
-    b.mod[i] = h.filled[i] ? (h.mod[i] > 100 ? 100 : h.mod[i]) : BURN_MOD_NONE;
-  }
-  nvsPutBytes(prefs, NVS_SLOT_BURN, K_BURN, &b, sizeof(b));
+  BoilerBlob b{};
+  b.ver = BOILH_VER;
+  b.head = static_cast<uint16_t>(h.head);
+  b.lastSlot = h.lastSlot;
+  for (int i = 0; i < BoilerHistory::SLOTS; ++i) b.t10[i] = h.t10[i];
+  nvsPutBytes(prefs, NVS_SLOT_BOILH, K_BOILH, &b, sizeof(b));
   prefs.end();
 }
+
 
 // ------------- (v166) TRWALA KOPIA STATYSTYK PIR + LDR (klucz "sen1") --------
 // OBJAW ZGLOSZONY PRZEZ WLASCICIELA: "po restarcie brak danych, a powinny zostac"
